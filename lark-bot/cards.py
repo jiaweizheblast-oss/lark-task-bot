@@ -227,8 +227,7 @@ def dispatched_card(chat_name, task):
                     "content": f"已发到群：{chat_name} · 负责人会收到 @ 和反馈按钮"}]}]}
 
 
-def external_task_card(task, status_url):
-    """推给外部群的任务卡片：@全体 + 详情 + 两个 URL 按钮（外部人点了打开网页汇报）。"""
+def _ext_task_lines(task):
     lines = [f"**📌 任务：**{task.get('title','')}"]
     if task.get("detail"):
         lines.append(f"**📝 详情/安排：**{task['detail']}")
@@ -239,20 +238,54 @@ def external_task_card(task, status_url):
     lines.append(f"**👤 负责人：**{task.get('assignee_name') or '（见群内）'}")
     if task.get("deadline"):
         lines.append(f"**📅 截止：**{task['deadline']}")
-    body = "<at id=all></at>\n" + "\n".join(lines)
+    return lines
+
+
+def external_task_card(task, status_url):
+    """推给外部群的任务卡片：@全体 + 详情 + 一个按钮打开汇报页。
+    点开的网页会根据任务状态，依次给出【接受任务】→【标记完成 / 有问题】，
+    和内部群的流程保持一致。只用一个按钮，避免两个按钮都跳同一个页面的重复。"""
+    name = task.get("assignee_name") or ""
+    body = "<at id=all></at>\n" + "\n".join(_ext_task_lines(task))
+    tip = f"👉 请**负责人 {name}** 点下面按钮：先接受任务，之后再汇报完成或问题。" \
+          f"\n（其他群成员请勿点击，以免弄乱状态）"
     return {"config": {"wide_screen_mode": True},
             "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📋 新任务"}},
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md", "content": body}},
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": "完成或有问题，请点下面按钮汇报："}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": tip}},
                 {"tag": "action", "actions": [
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "✅ 我已完成"},
-                     "type": "primary", "url": status_url + "?a=done"},
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "🙋 有问题"},
-                     "type": "default", "url": status_url + "?a=issue"},
-                ]},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "📝 接受 / 汇报进度"},
+                     "type": "primary", "url": status_url}]},
             ]}
+
+
+def external_reminder_card(kind, task, status_url=None):
+    """外部群提醒卡片（通过 webhook 推送）：@全体 + 提醒 + 打开汇报页按钮。"""
+    name = task.get("assignee_name") or "负责人"
+    title = task.get("title", "")
+    dl = task.get("deadline")
+    if kind == "due_tomorrow":
+        header, color = "⏰ 明天到期", HEADER_COLOR["due_tomorrow"]
+        line = f"任务「{title}」将于 **明天（{dl}）** 到期，请尽快处理。"
+    elif kind == "due_today":
+        header, color = "⏰ 今天到期", HEADER_COLOR["due_today"]
+        line = f"任务「{title}」**今天（{dl}）到期**，请尽快处理。"
+    else:  # escalated
+        header, color = "🚨 任务超期", HEADER_COLOR["escalated"]
+        line = f"任务「{title}」已超期（截止 {dl}），请尽快跟进。"
+    body = f"<at id=all></at>\n**负责人：{name}**\n{line}"
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": body}}]
+    if status_url:
+        elements.append({"tag": "action", "actions": [
+            {"tag": "button", "text": {"tag": "plain_text", "content": "📝 去接受 / 汇报"},
+             "type": "primary", "url": status_url}]})
+    elements.append({"tag": "note", "elements": [
+        {"tag": "plain_text", "content": f"任务 #{task['id']} · 仅负责人操作"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": color, "title": {"tag": "plain_text", "content": header}},
+            "elements": elements}
 
 
 def nudge_card(task):

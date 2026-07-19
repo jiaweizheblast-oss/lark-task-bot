@@ -592,9 +592,20 @@ p{font-size:14px;margin:6px 0} b{color:#1c2024}
 .b{display:block;width:100%;border:0;border-radius:10px;padding:13px;font-size:15px;font-weight:650;
 cursor:pointer;margin-top:12px;color:#fff}
 .b.done{background:#16a34a} .b.issue{background:#c2740a}
-.or{text-align:center;color:#9aa2ab;font-size:12px;margin:14px 0 2px}
+.or{text-align:center;color:#9aa2ab;font-size:12px;margin:16px 0 2px}
 textarea{width:100%;min-height:72px;border:1px solid #d7dade;border-radius:10px;padding:10px;font-size:14px;
 font-family:inherit;resize:vertical;outline:none;margin-top:6px}
+.badge{display:inline-block;font-size:12px;font-weight:700;border-radius:999px;padding:3px 11px;margin:2px 0 10px}
+.b-pending{background:#eceafc;color:#5b5bd6} .b-accepted{background:#d9f2ee;color:#0d9488}
+.b-done{background:#e8f6ec;color:#16a34a} .b-issue{background:#fdf1e3;color:#c2740a}
+.warn{background:#fff8ec;border:1px solid #f5e2bf;color:#946200;font-size:12.5px;border-radius:10px;
+padding:9px 11px;margin:10px 0 4px}
+.flash{background:#e8f6ec;border:1px solid #bfe6c9;color:#137a37;font-size:13px;border-radius:10px;
+padding:10px 12px;margin:12px 0 2px;font-weight:600}
+.okmsg{background:#e8f6ec;color:#137a37;text-align:center;font-size:15px;font-weight:700;border-radius:10px;
+padding:14px;margin-top:6px}
+.rsnbox{background:#fdf1e3;border:1px solid #f0d9b8;color:#8a5a12;font-size:13px;border-radius:10px;
+padding:10px 12px;margin-top:6px}
 """
 
 
@@ -602,7 +613,37 @@ def _h(s):
     return (str(s) if s is not None else "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _status_html(task):
+_ST_LABEL = {"pending": "🆕 待接受", "accepted": "⏳ 进行中", "done": "✅ 已完成", "issue": "🙋 待沟通"}
+
+# 有问题的输入框 + 提交按钮（多个状态复用）
+_ISSUE_BOX = """
+  <div class="or">遇到问题？写下原因，和发布者商量：</div>
+  <textarea name="reason" placeholder="遇到什么问题？想怎么处理？（选填）"></textarea>
+  <button class="b issue" name="action" value="issue">🙋 提交问题</button>"""
+
+
+def _status_actions(task):
+    """根据任务当前状态，给出该显示哪些按钮（和内部群流程一致：先接受，再完成/有问题）。"""
+    st = task.get("status", "pending")
+    if st == "pending":
+        return f'<button class="b done" name="action" value="accept">✅ 接受任务</button>{_ISSUE_BOX}'
+    if st == "accepted":
+        return f'<button class="b done" name="action" value="done">✅ 标记完成</button>{_ISSUE_BOX}'
+    if st == "done":
+        return ('<div class="okmsg">🎉 已标记完成，谢谢！</div>'
+                '<div class="or">如状态有误，可重新反馈：</div>'
+                '<textarea name="reason" placeholder="补充说明（选填）"></textarea>'
+                '<button class="b issue" name="action" value="issue">🙋 反馈问题</button>')
+    # issue：显示已反馈的原因，可标记完成或补充
+    rsn = f'<div class="rsnbox">💬 已反馈：{_h(task.get("result") or "有问题")}</div>'
+    return (f'{rsn}<button class="b done" name="action" value="done">✅ 已解决 / 标记完成</button>'
+            '<div class="or">或补充问题：</div>'
+            '<textarea name="reason" placeholder="补充说明（选填）"></textarea>'
+            '<button class="b issue" name="action" value="issue">🙋 更新问题</button>')
+
+
+def _status_html(task, flash=None):
+    st = task.get("status", "pending")
     bits = []
     if task.get("priority"):
         bits.append(f"优先级：{_h(task['priority'])}")
@@ -612,28 +653,21 @@ def _status_html(task):
         bits.append(f"负责人：{_h(task['assignee_name'])}")
     detail = f"<p><b>详情/安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
     note = f"<p><b>注意事项：</b>{_h(task['note'])}</p>" if task.get("note") else ""
+    who = _h(task.get("assignee_name") or "负责人")
+    badge = f'<span class="badge b-{st}">当前状态：{_ST_LABEL.get(st, st)}</span>'
+    flash_html = f'<div class="flash">{_h(flash)}</div>' if flash else ""
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>任务汇报</title>
 <style>{_STATUS_CSS}</style></head><body><div class="card">
 <div class="h">📋 任务汇报</div>
 <div class="t">{_h(task.get('title',''))}</div>
 <div class="meta">{'　'.join(bits)}</div>
+{badge}
 {detail}{note}
-<form method="post">
-  <button class="b done" name="action" value="done">✅ 我已完成</button>
-  <div class="or">或者遇到问题：</div>
-  <textarea name="reason" placeholder="遇到什么问题？想怎么处理？（选填）"></textarea>
-  <button class="b issue" name="action" value="issue">🙋 提交问题</button>
-</form></div></body></html>"""
-
-
-def _done_html(msg):
-    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>已收到</title>
-<style>{_STATUS_CSS}</style></head><body><div class="card" style="text-align:center">
-<div style="font-size:46px;margin:8px 0">🎉</div>
-<div class="t">{_h(msg)}</div>
-<div class="meta">可以关闭这个页面了。</div></div></body></html>"""
+<div class="warn">⚠️ 请仅由负责人 <b>{who}</b> 操作，其他群成员请勿点击，以免弄乱状态。</div>
+{flash_html}
+<form method="post">{_status_actions(task)}</form>
+</div></body></html>"""
 
 
 @app.route("/t/<token>", methods=["GET"])
@@ -651,13 +685,18 @@ def status_submit(token):
         return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效</h3>", 404
     action = request.form.get("action")
     reason = (request.form.get("reason") or "").strip()
-    if action == "done":
+    flash = None
+    if action == "accept":
+        db.update_task_status(task["id"], "accepted")
+        flash = "已接受 ✅ 请在截止前完成，快到期时我们会在群里提醒你。"
+    elif action == "done":
         db.update_task_status(task["id"], "done")
-        return _done_html("已记录：完成，谢谢！")
-    if action == "issue":
+        flash = "已记录：完成，谢谢！🎉"
+    elif action == "issue":
         db.update_task_status(task["id"], "issue", result=reason or "有问题（未填写说明）")
-        return _done_html("已记录：有问题，我们会尽快跟进。谢谢！")
-    return _status_html(task)
+        flash = "已记录：有问题，发布者会尽快跟进。"
+    task = db.get_task_by_token(token)      # 重新读取，拿到最新状态再渲染
+    return _status_html(task, flash=flash)
 
 
 def main():
