@@ -3,6 +3,18 @@
 一张任务卡片 = 标题 + @负责人 + 任务信息 + 三个按钮（完成/无法完成/跳过）。
 点完按钮后我们会把卡片换成"已处理"的样子（见 done_card）。
 """
+import os
+
+# 时区标注（国际团队用）：在后台环境变量 TZ_LABEL 里填，如 "GMT+7" / "北京时间"，会显示在截止时间后面。
+TZ_LABEL = os.environ.get("TZ_LABEL", "").strip()
+
+
+def fmt_deadline(d, empty="未设置"):
+    """把截止日期格式化，带上时区标注（若配置了）。"""
+    if not d:
+        return empty
+    return f"{d}（{TZ_LABEL}）" if TZ_LABEL else f"{d}"
+
 
 STATUS_LABEL = {
     "pending": "🆕 待接受",
@@ -36,7 +48,7 @@ def _task_body_lines(task, assignee_display, at_all=False):
     meta = []
     if task.get("priority"):
         meta.append(f"优先级 {_pri(task['priority'])}")
-    meta.append(f"截止 {task.get('deadline') or '未设置'}")
+    meta.append(f"截止 {fmt_deadline(task.get('deadline'))}")
     lines = [head, "　·　".join(meta), f"负责人 {assignee_display}"]
     if task.get("detail"):
         lines += ["", f"**📝 详情 / 安排**\n{task['detail']}"]

@@ -23,7 +23,7 @@ from lark_oapi.api.im.v1 import (
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger, P2CardActionTriggerResponse,
 )
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from lark_oapi.adapter.flask import parse_req, parse_resp
 
 import db
@@ -43,6 +43,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 PANEL_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "")       # 网页控制台的登录密码
 ADMIN_NOTIFY_OPEN_ID = os.environ.get("ADMIN_NOTIFY_OPEN_ID", "") # 网页派的任务，负责人反馈时通知谁（可选）
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")           # 可选：你的公开网址，用来生成外部汇报链接
+TZ_LABEL = os.environ.get("TZ_LABEL", "").strip()                 # 可选：时区标注，如 "GMT+7" / "北京时间"
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -452,6 +453,13 @@ def api_members():
     return jsonify(list_group_members(request.args.get("chat_id", "")))
 
 
+@app.route("/api/config")
+def api_config():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"tz_label": TZ_LABEL})
+
+
 @app.route("/api/tasks", methods=["GET"])
 def api_tasks_list():
     if not _panel_auth():
@@ -632,6 +640,33 @@ def api_comments_add(task_id):
     return jsonify({"ok": True})
 
 
+# ---------------- 日历订阅（iCal）：把任务截止日期同步进个人日历 ----------------
+def _ics_esc(s):
+    return (str(s or "")).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+@app.route("/calendar.ics")
+def calendar_ics():
+    if not _panel_auth():          # 用 ?pw=面板密码 订阅
+        return Response("unauthorized", status=401)
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//LarkTaskBot//CN//",
+             "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:任务截止", "X-WR-TIMEZONE:UTC"]
+    for t in db.list_tasks():
+        d = t.get("deadline")
+        if not d or t.get("status") == "done":
+            continue
+        ymd = d.strftime("%Y%m%d") if hasattr(d, "strftime") else str(d).replace("-", "")
+        nxt = d + __import__("datetime").timedelta(days=1) if hasattr(d, "strftime") else d
+        ymd2 = nxt.strftime("%Y%m%d") if hasattr(nxt, "strftime") else ymd
+        summ = f"[{_ST_LABEL.get(t.get('status'), '')}] {t.get('title', '')}"
+        desc = f"负责人：{t.get('assignee_name') or ''}　优先级：{t.get('priority') or ''}"
+        lines += ["BEGIN:VEVENT", f"UID:task-{t['id']}@larktaskbot",
+                  f"DTSTART;VALUE=DATE:{ymd}", f"DTEND;VALUE=DATE:{ymd2}",
+                  f"SUMMARY:{_ics_esc(summ)}", f"DESCRIPTION:{_ics_esc(desc)}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return Response("\r\n".join(lines) + "\r\n", mimetype="text/calendar")
+
+
 # ---------------- 外部人汇报状态的公开页面 ----------------
 _STATUS_CSS = """
 *{box-sizing:border-box} body{margin:0;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,
@@ -667,6 +702,7 @@ padding:10px 12px;margin-top:6px}
 .cmt.asg{background:#e8f6ec;align-self:flex-end;border:1px solid #cfebd5}
 .cmt.sys{background:#f2f3f5;align-self:center;color:#6b7480;font-size:12px;text-align:center;max-width:100%}
 .sec{font-size:12.5px;color:#5b636b;font-weight:700;margin:16px 0 6px}
+.hint{font-size:12px;color:#8a949e;margin-top:7px;text-align:center;line-height:1.5}
 """
 
 
@@ -676,29 +712,28 @@ def _h(s):
 
 _ST_LABEL = {"pending": "🆕 待接受", "accepted": "⏳ 进行中", "done": "✅ 已完成", "issue": "🙋 待沟通"}
 
-# 统一的留言框：一个输入框 + 两个按钮（标记有问题 / 只发留言）——两个状态都复用
-_MSG_BOX = """
-  <div class="or">有问题或想和发布者沟通？写在这里（会记进下方沟通记录）：</div>
-  <textarea name="msg" placeholder="例如：能不能延到周五？/ 第一步已完成…（选填）"></textarea>
-  <div class="msgbtns">
-    <button class="b issue" name="action" value="issue">🙋 标记有问题</button>
-    <button class="b talk" name="action" value="comment">💬 发送留言</button>
-  </div>"""
+
+def _msg_box(hint):
+    """一个输入框 + 一个清晰的“发送给发布者”按钮（不再有两个模糊按钮）。"""
+    h = f'<div class="hint">{hint}</div>' if hint else ""
+    return ('<div class="or">有问题、想延期、或想说明进度？直接发给发布者：</div>'
+            '<textarea name="msg" placeholder="写下你想对发布者说的话…"></textarea>'
+            '<button class="b talk" name="action" value="message">💬 发送给发布者</button>' + h)
 
 
 def _status_actions(task):
-    """根据当前状态给出主按钮（先接受→再完成），下面统一带留言框。"""
+    """按当前状态给一个主按钮 + 一个发送留言按钮，作用一目了然。"""
     st = task.get("status", "pending")
+    tip = "发送后这条任务会标记为「待沟通」，发布者会尽快回复你。"
     if st == "pending":
-        primary = '<button class="b done" name="action" value="accept">✅ 接受任务</button>'
-    elif st == "accepted":
-        primary = '<button class="b done" name="action" value="done">✅ 标记完成</button>'
-    elif st == "done":
-        primary = '<div class="okmsg">🎉 已标记完成，谢谢！</div>'
-    else:  # issue
-        primary = ('<div class="rsnbox">💬 当前：待沟通，发布者会回复你。</div>'
-                   '<button class="b done" name="action" value="done">✅ 已解决 / 标记完成</button>')
-    return primary + _MSG_BOX
+        return '<button class="b done" name="action" value="accept">✅ 接受任务</button>' + _msg_box(tip)
+    if st == "accepted":
+        return '<button class="b done" name="action" value="done">✅ 标记完成</button>' + _msg_box(tip)
+    if st == "done":
+        return '<div class="okmsg">🎉 已标记完成，谢谢！</div>' + _msg_box("发布者会收到你的补充留言。")
+    # issue / 待沟通：正在和发布者沟通中
+    return ('<button class="b done" name="action" value="done">✅ 问题已解决，标记完成</button>'
+            + _msg_box("发布者会看到你的留言并回复。"))
 
 
 def _fmt_time(ts):
@@ -730,7 +765,7 @@ def _status_html(task, flash=None, comments=None):
     if task.get("priority"):
         bits.append(f"优先级 {_h(task['priority'])}")
     if task.get("deadline"):
-        bits.append(f"截止 {_h(task['deadline'])}")
+        bits.append(f"截止 {_h(cards.fmt_deadline(task['deadline']))}")
     if task.get("assignee_name"):
         bits.append(f"负责人 {_h(task['assignee_name'])}")
     detail = f"<p><b>📝 详情 / 安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
@@ -781,16 +816,17 @@ def status_submit(token):
         _log(tid, "标记完成" + (f"：{msg}" if msg else ""), "assignee", who)
         notify_publisher(task, f"✅ {who} 完成了任务 #{tid}【{task['title']}】")
         flash = "已记录：完成，谢谢！🎉"
-    elif action == "issue":
-        db.update_task_status(tid, "issue", result=msg or "有问题（未填写说明）")
-        _log(tid, msg or "（提出问题，未填写说明）", "assignee", who)
-        notify_publisher(task, f"⚠️ {who} 对任务 #{tid}【{task['title']}】提出问题：\n「{msg or '未填写'}」")
-        flash = "已提交问题，发布者会尽快回复。你可以在下面继续留言。"
-    elif action == "comment":
-        if msg:
+    elif action == "message":
+        if not msg:
+            flash = "请先写点内容再发送哦。"
+        else:
             _log(tid, msg, "assignee", who)
-            notify_publisher(task, f"💬 {who} 在任务 #{tid}【{task['title']}】留言：\n「{msg}」")
-            flash = "留言已发送，发布者会看到。"
+            notify_publisher(task, f"💬 {who} 对任务 #{tid}【{task['title']}】反馈：\n「{msg}」")
+            if task.get("status") in ("pending", "accepted"):
+                db.update_task_status(tid, "issue")
+                flash = "已发送给发布者 ✅ 这条任务已标为「待沟通」，他会尽快回复你。"
+            else:
+                flash = "已发送给发布者 ✅ 他会尽快回复你。"
     task = db.get_task_by_token(token)      # 重新读取，拿到最新状态再渲染
     return _status_html(task, flash=flash, comments=db.list_comments(tid))
 

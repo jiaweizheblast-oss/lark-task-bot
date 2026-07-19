@@ -91,6 +91,12 @@
   .cmt.sys{align-self:center;background:transparent;color:var(--soft);font-size:11.5px;text-align:center;max-width:100%}
   .replybar{display:flex;gap:6px;margin-bottom:14px}
   .replybar input{flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel);outline:none;font-size:13px}
+  .rtable{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);font-size:13px}
+  .rtable th,.rtable td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+  .rtable th{background:var(--panel2);color:var(--soft);font-size:12px;font-weight:600;white-space:nowrap}
+  .rtable td{font-variant-numeric:tabular-nums} .rtable tr:last-child td{border-bottom:0}
+  .rtable td.name{font-weight:650} .rate{font-weight:700;border-radius:5px;padding:1px 7px;font-size:12px}
+  .rate.good{color:var(--ok);background:var(--okB)} .rate.mid{color:var(--warn);background:var(--warnB)} .rate.bad{color:var(--danger);background:var(--dangerB)}
   #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13.5px;font-weight:600;transition:.25s;pointer-events:none;z-index:60;box-shadow:var(--shadow)}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)} #toast.err{background:var(--danger);color:#fff}
 </style>
@@ -112,6 +118,7 @@
       <button id="tab-create" class="on" onclick="showTab('create')">派任务</button>
       <button id="tab-board" onclick="showTab('board')">看板</button>
       <button id="tab-cal" onclick="showTab('cal')">日历</button>
+      <button id="tab-report" onclick="showTab('report')">报表</button>
     </div>
     <div class="sp"></div>
     <button class="btn ghost sm" onclick="openExtSettings()">⚙️ 外部群</button>
@@ -156,8 +163,19 @@
       <div class="cal-head">
         <button class="btn ghost sm" onclick="calMove(-1)">←</button><h2 id="calTitle"></h2>
         <button class="btn ghost sm" onclick="calMove(1)">→</button><button class="btn ghost sm" onclick="calMove(0)">今天</button>
+        <div class="sp"></div><button class="btn ghost sm" onclick="calSubscribe()">📅 订阅到我的日历</button>
       </div>
       <div class="cal" id="cal"></div>
+    </section>
+    <section id="view-report" class="hide">
+      <div class="toolbar">
+        <div style="font-weight:750;font-size:16px">📊 团队报表</div>
+        <div class="sp"></div>
+        <button class="btn ghost sm" onclick="calSubscribe()">📅 日历订阅</button>
+        <button class="btn ghost sm" onclick="exportReport()">⬇ 导出周报(CSV)</button>
+      </div>
+      <div class="stats" id="reportTiles"></div>
+      <div id="reportBody"></div>
     </section>
   </div>
 </div>
@@ -166,7 +184,8 @@
 <div id="toast"></div>
 
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="";
+const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"},{k:"issue",n:"待沟通",c:"var(--s-issue)"}];
 const SC={pending:"var(--s-pending)",accepted:"var(--s-accepted)",done:"var(--s-done)",issue:"var(--s-issue)"};
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -181,8 +200,9 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
     PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='连接失败';}}
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
-  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadExternalGroups();await loadGroups();loadTasks();}
-function showTab(t){['create','board','cal'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(t==='board'||t==='cal')loadTasks();}
+  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();loadTasks();}
+async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';}catch(e){TZLABEL='';}}
+function showTab(t){['create','board','cal','report'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();}
 
 async function loadExternalGroups(){try{const gs=await(await api('/api/external-groups')).json();EGROUPS=Array.isArray(gs)?gs:[];EGMAP={};EGROUPS.forEach(g=>EGMAP[g.id]=g.name);}catch(e){EGROUPS=[];}}
 async function loadGroups(){
@@ -224,7 +244,7 @@ async function loadTasks(){
   try{TASKS=await(await api('/api/tasks')).json();if(!Array.isArray(TASKS))TASKS=[];}catch(e){TASKS=[];}
   const names=[...new Set(TASKS.map(t=>t.assignee_name).filter(Boolean))];const fa=document.getElementById('flAssignee'),cur=fa.value;
   fa.innerHTML='<option value="">全部负责人</option>'+names.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
-  renderStats();renderBoard();renderCalendar();
+  renderStats();renderBoard();renderCalendar();renderReport();
 }
 function groupKey(t){return t.is_external?('ext:'+t.external_group_id):t.group_chat_id;}
 function groupName(t){return t.is_external?(EGMAP[t.external_group_id]||'外部群'):(GMAP[t.group_chat_id]?.name||'');}
@@ -236,7 +256,7 @@ function filtered(){const g=document.getElementById('flGroup').value,a=document.
   return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||t.status===s)&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
 function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=STATUS.map(s=>`<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${list.filter(t=>t.status===s.k).length}</span></h3><div>${list.filter(t=>t.status===s.k).map(tcard).join('')||'<div class="muted">暂无</div>'}</div></div>`).join('');}
 function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.priority}</span>`:'';const who=t.assignee_name?`<span class="who">👤 ${esc(t.assignee_name)}</span>`:'';
-  const dl=t.deadline?`<span>📅 ${t.deadline}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
+  const dl=t.deadline?`<span>📅 ${dlText(t.deadline)}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
   const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">外部</span>':''}</div>`:'';
   const rsn=(t.status==='issue'&&t.result)?`<div class="rsn">💬 ${esc(t.result)}</div>`:'';
   return `<div class="tcard ${overdue(t)?'over':''}" onclick="openTask(${t.id})"><div class="tt">#${t.id} ${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
@@ -258,7 +278,7 @@ async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
     <div class="thread" id="mThread"><div class="muted" style="padding:6px">加载中…</div></div>
     <div class="replybar"><input id="mReply" placeholder="回复负责人…" onkeydown="if(event.key==='Enter')postComment(${t.id})"><button class="btn sm" onclick="postComment(${t.id})">发送</button></div>
     <label style="font-size:12.5px;color:var(--soft);font-weight:600">手动设置状态</label><div class="stbtns">${stb}</div>
-    <div class="row2"><div class="field"><label>截止日期</label><input id="mDeadline" type="date" value="${t.deadline||''}"></div>
+    <div class="row2"><div class="field"><label>截止日期${TZLABEL?'（'+esc(TZLABEL)+'）':''}</label><input id="mDeadline" type="date" value="${t.deadline||''}"></div>
     <div class="field"><label>优先级</label><select id="mPriority">${['高','中','低'].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}</select></div></div>
     ${reassign}
     <div class="acts"><button class="btn sm" onclick="saveTask(${t.id})">💾 保存修改</button>
@@ -298,6 +318,36 @@ function exportCSV(){const rows=[['ID','标题','状态','优先级','负责人'
   filtered().forEach(t=>rows.push([t.id,t.title||'',sn[t.status]||t.status,t.priority||'',t.assignee_name||'',t.deadline||'',groupName(t),t.is_external?'外部':'内部',t.detail||'',t.note||'',t.result||'']));
   const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='任务导出.csv';a.click();}
+
+// ---- 报表 / 日历订阅 ----
+function daysBetween(a,b){const x=new Date(a),y=new Date(b);if(isNaN(x)||isNaN(y))return null;return Math.max(0,Math.round((y-x)/86400000));}
+function reportRows(){const byP={};TASKS.forEach(t=>{const n=t.assignee_name||'(未指定)';(byP[n]=byP[n]||[]).push(t);});
+  return Object.entries(byP).map(([name,ts])=>{const done=ts.filter(t=>t.status==='done');
+    const onTime=done.filter(t=>!t.deadline||(t.updated_at&&t.updated_at.slice(0,10)<=t.deadline)).length;
+    const rate=done.length?Math.round(onTime/done.length*100):null;
+    const durs=done.map(t=>daysBetween(t.created_at,t.updated_at)).filter(x=>x!=null);
+    const avg=durs.length?(durs.reduce((a,b)=>a+b,0)/durs.length):null;
+    return {name,total:ts.length,done:done.length,onTime,rate,overdueN:ts.filter(overdue).length,avg};}).sort((a,b)=>b.total-a.total);}
+function rateCls(r){return r==null?'':(r>=90?'good':(r>=70?'mid':'bad'));}
+function renderReport(){const body=document.getElementById('reportBody');if(!body)return;
+  const tot=TASKS.length,done=TASKS.filter(t=>t.status==='done').length,over=TASKS.filter(overdue).length;
+  const allOn=TASKS.filter(t=>t.status==='done'&&(!t.deadline||(t.updated_at&&t.updated_at.slice(0,10)<=t.deadline))).length;
+  const orate=done?Math.round(allOn/done*100)+'%':'—';
+  document.getElementById('reportTiles').innerHTML=[['总任务',tot,''],['已完成',done,''],['按时率',orate,''],['超期',over,'over']].map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  const rows=reportRows();
+  body.innerHTML=rows.length?`<table class="rtable"><thead><tr><th>负责人</th><th>总数</th><th>已完成</th><th>按时完成</th><th>按时率</th><th>超期</th><th>平均用时(天)</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="name">${esc(r.name)}</td><td>${r.total}</td><td>${r.done}</td><td>${r.onTime}</td><td>${r.rate==null?'—':`<span class="rate ${rateCls(r.rate)}">${r.rate}%</span>`}</td><td>${r.overdueN}</td><td>${r.avg==null?'—':r.avg.toFixed(1)}</td></tr>`).join('')}</tbody></table>`:'<div class="muted">还没有任务数据</div>';}
+function exportReport(){const rows=reportRows();const head=['负责人','总数','已完成','按时完成','按时率','超期','平均用时(天)'];
+  const data=rows.map(r=>[r.name,r.total,r.done,r.onTime,r.rate==null?'':r.rate+'%',r.overdueN,r.avg==null?'':r.avg.toFixed(1)]);
+  const csv='﻿'+[head,...data].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='团队周报.csv';a.click();}
+function calSubscribe(){const url=location.origin+'/calendar.ics?pw='+encodeURIComponent(PW);
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
+    <h3>📅 订阅任务日历</h3><div class="mid">把所有任务的截止日期同步进你的日历（Google / Apple / 飞书日历），到点自动提醒。</div>
+    <div class="tip">用法：复制下面链接 → 打开日历 App → “添加日历 / 从网址订阅” → 粘贴。以后新派的任务会自动出现，无需重复添加。</div>
+    <div class="field"><label>订阅链接（含你的密码，请勿外发）</label><div style="display:flex;gap:6px"><input id="icsUrl" readonly value="${esc(url)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyIcs()">复制</button></div></div>
+    <div class="acts" style="margin-top:12px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
+  </div></div>`;}
+function copyIcs(){const el=document.getElementById('icsUrl');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ 链接已复制');}
 
 // ---- 外部群设置 ----
 async function openExtSettings(){
