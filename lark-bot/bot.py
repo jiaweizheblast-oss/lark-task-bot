@@ -172,8 +172,7 @@ def handle_dm(sender_open_id, dm_chat_id, text):
         if mid:
             db.set_task_card(task_id, mid)
         db.clear_draft(sender_open_id)
-        tail = f"，截止 {deadline}" if deadline else ""
-        send_text(dm_chat_id, f"✅ 已派发到【{draft['chat_name']}】，负责人：{draft['assignee_name']}{tail}")
+        send_card(dm_chat_id, cards.dispatched_card(draft["chat_name"], draft["assignee_name"], title, deadline))
         return
 
     send_text(dm_chat_id, "发送 `新建任务` 开始派任务，或 `/help` 看用法。")
@@ -221,51 +220,55 @@ def on_user_added(data):
         print(f"[on_user_added] 出错: {e}")
 
 
+def card_resp(toast_type, content, card=None):
+    """构造卡片按钮的回复：一个 toast 提示 + 可选地把卡片替换成新的（Lark 推荐的更新方式）。"""
+    d = {"toast": {"type": toast_type, "content": content}}
+    if card is not None:
+        d["card"] = {"type": "raw", "data": card}
+    return P2CardActionTriggerResponse(d)
+
+
 def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
     try:
         operator = data.event.operator.open_id
         value = data.event.action.value or {}
         action = value.get("action")
-        message_id = data.event.context.open_message_id
 
-        # 派任务：选群 → 换成"选负责人"卡片
+        # 派任务：选群 → 直接把卡片换成"选负责人"
         if action == "pick_group":
             if not db.is_admin(operator):
-                return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "只有管理员能派任务"}})
+                return card_resp("error", "只有管理员能派任务")
             members = list_group_members(value.get("chat_id"))
-            if message_id:
-                patch_card(message_id, cards.person_select_card(value.get("chat_id"), value.get("chat_name"), members))
-            return P2CardActionTriggerResponse({"toast": {"type": "success", "content": "请选择负责人"}})
+            return card_resp("info", "请选择负责人",
+                             cards.person_select_card(value.get("chat_id"), value.get("chat_name"), members))
 
-        # 派任务：选负责人 → 存草稿，提示输入内容
+        # 派任务：选负责人 → 存草稿，把卡片换成"请输入任务内容"
         if action == "pick_person":
             if not db.is_admin(operator):
-                return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "只有管理员能派任务"}})
+                return card_resp("error", "只有管理员能派任务")
             db.set_draft(operator, value.get("chat_id"), value.get("chat_name"),
                          value.get("open_id"), value.get("name"))
-            if message_id:
-                patch_card(message_id, cards.draft_ready_card(value.get("chat_name"), value.get("name")))
-            return P2CardActionTriggerResponse({"toast": {"type": "success", "content": "请输入任务内容"}})
+            return card_resp("success", "已选负责人，请输入任务内容",
+                             cards.draft_ready_card(value.get("chat_name"), value.get("name")))
 
         # 任务卡片：完成 / 无法完成 / 跳过
         task_id = value.get("task_id")
         task = db.get_task(int(task_id)) if task_id else None
         if not task:
-            return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "任务不存在"}})
+            return card_resp("error", "任务不存在")
         if operator != task["assignee_open_id"]:
-            return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "只有该任务的负责人能操作"}})
+            return card_resp("error", "只有该任务的负责人能操作")
         new_status = {"done": "done", "unable": "unable", "skip": "skip"}.get(action)
         if not new_status:
-            return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "未知操作"}})
+            return card_resp("error", "未知操作")
         db.update_task_status(task["id"], new_status)
-        if message_id:
-            patch_card(message_id, cards.done_card(task["id"], task["title"], task["assignee_open_id"],
-                                                   new_status, task["deadline"], operator))
         toast = {"done": "已标记完成 ✅", "unable": "已记录：无法完成", "skip": "已跳过"}[new_status]
-        return P2CardActionTriggerResponse({"toast": {"type": "success", "content": toast}})
+        return card_resp("success", toast,
+                         cards.done_card(task["id"], task["title"], task["assignee_open_id"],
+                                         new_status, task["deadline"], operator))
     except Exception as e:
         print(f"[on_card_action] 出错: {e}")
-        return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "处理出错，请稍后再试"}})
+        return card_resp("error", "处理出错，请稍后再试")
 
 
 # ---------------- 启动（webhook / ws） ----------------
