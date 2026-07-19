@@ -227,6 +227,15 @@ def dispatched_card(chat_name, task):
                     "content": f"已发到群：{chat_name} · 负责人会收到 @ 和反馈按钮"}]}]}
 
 
+def nudge_card(task):
+    """催办提醒卡片（网页/看板点催办时发到群里）。"""
+    dl = f"，截止 {task['deadline']}" if task.get("deadline") else ""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "⏰ 催办提醒"}},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                "content": f"{_at(task['assignee_open_id'])} 任务 #{task['id']}【{task['title']}】请尽快处理{dl}。"}}]}
+
+
 def help_text():
     return (
         "**🤖 任务终端用法（私聊我操作）**\n"

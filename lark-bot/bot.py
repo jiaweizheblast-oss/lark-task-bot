@@ -460,6 +460,53 @@ def api_tasks_create():
     return jsonify({"ok": True, "task_id": task_id})
 
 
+@app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
+def api_task_delete(task_id):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    db.delete_task(task_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<int:task_id>", methods=["PATCH"])
+def api_task_patch(task_id):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    task = db.get_task(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    d = request.get_json(silent=True) or {}
+    fields = {}
+    if "deadline" in d:
+        fields["deadline"] = extract_deadline(d.get("deadline") or "")
+    if "priority" in d and (d.get("priority") or "").strip() in ("高", "中", "低"):
+        fields["priority"] = d["priority"].strip()
+    reassigned = bool(d.get("assignee_open_id"))
+    if reassigned:
+        fields["assignee_open_id"] = d["assignee_open_id"]
+        fields["assignee_name"] = d.get("assignee_name")
+        fields["status"] = "pending"      # 换人后重置为“待接受”
+    if fields:
+        db.update_task_fields(task_id, **fields)
+    task = db.get_task(task_id)
+    if reassigned:                        # 换人后向群里重发一张新卡片
+        mid = send_card(task["group_chat_id"], cards.new_task_card(task))
+        if mid:
+            db.update_task_fields(task_id, card_message_id=mid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<int:task_id>/nudge", methods=["POST"])
+def api_task_nudge(task_id):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    task = db.get_task(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    send_card(task["group_chat_id"], cards.nudge_card(task))
+    return jsonify({"ok": True})
+
+
 def main():
     if not APP_ID or not APP_SECRET:
         raise RuntimeError("缺少 APP_ID / APP_SECRET 环境变量")

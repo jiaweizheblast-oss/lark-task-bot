@@ -357,7 +357,8 @@ function renderCalendar(){
   for(let d=1;d<=days;d++){
     const ds=calY+'-'+String(calM+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
     const list=byDay[ds]||[];
-    const chips=list.slice(0,4).map(t=>`<div class="chip" style="background:${SC[t.status]||'#888'}" onclick="openTask(${t.id})" title="${esc(t.title)}">${esc(t.title)}</div>`).join('')
+    const chips=list.slice(0,4).map(t=>{const lbl=esc(t.title)+(t.assignee_name?' · '+esc(t.assignee_name):'');
+        return `<div class="chip" style="background:${SC[t.status]||'#888'}" onclick="openTask(${t.id})" title="${lbl}">${lbl}</div>`;}).join('')
       +(list.length>4?`<div class="grp">+${list.length-4}</div>`:'');
     html+=`<div class="cell ${ds===todayStr()?'today':''}"><div class="d">${d}</div>${chips}</div>`;
   }

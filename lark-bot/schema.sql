@@ -23,12 +23,14 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS groups (
     chat_id            TEXT PRIMARY KEY,        -- 飞书群唯一 ID
     name               TEXT,
+    external           BOOLEAN DEFAULT FALSE,   -- 是否外部群
     group_type         TEXT DEFAULT 'unknown',  -- internal_ops / vendor_group / candidate_group / unknown
     related_vendor_id  TEXT,
     default_owner_open_id TEXT,                 -- 升级时 @ 的内部负责人
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS external BOOLEAN DEFAULT FALSE;
 
 -- 任务表
 CREATE TABLE IF NOT EXISTS tasks (

@@ -163,6 +163,24 @@ def set_reminder_stage(task_id, stage):
                     (stage, task_id))
 
 
+def delete_task(task_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
+        return cur.rowcount > 0
+
+
+def update_task_fields(task_id, **fields):
+    """更新任务的若干字段（截止/优先级/负责人/状态/卡片ID）。"""
+    allowed = {"deadline", "priority", "assignee_open_id", "assignee_name", "status", "card_message_id"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    vals = list(sets.values()) + [task_id]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE tasks SET {cols}, updated_at=now() WHERE id=%s", vals)
+
+
 def list_tasks(limit=300):
     """列出最近的任务（网页看板用）。"""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
