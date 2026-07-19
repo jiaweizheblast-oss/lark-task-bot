@@ -52,7 +52,7 @@
   .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
   .toolbar select,.toolbar input{padding:7px 10px;border:1px solid var(--lineS);border-radius:9px;background:var(--panel);outline:none;font-size:13px}
   .toolbar input.search{flex:1;min-width:150px} .toolbar .sp{flex:1}
-  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px} @media(max-width:900px){.board{grid-template-columns:repeat(2,1fr)}} @media(max-width:560px){.board{grid-template-columns:1fr}}
+  .board{display:grid;grid-template-columns:repeat(5,1fr);gap:12px} @media(max-width:1200px){.board{grid-template-columns:repeat(3,1fr)}} @media(max-width:820px){.board{grid-template-columns:repeat(2,1fr)}} @media(max-width:540px){.board{grid-template-columns:1fr}}
   .col{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px;min-height:120px}
   .col h3{margin:2px 4px 10px;font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
   .col h3 .dot{width:9px;height:9px;border-radius:50%} .col h3 .cnt{margin-left:auto;color:var(--soft);font-weight:600;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:1px 8px}
@@ -154,7 +154,7 @@
       <div class="toolbar">
         <select id="flGroup" onchange="renderBoard()"><option value="">全部群</option></select>
         <select id="flAssignee" onchange="renderBoard()"><option value="">全部负责人</option></select>
-        <select id="flStatus" onchange="renderBoard()"><option value="">全部状态</option><option value="pending">待接受</option><option value="accepted">进行中</option><option value="done">已完成</option><option value="issue">待沟通</option></select>
+        <select id="flStatus" onchange="renderBoard()"><option value="">全部状态</option><option value="pending">待接受</option><option value="accepted">进行中</option><option value="done">已完成</option><option value="issue">待沟通</option><option value="overdue">已超期</option></select>
         <input class="search" id="flSearch" placeholder="🔍 搜索任务…" oninput="renderBoard()">
         <div class="sp"></div>
         <button class="btn ghost sm" onclick="exportCSV()">⬇ 导出</button>
@@ -191,6 +191,7 @@ let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return '你当地约 '+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"},{k:"issue",n:"待沟通",c:"var(--s-issue)"}];
+const BOARDCOLS=STATUS.concat([{k:"overdue",n:"🔴 已超期",c:"var(--danger)"}]);   // 超期单独一列，排最后
 const SC={pending:"var(--s-pending)",accepted:"var(--s-accepted)",done:"var(--s-done)",issue:"var(--s-issue)"};
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const val=id=>document.getElementById(id).value.trim();
@@ -253,14 +254,14 @@ async function loadTasks(){
 function groupKey(t){return t.is_external?('ext:'+t.external_group_id):t.group_chat_id;}
 function groupName(t){return t.is_external?(EGMAP[t.external_group_id]||'外部群'):(GMAP[t.group_chat_id]?.name||'');}
 function overdue(t){return t.deadline&&(t.status==='pending'||t.status==='accepted')&&t.deadline<todayStr();}
-function renderStats(){const by=k=>TASKS.filter(t=>t.status===k).length;const over=TASKS.filter(overdue).length;
-  const tiles=[['总数',TASKS.length,''],['待接受',by('pending'),''],['进行中',by('accepted'),''],['已完成',by('done'),''],['待沟通',by('issue'),''],['已超期',over,'over']];
+function renderStats(){const by=k=>TASKS.filter(t=>t.status===k).length;const nover=k=>TASKS.filter(t=>t.status===k&&!overdue(t)).length;const over=TASKS.filter(overdue).length;
+  const tiles=[['总数',TASKS.length,''],['待接受',nover('pending'),''],['进行中',nover('accepted'),''],['已完成',by('done'),''],['待沟通',by('issue'),''],['已超期',over,'over']];
   document.getElementById('stats').innerHTML=tiles.map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');}
 function filtered(){const g=document.getElementById('flGroup').value,a=document.getElementById('flAssignee').value,s=document.getElementById('flStatus').value,q=document.getElementById('flSearch').value.trim().toLowerCase();
-  return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||t.status===s)&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
-function sortInCol(a,b){const oa=overdue(a)?1:0,ob=overdue(b)?1:0;if(oa!==ob)return oa-ob;  // 非超期在前，超期沉到底
-  const da=a.deadline||'9999-99-99',db2=b.deadline||'9999-99-99';return da<db2?-1:(da>db2?1:0);}    // 再按截止早的在前
-function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=STATUS.map(s=>{const items=list.filter(t=>t.status===s.k).sort(sortInCol);
+  return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||(s==='overdue'?overdue(t):t.status===s))&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
+function sortInCol(a,b){const da=a.deadline||'9999-99-99',db2=b.deadline||'9999-99-99';return da<db2?-1:(da>db2?1:0);}  // 截止早的在前
+function colItems(list,k){return k==='overdue'?list.filter(overdue):list.filter(t=>t.status===k&&!overdue(t));}  // 超期的挪到“已超期”列，不再混在原状态里
+function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=BOARDCOLS.map(s=>{const items=colItems(list,s.k).sort(sortInCol);
   return `<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${items.length}</span></h3><div>${items.map(tcard).join('')||'<div class="muted">暂无</div>'}</div></div>`;}).join('');}
 function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.priority}</span>`:'';const who=t.assignee_name?`<span class="who">👤 ${esc(t.assignee_name)}</span>`:'';
   const dl=t.deadline?`<span>📅 ${dlText(t.deadline)}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
