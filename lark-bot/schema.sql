@@ -64,8 +64,17 @@ CREATE TABLE IF NOT EXISTS drafts (
     chat_name         TEXT,
     assignee_open_id  TEXT,                    -- 选中的负责人
     assignee_name     TEXT,
+    stage             TEXT,                    -- 逐步问答进度：title/detail/note/pridl
+    title             TEXT,
+    detail            TEXT,
+    note              TEXT,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 已有部署补列（幂等）
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS stage  TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS title  TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS detail TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS note   TEXT;
 
 -- 给定时任务扫描用的索引（按状态 + 截止日期查）
 CREATE INDEX IF NOT EXISTS idx_tasks_status_deadline ON tasks (status, deadline);

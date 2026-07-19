@@ -147,6 +147,53 @@ def sync_chat_members(chat_id):
 
 
 # ---------------- 私聊终端命令 ----------------
+def handle_task_wizard(sender_open_id, dm_chat_id, text, draft):
+    """派任务逐步问答：标题 → 详情 → 注意事项 → 优先级+截止。"""
+    ans = text.strip()
+    skip = ans in ("无", "跳过", "没有", "none", "-")
+    stage = draft.get("stage")
+
+    if stage == "title":
+        if not ans or skip:
+            send_text(dm_chat_id, "任务标题不能为空，请输入 **任务标题**：")
+            return
+        db.update_draft(sender_open_id, title=ans, stage="detail")
+        send_text(dm_chat_id, "好的。**详情 / 安排**？（具体怎么做、分几步、交付什么；没有就发「无」）")
+        return
+
+    if stage == "detail":
+        db.update_draft(sender_open_id, detail=(None if skip else ans), stage="note")
+        send_text(dm_chat_id, "**注意事项**？（要注意的点、验收标准、易踩的坑；没有就发「无」）")
+        return
+
+    if stage == "note":
+        db.update_draft(sender_open_id, note=(None if skip else ans), stage="pridl")
+        send_text(dm_chat_id, "最后，**优先级和截止日期**？例如「高 2026-07-25」（可只发其一，或发「无」）")
+        return
+
+    if stage == "pridl":
+        priority = "中"
+        for p in ("高", "中", "低"):
+            if p in ans:
+                priority = p
+                break
+        deadline = None if skip else extract_deadline(ans)
+        task_id = db.create_task(draft.get("title") or "（无标题）", draft["assignee_open_id"], draft["chat_id"],
+                                 deadline=deadline, created_by_open_id=sender_open_id,
+                                 assignee_name=draft.get("assignee_name"),
+                                 detail=draft.get("detail"), note=draft.get("note"), priority=priority)
+        task = db.get_task(task_id)
+        mid = send_card(draft["chat_id"], cards.new_task_card(task))
+        if mid:
+            db.set_task_card(task_id, mid)
+        db.clear_draft(sender_open_id)
+        send_card(dm_chat_id, cards.dispatched_card(draft["chat_name"], task))
+        return
+
+    db.clear_draft(sender_open_id)
+    send_text(dm_chat_id, "发送 `新建任务` 重新开始。")
+
+
 def handle_dm(sender_open_id, dm_chat_id, text):
     low = text.strip()
 
@@ -174,6 +221,12 @@ def handle_dm(sender_open_id, dm_chat_id, text):
             return
         groups = list_bot_groups()
         send_card(dm_chat_id, cards.group_select_card(groups))
+        return
+
+    # 逐步问答进行中 → 把这条文本当成对当前问题的回答
+    draft = db.get_draft(sender_open_id)
+    if draft and draft.get("stage"):
+        handle_task_wizard(sender_open_id, dm_chat_id, text, draft)
         return
 
     send_text(dm_chat_id, "发送 `新建任务` 开始派任务，或 `/help` 看用法。")
@@ -243,44 +296,19 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             return card_resp("info", "请选择负责人",
                              cards.person_select_card(value.get("chat_id"), value.get("chat_name"), members))
 
-        # 派任务：选负责人 → 弹出"填写任务详情"表单
+        # 派任务：选负责人 → 开始"逐步问答"（第一步问标题）
         if action == "pick_person":
             if not db.is_admin(operator):
                 return card_resp("error", "只有管理员能派任务")
-            return card_resp("success", "请填写任务详情",
-                             cards.create_form_card(value.get("chat_id"), value.get("chat_name"),
-                                                    value.get("open_id"), value.get("name")))
+            db.set_draft(operator, value.get("chat_id"), value.get("chat_name"),
+                         value.get("open_id"), value.get("name"), stage="title")
+            dm_chat = data.event.context.open_chat_id
+            if dm_chat:
+                send_text(dm_chat, f"开始给【{value.get('name')}】派任务。\n请先输入 **任务标题**：")
+            return card_resp("success", "开始填写",
+                             cards.picked_card(value.get("chat_name"), value.get("name")))
 
-        # 提交派发表单 → 建任务并发到群
-        if action == "create_task":
-            if not db.is_admin(operator):
-                return card_resp("error", "只有管理员能派任务")
-            fv = getattr(data.event.action, "form_value", None)
-            if isinstance(fv, str):
-                try:
-                    fv = json.loads(fv)
-                except Exception:
-                    fv = {}
-            fv = fv if isinstance(fv, dict) else {}
-            title = (fv.get("title") or "").strip()
-            if not title:
-                return card_resp("error", "请填写任务标题后再提交")
-            detail = (fv.get("detail") or "").strip() or None
-            note = (fv.get("note") or "").strip() or None
-            pr = (fv.get("priority") or "").strip()
-            priority = pr if pr in ("高", "中", "低") else "中"
-            deadline = extract_deadline(fv.get("deadline") or "")
-            chat_id, chat_name = value.get("chat_id"), value.get("chat_name")
-            task_id = db.create_task(title, value.get("open_id"), chat_id, deadline=deadline,
-                                     created_by_open_id=operator, assignee_name=value.get("name"),
-                                     detail=detail, note=note, priority=priority)
-            task = db.get_task(task_id)
-            mid = send_card(chat_id, cards.new_task_card(task))
-            if mid:
-                db.set_task_card(task_id, mid)
-            return card_resp("success", "已派发 ✅", cards.dispatched_card(chat_name, task))
-
-        # 任务生命周期：接受 / 完成 / 有问题 / 提交原因
+        # 任务生命周期：接受 / 完成 / 有问题 / 选择原因
         task_id = value.get("task_id")
         task = db.get_task(int(task_id)) if task_id else None
         if not task:
@@ -299,21 +327,14 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             return card_resp("success", "已完成 🎉", cards.final_card(task, "done", operator))
 
         if action == "raise":
-            return card_resp("info", "请填写原因后提交", cards.reason_form_card(task))
+            return card_resp("info", "请选择原因", cards.reason_buttons_card(task))
 
-        if action == "submit_issue":
-            fv = getattr(data.event.action, "form_value", None)
-            if isinstance(fv, str):
-                try:
-                    fv = json.loads(fv)
-                except Exception:
-                    fv = {}
-            reason = (fv.get("reason") if isinstance(fv, dict) else "") or ""
-            reason = reason.strip()
+        if action == "issue_reason":
+            reason = value.get("reason") or "未说明"
             db.update_task_status(task["id"], "issue", result=reason)
             who = task.get("assignee_name") or "负责人"
             notify_publisher(task, f"⚠️ {who} 对任务 #{task['id']}【{task['title']}】反馈：\n"
-                                   f"「{reason or '（未填写）'}」\n"
+                                   f"「{reason}」\n"
                                    f"请沟通处理（可在群里回复，或用『新建任务』重新派发）。")
             return card_resp("success", "已提交给发布者 ✅",
                              cards.final_card(task, "issue", operator, reason=reason))

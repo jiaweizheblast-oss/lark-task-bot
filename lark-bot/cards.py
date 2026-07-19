@@ -71,6 +71,15 @@ def create_form_card(chat_id, chat_name, assignee_open_id, assignee_name):
             ]}
 
 
+def picked_card(chat_name, assignee_name):
+    """选好群+人后，私聊里显示的引导卡片（逐步问答开始）。"""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "✍️ 新建任务"}},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                "content": f"群：**{chat_name}** · 负责人：**{assignee_name}**\n\n"
+                           f"请在下方对话框**逐条回答**我的提问（标题 → 详情 → 注意事项 → 优先级和截止）。"}}]}
+
+
 def new_task_card(task):
     """刚派发：负责人可【接受任务】或【无法完成/有问题】。task 为任务字典。"""
     return {"config": {"wide_screen_mode": True},
@@ -100,20 +109,25 @@ def accepted_card(task):
             ]}
 
 
-def reason_form_card(task):
-    """让负责人填写原因/想法，提交后通知发布者商量。"""
+REASON_OPTIONS = [
+    ("⏰ 时间来不及，想延期", "时间来不及，想延期"),
+    ("❓ 需要更多信息 / 说明", "需要更多信息或说明"),
+    ("🙅 可能不太适合我", "可能不太适合我，建议换人"),
+    ("💬 其他，想当面沟通", "其他，想当面沟通"),
+]
+
+
+def reason_buttons_card(task):
+    """负责人点“有问题”后，展示预设原因按钮（点一个即通知发布者）。"""
+    actions = [{"tag": "action", "actions": [
+        _btn(label, {"action": "issue_reason", "task_id": str(task["id"]), "reason": reason}, "default")]}
+        for label, reason in REASON_OPTIONS]
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "✋ 说明情况"}},
+            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "✋ 选择原因"}},
             "elements": [
                 _task_detail_block(task),
-                {"tag": "form", "name": "issue_form", "elements": [
-                    _input("reason", "原因 / 你的想法：", "例如：时间来不及，能否延到下周？", 300),
-                    {"tag": "action", "actions": [
-                        {"tag": "button", "action_type": "form_submit", "name": "submit",
-                         "text": {"tag": "plain_text", "content": "提交给发布者"}, "type": "primary",
-                         "value": {"action": "submit_issue", "task_id": str(task["id"])}}]},
-                ]},
-            ]}
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**请选择原因（会通知发布者一起商量）：**"}},
+            ] + actions}
 
 
 def final_card(task, status, operator_open_id=None, reason=None):

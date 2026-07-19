@@ -176,16 +176,30 @@ def tasks_still_open():
 
 # ---------------- 草稿（私聊派任务的中间状态） ----------------
 
-def set_draft(admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name):
+def set_draft(admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name, stage="title"):
+    """开始一个新草稿（选好群+人，准备逐步问答）。"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO drafts (admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name, updated_at)
-            VALUES (%s,%s,%s,%s,%s, now())
+            INSERT INTO drafts (admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name,
+                                stage, title, detail, note, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s, NULL, NULL, NULL, now())
             ON CONFLICT (admin_open_id) DO UPDATE SET
                 chat_id=EXCLUDED.chat_id, chat_name=EXCLUDED.chat_name,
                 assignee_open_id=EXCLUDED.assignee_open_id, assignee_name=EXCLUDED.assignee_name,
-                updated_at=now()
-        """, (admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name))
+                stage=EXCLUDED.stage, title=NULL, detail=NULL, note=NULL, updated_at=now()
+        """, (admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name, stage))
+
+
+def update_draft(admin_open_id, **fields):
+    """更新草稿的某些字段（stage/title/detail/note）。"""
+    allowed = {"stage", "title", "detail", "note"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    vals = list(sets.values()) + [admin_open_id]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE drafts SET {cols}, updated_at=now() WHERE admin_open_id=%s", vals)
 
 
 def get_draft(admin_open_id):
