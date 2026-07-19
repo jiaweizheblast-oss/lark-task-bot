@@ -123,6 +123,7 @@
       <button id="tab-report" onclick="showTab('report')">报表</button>
     </div>
     <div class="sp"></div>
+    <button class="btn ghost sm" onclick="openReminderSettings()">🔔 提醒</button>
     <button class="btn ghost sm" onclick="openExtSettings()">⚙️ 外部群</button>
     <button class="btn ghost sm" onclick="logout()">退出</button>
   </header>
@@ -186,7 +187,7 @@
 <div id="toast"></div>
 
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return '你当地约 '+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"},{k:"issue",n:"待沟通",c:"var(--s-issue)"}];
@@ -204,7 +205,7 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
   const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();loadTasks();}
-async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;}catch(e){TZLABEL='';TZOFF=null;}}
+async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
 function showTab(t){['create','board','cal','report'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();}
 
 async function loadExternalGroups(){try{const gs=await(await api('/api/external-groups')).json();EGROUPS=Array.isArray(gs)?gs:[];EGMAP={};EGROUPS.forEach(g=>EGMAP[g.id]=g.name);}catch(e){EGROUPS=[];}}
@@ -257,7 +258,10 @@ function renderStats(){const by=k=>TASKS.filter(t=>t.status===k).length;const ov
   document.getElementById('stats').innerHTML=tiles.map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');}
 function filtered(){const g=document.getElementById('flGroup').value,a=document.getElementById('flAssignee').value,s=document.getElementById('flStatus').value,q=document.getElementById('flSearch').value.trim().toLowerCase();
   return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||t.status===s)&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
-function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=STATUS.map(s=>`<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${list.filter(t=>t.status===s.k).length}</span></h3><div>${list.filter(t=>t.status===s.k).map(tcard).join('')||'<div class="muted">暂无</div>'}</div></div>`).join('');}
+function sortInCol(a,b){const oa=overdue(a)?1:0,ob=overdue(b)?1:0;if(oa!==ob)return oa-ob;  // 非超期在前，超期沉到底
+  const da=a.deadline||'9999-99-99',db2=b.deadline||'9999-99-99';return da<db2?-1:(da>db2?1:0);}    // 再按截止早的在前
+function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=STATUS.map(s=>{const items=list.filter(t=>t.status===s.k).sort(sortInCol);
+  return `<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${items.length}</span></h3><div>${items.map(tcard).join('')||'<div class="muted">暂无</div>'}</div></div>`;}).join('');}
 function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.priority}</span>`:'';const who=t.assignee_name?`<span class="who">👤 ${esc(t.assignee_name)}</span>`:'';
   const dl=t.deadline?`<span>📅 ${dlText(t.deadline)}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
   const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">外部</span>':''}</div>`:'';
@@ -355,6 +359,27 @@ function calSubscribe(){const url=location.origin+'/calendar.ics?pw='+encodeURIC
     <div class="acts" style="margin-top:12px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
   </div></div>`;}
 function copyIcs(){const el=document.getElementById('icsUrl');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ 链接已复制');}
+
+// ---- 提醒设置 ----
+async function openReminderSettings(){let s={};try{s=await(await api('/api/settings')).json();}catch(e){s={};}
+  const chk=(k,label,desc)=>`<label style="display:flex;align-items:flex-start;gap:9px;padding:9px 2px;border-bottom:1px solid var(--line);cursor:pointer"><input type="checkbox" id="rs_${k}" ${s[k]?'checked':''} style="margin-top:2px;width:16px;height:16px;flex:none"><span><div style="font-weight:600;font-size:13.5px">${label}</div><div style="font-size:11.5px;color:var(--soft);line-height:1.5">${desc}</div></span></label>`;
+  const hol=(s.holidays||[]).join('\n');
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
+    <h3>🔔 提醒设置</h3><div class="mid">控制系统什么时候自动发到期提醒。提醒统一在每天早上 ${WORKSTART} 点（${esc(TZLABEL||'公司时区')}）发，不会半夜打扰。</div>
+    ${chk('enabled','自动提醒总开关','关掉后，系统不再自动发任何到期提醒（你仍可在看板里手动催办）')}
+    <div style="font-size:12px;color:var(--soft);margin:12px 0 2px;font-weight:600">发送哪几档提醒</div>
+    ${chk('tier_before','截止前一天','到期前一天提醒负责人')}
+    ${chk('tier_today','当天到期','截止当天提醒')}
+    ${chk('tier_over','已超期','过了截止日还没完成时提醒（含升级给内部负责人）')}
+    <div style="font-size:12px;color:var(--soft);margin:12px 0 2px;font-weight:600">什么时候不发</div>
+    ${chk('skip_weekends','周末不发（周六、周日）','放假不打扰')}
+    <div class="field" style="margin-top:10px"><label>节假日不发（每行填一个日期，格式 2026-08-15）</label><textarea id="rs_holidays" placeholder="2026-08-15&#10;2026-10-02" style="min-height:60px">${esc(hol)}</textarea></div>
+    <button class="btn wide" onclick="saveReminderSettings()">保存设置</button><div class="err" id="rsErr"></div>
+    <div class="acts" style="margin-top:10px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
+  </div></div>`;}
+async function saveReminderSettings(){const g=k=>document.getElementById('rs_'+k).checked;
+  const body={enabled:g('enabled'),tier_before:g('tier_before'),tier_today:g('tier_today'),tier_over:g('tier_over'),skip_weekends:g('skip_weekends'),holidays:document.getElementById('rs_holidays').value};
+  try{await api('/api/settings',{method:'POST',body:JSON.stringify(body)});toast('✅ 提醒设置已保存');closeModal();}catch(e){document.getElementById('rsErr').textContent='保存失败，请重试';}}
 
 // ---- 外部群设置 ----
 async function openExtSettings(){

@@ -164,6 +164,20 @@ def list_comments(task_id):
         return cur.fetchall()
 
 
+# ---------------- 系统设置（键值对） ----------------
+
+def get_settings():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT key, value FROM settings")
+        return {r["key"]: r["value"] for r in cur.fetchall()}
+
+
+def set_setting(key, value):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO settings (key, value) VALUES (%s,%s)
+                       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value""", (key, str(value)))
+
+
 # ---------------- 外部群（webhook）配置 ----------------
 
 def list_external_groups():

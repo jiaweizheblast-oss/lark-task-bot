@@ -152,14 +152,48 @@ def _remind_external(t, stage):
     return push_to_webhook(eg["webhook_url"], cards.external_reminder_card(stage, t, url))
 
 
+def _reminder_settings():
+    """读取提醒设置（带默认值）：默认开启、三档全开、跳过周末、无节假日。"""
+    try:
+        s = db.get_settings()
+    except Exception:
+        s = {}
+
+    def on(k, default_true):
+        return s.get(k, "1" if default_true else "0") == "1"
+
+    raw = (s.get("rm_holidays", "") or "").replace("\n", ",").replace("，", ",")
+    holidays = [x.strip() for x in raw.split(",") if x.strip()]
+    return {
+        "enabled": on("rm_enabled", True),
+        "tier_before": on("rm_before", True),   # 截止前一天
+        "tier_today": on("rm_today", True),      # 当天到期
+        "tier_over": on("rm_over", True),        # 已超期
+        "skip_weekends": on("rm_skip_weekends", True),
+        "holidays": holidays,
+    }
+
+
 def run_reminders():
-    """扫描未完成任务，按档位发到期提醒；内部群走机器人、外部群走 webhook；每档只发一次。"""
-    today = _company_now().date()
+    """扫描未完成任务，按设置发到期提醒；内部群走机器人、外部群走 webhook；每档只发一次。"""
+    cfg = _reminder_settings()
+    now = _company_now()
+    today = now.date()
+    if not cfg["enabled"]:
+        print("[reminder] 自动提醒已关闭，跳过")
+        return 0
+    if cfg["skip_weekends"] and now.weekday() >= 5:      # 5=周六 6=周日
+        print(f"[reminder] {today} 周末，跳过")
+        return 0
+    if today.isoformat() in cfg["holidays"]:
+        print(f"[reminder] {today} 节假日，跳过")
+        return 0
+    tier_on = {"due_tomorrow": cfg["tier_before"], "due_today": cfg["tier_today"], "escalated": cfg["tier_over"]}
     tasks = db.tasks_still_open()
     sent = 0
     for t in tasks:
         stage = overdue_stage(t["deadline"], today, ESCALATE_DAYS, t.get("last_reminder_stage") or "")
-        if not stage:
+        if not stage or not tier_on.get(stage, True):
             continue
         ok = _remind_external(t, stage) if t.get("is_external") else _remind_internal(t, stage)
         if ok:
@@ -543,6 +577,31 @@ def api_config():
                     "work_start": WORK_START, "work_end": WORK_END})
 
 
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(_reminder_settings())
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_set():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    mapping = {"enabled": "rm_enabled", "tier_before": "rm_before", "tier_today": "rm_today",
+               "tier_over": "rm_over", "skip_weekends": "rm_skip_weekends"}
+    for jk, dk in mapping.items():
+        if jk in d:
+            db.set_setting(dk, "1" if d[jk] else "0")
+    if "holidays" in d:
+        hol = d["holidays"]
+        if isinstance(hol, list):
+            hol = ",".join(str(x).strip() for x in hol if str(x).strip())
+        db.set_setting("rm_holidays", hol or "")
+    return jsonify({"ok": True, "settings": _reminder_settings()})
+
+
 @app.route("/api/tasks", methods=["GET"])
 def api_tasks_list():
     if not _panel_auth():
@@ -700,7 +759,7 @@ def api_comments_list(task_id):
     for c in db.list_comments(task_id):
         c = dict(c)
         if c.get("created_at") is not None:
-            c["created_at"] = c["created_at"].isoformat() if hasattr(c["created_at"], "isoformat") else str(c["created_at"])
+            c["created_at"] = _iso_utc(c["created_at"])
         out.append(c)
     return jsonify(out)
 
@@ -829,6 +888,16 @@ def _fmt_time(ts):
         return str(ts or "")
 
 
+def _iso_utc(ts):
+    """转成带时区的 ISO 字符串，让前端能按“查看者当地时区”显示（避免留言时间显示成 UTC）。"""
+    if not hasattr(ts, "isoformat"):
+        return str(ts or "")
+    s = ts.isoformat()
+    if getattr(ts, "tzinfo", None) is None:
+        s += "Z"      # 没带时区信息就按 UTC 处理
+    return s
+
+
 _SIDE_LABEL = {"publisher": "发布者", "assignee": "负责人", "system": ""}
 
 
@@ -840,7 +909,9 @@ def _thread_html(comments):
         side = c.get("author_side", "system")
         cls = {"publisher": "pub", "assignee": "asg", "system": "sys"}.get(side, "sys")
         name = c.get("author_name") or _SIDE_LABEL.get(side, "")
-        head = f"{_h(name)} · {_h(_fmt_time(c.get('created_at')))}" if side != "system" else _h(_fmt_time(c.get("created_at")))
+        ts = c.get("created_at")
+        timespan = f'<span class="ct" data-t="{_h(_iso_utc(ts))}">{_h(_fmt_time(ts))}</span>'
+        head = f"{_h(name)} · {timespan}" if side != "system" else timespan
         rows.append(f'<div class="cmt {cls}"><div class="cw">{head}</div><div>{_h(c.get("body",""))}</div></div>')
     return '<div class="sec">💬 沟通记录</div><div class="thread">' + "".join(rows) + "</div>"
 
@@ -882,7 +953,9 @@ def _status_html(task, flash=None, comments=None):
 {thread}
 {flash_html}
 <form method="post">{_status_actions(task)}</form>
-</div>{tz_script}</body></html>"""
+</div>{tz_script}
+<script>document.querySelectorAll('.ct').forEach(function(e){{var t=e.getAttribute('data-t');if(!t)return;var d=new Date(t);if(isNaN(d))return;e.textContent=d.toLocaleString([],{{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}});}});</script>
+</body></html>"""
 
 
 @app.route("/t/<token>", methods=["GET"])

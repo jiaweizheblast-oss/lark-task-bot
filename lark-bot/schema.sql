@@ -96,6 +96,12 @@ ALTER TABLE tasks ALTER COLUMN group_chat_id DROP NOT NULL;
 ALTER TABLE tasks ALTER COLUMN assignee_open_id DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_token ON tasks (token);
 
+-- 系统设置（键值对）：提醒开关、跳过周末、节假日等
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
+
 -- 任务留言 / 沟通时间线：发布者 ↔ 负责人 来回商量，都留痕（内部外部通用）
 CREATE TABLE IF NOT EXISTS task_comments (
     id           SERIAL PRIMARY KEY,
