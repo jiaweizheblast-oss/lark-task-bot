@@ -21,7 +21,7 @@ from lark_oapi.api.im.v1 import (
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger, P2CardActionTriggerResponse,
 )
-from flask import Flask
+from flask import Flask, request, jsonify
 from lark_oapi.adapter.flask import parse_req, parse_resp
 
 import db
@@ -38,6 +38,8 @@ ENCRYPT_KEY = os.environ.get("ENCRYPT_KEY", "")
 VERIFICATION_TOKEN = os.environ.get("VERIFICATION_TOKEN", "")
 MODE = os.environ.get("MODE", "webhook")
 PORT = int(os.environ.get("PORT", "8080"))
+PANEL_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "")       # 网页控制台的登录密码
+ADMIN_NOTIFY_OPEN_ID = os.environ.get("ADMIN_NOTIFY_OPEN_ID", "") # 网页派的任务，负责人反馈时通知谁（可选）
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -374,6 +376,88 @@ def webhook_event():
 @app.route("/webhook/card", methods=["POST"])
 def webhook_card():
     return parse_resp(_webhook_handler.do(parse_req()))
+
+
+# ---------------- 网页控制台（前端派任务 + 看板） ----------------
+def _panel_auth():
+    if not PANEL_PASSWORD:
+        return False
+    pw = request.headers.get("X-Auth", "") or request.args.get("pw", "")
+    return pw == PANEL_PASSWORD
+
+
+def _task_json(t):
+    t = dict(t)
+    for k in ("deadline", "created_at", "updated_at"):
+        if t.get(k) is not None:
+            t[k] = t[k].isoformat() if hasattr(t[k], "isoformat") else str(t[k])
+    return t
+
+
+@app.route("/panel")
+def panel_page():
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(here, "panel.html"), encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return f"panel.html 未找到: {e}", 500
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    d = request.get_json(silent=True) or {}
+    if PANEL_PASSWORD and d.get("password") == PANEL_PASSWORD:
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "密码不对，或后台未设置面板密码"}), 401
+
+
+@app.route("/api/groups")
+def api_groups():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(list_bot_groups())
+
+
+@app.route("/api/members")
+def api_members():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(list_group_members(request.args.get("chat_id", "")))
+
+
+@app.route("/api/tasks", methods=["GET"])
+def api_tasks_list():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify([_task_json(t) for t in db.list_tasks()])
+
+
+@app.route("/api/tasks", methods=["POST"])
+def api_tasks_create():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    title = (d.get("title") or "").strip()
+    chat_id = d.get("chat_id")
+    assignee = d.get("assignee_open_id")
+    if not title:
+        return jsonify({"error": "任务标题必填"}), 400
+    if not chat_id or not assignee:
+        return jsonify({"error": "请选择群和负责人"}), 400
+    pr = (d.get("priority") or "").strip()
+    priority = pr if pr in ("高", "中", "低") else "中"
+    deadline = extract_deadline(d.get("deadline") or "")
+    task_id = db.create_task(title, assignee, chat_id, deadline=deadline,
+                             created_by_open_id=(ADMIN_NOTIFY_OPEN_ID or None),
+                             assignee_name=d.get("assignee_name"),
+                             detail=(d.get("detail") or "").strip() or None,
+                             note=(d.get("note") or "").strip() or None, priority=priority)
+    task = db.get_task(task_id)
+    mid = send_card(chat_id, cards.new_task_card(task))
+    if mid:
+        db.set_task_card(task_id, mid)
+    return jsonify({"ok": True, "task_id": task_id})
 
 
 def main():

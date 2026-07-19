@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务控制台</title>
+<style>
+  :root{
+    --bg:#f6f7f9;--panel:#fff;--panel2:#fbfbfd;--ink:#1c2024;--soft:#5b636b;--line:#e7e9ec;--lineS:#d7dade;
+    --accent:#5b5bd6;--accentS:#eceafc;--ok:#16a34a;--okB:#e8f6ec;--warn:#c2740a;--warnB:#fdf1e3;--danger:#dc2626;
+    --p-hi:#dc2626;--p-mid:#c2740a;--p-lo:#16a34a;--shadow:0 1px 2px rgba(20,25,35,.05),0 4px 16px rgba(20,25,35,.06);
+  }
+  @media(prefers-color-scheme:dark){:root{
+    --bg:#0e1013;--panel:#171a1f;--panel2:#1c2026;--ink:#e6e8eb;--soft:#9aa2ab;--line:#262b31;--lineS:#333a42;
+    --accent:#8b8bf0;--accentS:#23233a;--ok:#4ade80;--okB:#16281c;--warn:#e5a44b;--warnB:#33280f;--danger:#f87171;
+    --p-hi:#f87171;--p-mid:#e5a44b;--p-lo:#4ade80;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.3);}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-size:15px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5}
+  input,select,textarea,button{font-family:inherit;font-size:14px;color:var(--ink)}
+  .hide{display:none!important}
+
+  /* login */
+  #login{min-height:100vh;display:grid;place-items:center;padding:20px}
+  .login-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);
+    padding:28px 26px;width:100%;max-width:360px;text-align:center}
+  .login-card h1{font-size:20px;margin:0 0 4px}
+  .login-card p{color:var(--soft);font-size:13px;margin:0 0 18px}
+  .field{text-align:left;margin-bottom:12px}
+  .field label{display:block;font-size:12.5px;color:var(--soft);margin-bottom:5px;font-weight:600}
+  .field input,.field select,.field textarea{width:100%;padding:9px 11px;border:1px solid var(--lineS);
+    border-radius:9px;background:var(--panel2);outline:none;transition:.15s}
+  .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--accent);background:var(--panel)}
+  .field textarea{resize:vertical;min-height:60px}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:9px;padding:10px 16px;font-weight:650;
+    cursor:pointer;transition:.15s;font-size:14px}
+  .btn:hover{filter:brightness(1.06)} .btn:disabled{opacity:.5;cursor:default}
+  .btn.wide{width:100%}
+  .btn.ghost{background:transparent;color:var(--soft);border:1px solid var(--line)}
+  .err{color:var(--danger);font-size:12.5px;margin-top:8px;min-height:16px}
+
+  /* app */
+  header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:14px;padding:11px 18px}
+  header .logo{font-weight:750;font-size:16px;letter-spacing:-.01em}
+  header .logo span{color:var(--accent)}
+  .tabs{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
+  .tabs button{border:0;background:transparent;color:var(--soft);font-weight:600;padding:6px 14px;border-radius:7px;cursor:pointer}
+  .tabs button.on{background:var(--accent);color:#fff}
+  header .sp{flex:1}
+  .wrap{max-width:1160px;margin:0 auto;padding:20px}
+
+  /* create form */
+  .form-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);
+    padding:22px 24px;max-width:640px;margin:0 auto}
+  .form-card h2{margin:0 0 4px;font-size:17px}
+  .form-card .sub{color:var(--soft);font-size:13px;margin:0 0 18px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:560px){.row2{grid-template-columns:1fr}}
+
+  /* board */
+  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  @media(max-width:900px){.board{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:560px){.board{grid-template-columns:1fr}}
+  .col{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px;min-height:120px}
+  .col h3{margin:2px 4px 10px;font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
+  .col h3 .dot{width:9px;height:9px;border-radius:50%}
+  .col h3 .cnt{margin-left:auto;color:var(--soft);font-weight:600;font-size:12px;background:var(--panel);
+    border:1px solid var(--line);border-radius:99px;padding:1px 8px}
+  .tcard{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:11px 12px;margin-bottom:9px;box-shadow:var(--shadow)}
+  .tcard .tt{font-weight:650;font-size:13.5px;margin-bottom:6px}
+  .tcard .meta{font-size:12px;color:var(--soft);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .tcard .who{color:var(--ink);font-weight:600}
+  .pri{font-size:11px;font-weight:750;border-radius:5px;padding:1px 6px}
+  .pri.高{color:#fff;background:var(--p-hi)} .pri.中{color:#fff;background:var(--p-mid)} .pri.低{color:#fff;background:var(--p-lo)}
+  .tcard .det{font-size:12px;color:var(--soft);margin-top:6px;white-space:pre-wrap}
+  .tcard .rsn{font-size:12px;color:var(--warn);background:var(--warnB);border-radius:7px;padding:5px 8px;margin-top:6px}
+  .muted{color:var(--soft);font-size:13px;text-align:center;padding:24px}
+
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;
+    background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13.5px;font-weight:600;
+    transition:.25s;pointer-events:none;z-index:50;box-shadow:var(--shadow)}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.err{background:var(--danger);color:#fff}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="login">
+  <div class="login-card">
+    <h1>🤖 任务控制台</h1>
+    <p>输入密码进入。派任务、看板都在这里。</p>
+    <div class="field">
+      <label>密码</label>
+      <input id="pw" type="password" placeholder="面板密码" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn wide" onclick="doLogin()">登录</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app" class="hide">
+  <header>
+    <div class="logo">🤖 任务<span>控制台</span></div>
+    <div class="tabs">
+      <button id="tabCreate" class="on" onclick="showTab('create')">派任务</button>
+      <button id="tabBoard" onclick="showTab('board')">看板</button>
+    </div>
+    <div class="sp"></div>
+    <button class="btn ghost" onclick="logout()">退出</button>
+  </header>
+
+  <div class="wrap">
+    <!-- 派任务 -->
+    <section id="viewCreate">
+      <div class="form-card">
+        <h2>派一个任务</h2>
+        <p class="sub">选群 → 选负责人 → 填详情 → 派发。机器人会去群里 @ 负责人。</p>
+        <div class="row2">
+          <div class="field">
+            <label>群 *</label>
+            <select id="fGroup" onchange="onGroup()"><option value="">加载中…</option></select>
+          </div>
+          <div class="field">
+            <label>负责人 *</label>
+            <select id="fAssignee"><option value="">先选群</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label>任务标题 *</label>
+          <input id="fTitle" placeholder="一句话说清要做什么">
+        </div>
+        <div class="field">
+          <label>详情 / 安排</label>
+          <textarea id="fDetail" placeholder="具体怎么做、分几步、交付什么"></textarea>
+        </div>
+        <div class="field">
+          <label>注意事项</label>
+          <textarea id="fNote" placeholder="要注意的点、验收标准、易踩的坑"></textarea>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>优先级</label>
+            <select id="fPriority"><option>中</option><option>高</option><option>低</option></select>
+          </div>
+          <div class="field">
+            <label>截止日期</label>
+            <input id="fDeadline" type="date">
+          </div>
+        </div>
+        <button class="btn wide" id="submitBtn" onclick="submitTask()">🚀 派发任务</button>
+        <div class="err" id="createErr"></div>
+      </div>
+    </section>
+
+    <!-- 看板 -->
+    <section id="viewBoard" class="hide">
+      <div style="display:flex;align-items:center;margin-bottom:14px;gap:10px">
+        <h2 style="margin:0;font-size:17px">任务看板</h2>
+        <button class="btn ghost" onclick="loadBoard()" style="padding:6px 12px">🔄 刷新</button>
+      </div>
+      <div class="board" id="board"></div>
+    </section>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let PW = "";
+const STATUS = [
+  {key:"pending",  name:"待接受", color:"#5b5bd6"},
+  {key:"accepted", name:"进行中", color:"#0d9488"},
+  {key:"done",     name:"已完成", color:"#16a34a"},
+  {key:"issue",    name:"待沟通", color:"#c2740a"},
+];
+
+function toast(msg, isErr){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='show'+(isErr?' err':'');
+  setTimeout(()=>t.className=t.className.replace('show',''),2200);
+}
+async function api(path, opts={}){
+  opts.headers = Object.assign({'X-Auth':PW,'Content-Type':'application/json'}, opts.headers||{});
+  const r = await fetch(path, opts);
+  if(r.status===401){ logout(); throw new Error('未授权'); }
+  return r;
+}
+
+async function doLogin(){
+  const pw = document.getElementById('pw').value;
+  document.getElementById('loginErr').textContent='';
+  try{
+    const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    if(!r.ok){ document.getElementById('loginErr').textContent='密码不对，或后台还没设置面板密码'; return; }
+    PW = pw; sessionStorage.setItem('pw', pw);
+    enterApp();
+  }catch(e){ document.getElementById('loginErr').textContent='连接失败，请稍后再试'; }
+}
+function logout(){ PW=''; sessionStorage.removeItem('pw'); document.getElementById('app').classList.add('hide'); document.getElementById('login').classList.remove('hide'); }
+function enterApp(){
+  document.getElementById('login').classList.add('hide');
+  document.getElementById('app').classList.remove('hide');
+  loadGroups();
+}
+function showTab(t){
+  document.getElementById('tabCreate').classList.toggle('on',t==='create');
+  document.getElementById('tabBoard').classList.toggle('on',t==='board');
+  document.getElementById('viewCreate').classList.toggle('hide',t!=='create');
+  document.getElementById('viewBoard').classList.toggle('hide',t!=='board');
+  if(t==='board') loadBoard();
+}
+
+async function loadGroups(){
+  try{
+    const r = await api('/api/groups'); const gs = await r.json();
+    const sel = document.getElementById('fGroup');
+    if(!Array.isArray(gs) || !gs.length){ sel.innerHTML='<option value="">（机器人还没进任何群）</option>'; return; }
+    sel.innerHTML = '<option value="">请选择群</option>' + gs.map(g=>
+      `<option value="${g.chat_id}" data-name="${escapeHtml(g.name)}">${g.external?'🌐':'🏠'} ${escapeHtml(g.name)}</option>`).join('');
+  }catch(e){}
+}
+async function onGroup(){
+  const sel = document.getElementById('fGroup');
+  const chatId = sel.value;
+  const asg = document.getElementById('fAssignee');
+  if(!chatId){ asg.innerHTML='<option value="">先选群</option>'; return; }
+  asg.innerHTML='<option value="">加载中…</option>';
+  try{
+    const r = await api('/api/members?chat_id='+encodeURIComponent(chatId)); const ms = await r.json();
+    if(!Array.isArray(ms) || !ms.length){ asg.innerHTML='<option value="">（群里没有其他人）</option>'; return; }
+    asg.innerHTML = '<option value="">请选择负责人</option>' + ms.map(m=>
+      `<option value="${m.open_id}" data-name="${escapeHtml(m.name)}">${escapeHtml(m.name)}</option>`).join('');
+  }catch(e){}
+}
+async function submitTask(){
+  const g = document.getElementById('fGroup');
+  const a = document.getElementById('fAssignee');
+  const payload = {
+    chat_id: g.value,
+    chat_name: g.selectedOptions[0]?.dataset.name || '',
+    assignee_open_id: a.value,
+    assignee_name: a.selectedOptions[0]?.dataset.name || '',
+    title: document.getElementById('fTitle').value.trim(),
+    detail: document.getElementById('fDetail').value.trim(),
+    note: document.getElementById('fNote').value.trim(),
+    priority: document.getElementById('fPriority').value,
+    deadline: document.getElementById('fDeadline').value,
+  };
+  const err = document.getElementById('createErr'); err.textContent='';
+  if(!payload.chat_id || !payload.assignee_open_id){ err.textContent='请选择群和负责人'; return; }
+  if(!payload.title){ err.textContent='请填写任务标题'; return; }
+  const btn = document.getElementById('submitBtn'); btn.disabled=true; btn.textContent='派发中…';
+  try{
+    const r = await api('/api/tasks',{method:'POST',body:JSON.stringify(payload)});
+    const j = await r.json();
+    if(j.ok){
+      toast('✅ 已派发到群，机器人已 @ 负责人');
+      ['fTitle','fDetail','fNote'].forEach(id=>document.getElementById(id).value='');
+      document.getElementById('fDeadline').value='';
+    }else{ err.textContent = j.error || '派发失败'; }
+  }catch(e){ err.textContent='派发失败，请重试'; }
+  btn.disabled=false; btn.textContent='🚀 派发任务';
+}
+
+async function loadBoard(){
+  const board = document.getElementById('board');
+  board.innerHTML = STATUS.map(s=>`<div class="col"><h3><span class="dot" style="background:${s.color}"></span>${s.name}<span class="cnt" id="cnt-${s.key}">0</span></h3><div id="col-${s.key}"></div></div>`).join('');
+  try{
+    const r = await api('/api/tasks'); const tasks = await r.json();
+    const by = {pending:[],accepted:[],done:[],issue:[]};
+    tasks.forEach(t=>{ (by[t.status]||(by[t.status]=[])); (by[t.status]||[]).push(t); });
+    STATUS.forEach(s=>{
+      const list = by[s.key]||[];
+      document.getElementById('cnt-'+s.key).textContent = list.length;
+      const col = document.getElementById('col-'+s.key);
+      col.innerHTML = list.length ? list.map(taskCard).join('') : '<div class="muted">暂无</div>';
+    });
+  }catch(e){}
+}
+function taskCard(t){
+  const pri = t.priority ? `<span class="pri ${t.priority}">${t.priority}</span>` : '';
+  const dl = t.deadline ? `📅 ${t.deadline}` : '';
+  const who = t.assignee_name ? `<span class="who">👤 ${escapeHtml(t.assignee_name)}</span>` : '';
+  const det = t.detail ? `<div class="det">${escapeHtml(t.detail)}</div>` : '';
+  const rsn = (t.status==='issue' && t.result) ? `<div class="rsn">💬 ${escapeHtml(t.result)}</div>` : '';
+  return `<div class="tcard"><div class="tt">#${t.id} ${escapeHtml(t.title||'')}</div>
+    <div class="meta">${pri}${who}${dl?`<span>${dl}</span>`:''}</div>${det}${rsn}</div>`;
+}
+function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+// 自动登录（本次浏览器会话记住密码）
+const saved = sessionStorage.getItem('pw');
+if(saved){ PW = saved; enterApp(); }
+</script>
+</body>
+</html>

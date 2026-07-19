@@ -163,6 +163,13 @@ def set_reminder_stage(task_id, stage):
                     (stage, task_id))
 
 
+def list_tasks(limit=300):
+    """列出最近的任务（网页看板用）。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT %s", (limit,))
+        return cur.fetchall()
+
+
 def tasks_still_open():
     """所有还没完成的任务（用于每日超期扫描）。"""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
