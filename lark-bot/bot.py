@@ -11,7 +11,10 @@
 """
 import os
 import json
+import time
 import secrets
+import datetime
+import threading
 import requests
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -28,7 +31,7 @@ from lark_oapi.adapter.flask import parse_req, parse_resp
 
 import db
 import cards
-from parse import extract_deadline
+from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
 APP_ID = os.environ.get("APP_ID", "")
@@ -43,7 +46,11 @@ PORT = int(os.environ.get("PORT", "8080"))
 PANEL_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "")       # 网页控制台的登录密码
 ADMIN_NOTIFY_OPEN_ID = os.environ.get("ADMIN_NOTIFY_OPEN_ID", "") # 网页派的任务，负责人反馈时通知谁（可选）
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")           # 可选：你的公开网址，用来生成外部汇报链接
-TZ_LABEL = os.environ.get("TZ_LABEL", "").strip()                 # 可选：时区标注，如 "GMT+7" / "北京时间"
+TZ_LABEL = os.environ.get("TZ_LABEL", "").strip()                 # 可选：时区标注，如 "越南时间" / "GMT+7"
+COMPANY_TZ_OFFSET = float(os.environ.get("COMPANY_TZ_OFFSET", "5.5") or 5.5)  # 公司参照时区偏移（默认印度 GMT+5:30，支持半小时）
+WORK_START = int(os.environ.get("WORK_START", "10") or 10)        # 工作时间开始（每天这个点发提醒）
+WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间结束（默认 22 点 / 晚10点）
+ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -101,6 +108,81 @@ def _log(task_id, body, side="system", name=None):
         db.add_comment(task_id, body, author_side=side, author_name=name)
     except Exception as e:
         print(f"[log] 记录留言失败: {e}")
+
+
+def _assignee_comment(task_id, body, name):
+    """记一条负责人留言，并把任务标记为“有未读”（看板会显示红点）。"""
+    _log(task_id, body, "assignee", name)
+    try:
+        db.update_task_fields(task_id, unread=True)
+    except Exception as e:
+        print(f"[unread] 标记失败: {e}")
+
+
+def _mark_read(task_id):
+    """发布者查看/回复后，清掉未读红点。"""
+    try:
+        db.update_task_fields(task_id, unread=False)
+    except Exception as e:
+        print(f"[unread] 清除失败: {e}")
+
+
+# ---------------- 到期提醒（内置每日定时，只在工作时间发）----------------
+def _public_base():
+    return PUBLIC_BASE_URL.rstrip("/") if PUBLIC_BASE_URL else ""
+
+
+def _company_now():
+    """公司参照时区的当前时间（用于提醒的工作时间判断）。"""
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=COMPANY_TZ_OFFSET)
+
+
+def _remind_internal(t, stage):
+    card = cards.reminder_card(stage, t["id"], t["title"], t["assignee_open_id"],
+                               t["deadline"], owner_open_id=t.get("owner_open_id"))
+    return bool(send_card(t["group_chat_id"], card))
+
+
+def _remind_external(t, stage):
+    eg = db.get_external_group(t["external_group_id"]) if t.get("external_group_id") else None
+    if not eg:
+        return False
+    base = _public_base()
+    url = f"{base}/t/{t['token']}" if (base and t.get("token")) else None
+    return push_to_webhook(eg["webhook_url"], cards.external_reminder_card(stage, t, url))
+
+
+def run_reminders():
+    """扫描未完成任务，按档位发到期提醒；内部群走机器人、外部群走 webhook；每档只发一次。"""
+    today = _company_now().date()
+    tasks = db.tasks_still_open()
+    sent = 0
+    for t in tasks:
+        stage = overdue_stage(t["deadline"], today, ESCALATE_DAYS, t.get("last_reminder_stage") or "")
+        if not stage:
+            continue
+        ok = _remind_external(t, stage) if t.get("is_external") else _remind_internal(t, stage)
+        if ok:
+            db.set_reminder_stage(t["id"], stage)
+            sent += 1
+    print(f"[reminder] {today}（公司时区）扫描 {len(tasks)} 个未完成，发出 {sent} 条提醒")
+    return sent
+
+
+def _reminder_scheduler():
+    """内置每日定时：每天在工作时间开始那一小时（公司时区）跑一次，避免非工作时间打扰。"""
+    last_run_date = None
+    print(f"[scheduler] 已启动：每天 {WORK_START}:00（GMT+{COMPANY_TZ_OFFSET}）发送每日提醒")
+    while True:
+        try:
+            now = _company_now()
+            if now.hour == WORK_START and now.date() != last_run_date:
+                last_run_date = now.date()
+                print(f"[scheduler] {now} 到达工作时间，发送每日提醒")
+                run_reminders()
+        except Exception as e:
+            print(f"[scheduler] 出错: {e}")
+        time.sleep(300)   # 每 5 分钟检查一次
 
 
 def push_to_webhook(url, card):
@@ -361,7 +443,7 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         if action == "issue_reason":
             reason = value.get("reason") or "未说明"
             db.update_task_status(task["id"], "issue", result=reason)
-            _log(task["id"], reason, "assignee", who)
+            _assignee_comment(task["id"], reason, who)
             notify_publisher(task, f"⚠️ {who} 对任务 #{task['id']}【{task['title']}】反馈：\n"
                                    f"「{reason}」\n"
                                    f"请沟通处理（可在控制台该任务里回复，或用『新建任务』重新派发）。")
@@ -457,7 +539,8 @@ def api_members():
 def api_config():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"tz_label": TZ_LABEL})
+    return jsonify({"tz_label": TZ_LABEL, "tz_offset": COMPANY_TZ_OFFSET,
+                    "work_start": WORK_START, "work_end": WORK_END})
 
 
 @app.route("/api/tasks", methods=["GET"])
@@ -612,6 +695,7 @@ def api_task_nudge(task_id):
 def api_comments_list(task_id):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    _mark_read(task_id)      # 发布者打开看了 → 清红点
     out = []
     for c in db.list_comments(task_id):
         c = dict(c)
@@ -633,6 +717,7 @@ def api_comments_add(task_id):
     if not body:
         return jsonify({"error": "留言不能为空"}), 400
     db.add_comment(task_id, body, author_side="publisher", author_name="发布者")
+    _mark_read(task_id)      # 发布者回复了 → 清红点
     # 内部任务：私聊通知负责人；外部任务：负责人下次打开链接就能看到
     if not task.get("is_external") and task.get("assignee_open_id"):
         send_dm_to_user(task["assignee_open_id"],
@@ -703,6 +788,7 @@ padding:10px 12px;margin-top:6px}
 .cmt.sys{background:#f2f3f5;align-self:center;color:#6b7480;font-size:12px;text-align:center;max-width:100%}
 .sec{font-size:12.5px;color:#5b636b;font-weight:700;margin:16px 0 6px}
 .hint{font-size:12px;color:#8a949e;margin-top:7px;text-align:center;line-height:1.5}
+.dllocal{color:#5b5bd6;font-weight:600}
 """
 
 
@@ -764,8 +850,18 @@ def _status_html(task, flash=None, comments=None):
     bits = []
     if task.get("priority"):
         bits.append(f"优先级 {_h(task['priority'])}")
+    tz_script = ""
     if task.get("deadline"):
-        bits.append(f"截止 {_h(cards.fmt_deadline(task['deadline']))}")
+        bits.append(f"截止 {_h(cards.fmt_deadline(task['deadline']))}<span id='dlLocal' class='dllocal'></span>")
+        tz_script = (
+            "<script>(function(){var O=" + str(COMPANY_TZ_OFFSET) + ",WE=" + str(WORK_END) +
+            ",el=document.getElementById('dlLocal');if(!el)return;"
+            "var p='" + str(task['deadline']) + "'.split('-').map(Number);"
+            "var inst=Date.UTC(p[0],p[1]-1,p[2],WE,0,0)-O*3600000,dt=new Date(inst);"
+            "var vo=-new Date().getTimezoneOffset()/60;if(vo===O)return;"
+            "var loc=dt.toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});"
+            "el.textContent=' · 你当地约 '+loc;})();</script>"
+        )
     if task.get("assignee_name"):
         bits.append(f"负责人 {_h(task['assignee_name'])}")
     detail = f"<p><b>📝 详情 / 安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
@@ -786,7 +882,7 @@ def _status_html(task, flash=None, comments=None):
 {thread}
 {flash_html}
 <form method="post">{_status_actions(task)}</form>
-</div></body></html>"""
+</div>{tz_script}</body></html>"""
 
 
 @app.route("/t/<token>", methods=["GET"])
@@ -820,7 +916,7 @@ def status_submit(token):
         if not msg:
             flash = "请先写点内容再发送哦。"
         else:
-            _log(tid, msg, "assignee", who)
+            _assignee_comment(tid, msg, who)
             notify_publisher(task, f"💬 {who} 对任务 #{tid}【{task['title']}】反馈：\n「{msg}」")
             if task.get("status") in ("pending", "accepted"):
                 db.update_task_status(tid, "issue")
@@ -841,6 +937,7 @@ def main():
                              domain=LARK_DOMAIN, log_level=lark.LogLevel.INFO)
         cli.start()
     else:
+        threading.Thread(target=_reminder_scheduler, daemon=True).start()   # 内置每日提醒
         from waitress import serve
         print(f"[bot] webhook 模式启动，监听端口 {PORT}，等待 Lark 事件推送 ...")
         serve(app, host="0.0.0.0", port=PORT)

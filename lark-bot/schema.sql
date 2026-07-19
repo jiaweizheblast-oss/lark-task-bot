@@ -58,6 +58,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_name TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS detail   TEXT;   -- 任务详情/安排
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS note     TEXT;   -- 注意事项
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT;   -- 优先级 高/中/低
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS unread   BOOLEAN DEFAULT FALSE;  -- 负责人有新留言待发布者查看（看板红点）
 
 -- 草稿表：私聊终端派任务时，记住"某管理员正在给 X 群的 Y 派任务，等他输入内容"
 CREATE TABLE IF NOT EXISTS drafts (

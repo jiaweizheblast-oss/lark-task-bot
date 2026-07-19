@@ -56,8 +56,10 @@
   .col{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px;min-height:120px}
   .col h3{margin:2px 4px 10px;font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
   .col h3 .dot{width:9px;height:9px;border-radius:50%} .col h3 .cnt{margin-left:auto;color:var(--soft);font-weight:600;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:1px 8px}
-  .tcard{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:11px 12px;margin-bottom:9px;box-shadow:var(--shadow);cursor:pointer;transition:.12s}
+  .tcard{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:11px 12px;margin-bottom:9px;box-shadow:var(--shadow);cursor:pointer;transition:.12s}
   .tcard:hover{border-color:var(--accent)} .tcard.over{border-left:3px solid var(--danger)}
+  .unread{position:absolute;top:8px;right:8px;width:11px;height:11px;border-radius:50%;background:var(--danger);box-shadow:0 0 0 2px var(--panel),0 0 0 4px rgba(220,38,38,.25)}
+  .tcard.unreadcard{border-color:var(--danger)}
   .tcard .tt{font-weight:650;font-size:13.5px;margin-bottom:6px}
   .tcard .meta{font-size:12px;color:var(--soft);display:flex;flex-wrap:wrap;gap:8px;align-items:center} .tcard .who{color:var(--ink);font-weight:600}
   .pri{font-size:11px;font-weight:750;border-radius:5px;padding:1px 6px}
@@ -184,8 +186,9 @@
 <div id="toast"></div>
 
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="";
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
+function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return '你当地约 '+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"},{k:"issue",n:"待沟通",c:"var(--s-issue)"}];
 const SC={pending:"var(--s-pending)",accepted:"var(--s-accepted)",done:"var(--s-done)",issue:"var(--s-issue)"};
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -201,7 +204,7 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
   const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();loadTasks();}
-async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';}catch(e){TZLABEL='';}}
+async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;}catch(e){TZLABEL='';TZOFF=null;}}
 function showTab(t){['create','board','cal','report'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();}
 
 async function loadExternalGroups(){try{const gs=await(await api('/api/external-groups')).json();EGROUPS=Array.isArray(gs)?gs:[];EGMAP={};EGROUPS.forEach(g=>EGMAP[g.id]=g.name);}catch(e){EGROUPS=[];}}
@@ -259,20 +262,24 @@ function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.prio
   const dl=t.deadline?`<span>📅 ${dlText(t.deadline)}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
   const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">外部</span>':''}</div>`:'';
   const rsn=(t.status==='issue'&&t.result)?`<div class="rsn">💬 ${esc(t.result)}</div>`:'';
-  return `<div class="tcard ${overdue(t)?'over':''}" onclick="openTask(${t.id})"><div class="tt">#${t.id} ${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
+  const unread=t.unread?'<span class="unread" title="负责人有新留言未读"></span>':'';
+  return `<div class="tcard ${overdue(t)?'over':''} ${t.unread?'unreadcard':''}" onclick="openTask(${t.id})">${unread}<div class="tt">#${t.id} ${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
 
 async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
+  if(t.unread){t.unread=false;renderBoard();}
   let reassign='';
   if(!t.is_external){const ms=await membersOf(t.group_chat_id);
     reassign=`<div class="field"><label>负责人（改这里=换人，会给新负责人重发卡片）</label><select id="mAssignee">${ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}" ${m.open_id===t.assignee_open_id?'selected':''}>${esc(m.name)}</option>`).join('')||'<option value="">（无成员）</option>'}</select></div>`;}
   const info=[t.detail?'详情 / 安排：'+t.detail:'',t.note?'注意事项：'+t.note:'',t.result?'最新反馈：'+t.result:''].filter(Boolean).map(esc).join('\n')||'（无更多详情）';
   const link=(t.is_external&&t.token)?(location.origin+'/t/'+t.token):'';
-  const linkRow=link?`<div class="field"><label>专属汇报链接（可直接发给负责人本人，谁点都记这条任务）</label><div style="display:flex;gap:6px"><input id="mLink" readonly value="${esc(link)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyLink()">复制</button></div></div>`:'';
+  const linkRow=link?`<div class="field"><label>单独发给负责人的链接（可选）</label><div style="font-size:11.5px;color:var(--soft);margin:-2px 0 5px;line-height:1.5">不想在群里 @所有人打扰大家时，可以把这个链接私发给负责人本人；他打开就能接受任务、汇报进度，效果和群里那张卡片一样。</div><div style="display:flex;gap:6px"><input id="mLink" readonly value="${esc(link)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyLink()">复制</button></div></div>`:'';
+  const tzHint=(t.deadline&&localOf(t.deadline))?`<div style="font-size:12px;color:var(--accent);background:var(--accentS);border-radius:8px;padding:7px 10px;margin-bottom:12px">🌐 截止 ${esc(dlText(t.deadline))}　·　${esc(localOf(t.deadline))}</div>`:'';
   const stb=STATUS.map(s=>`<button class="${t.status===s.k?'on':''}" style="${t.status===s.k?'background:'+s.c:''}" onclick="setStatus(${t.id},'${s.k}')">${s.n}</button>`).join('');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
     <h3>#${t.id} ${esc(t.title||'')}</h3>
     <div class="mid">${esc(groupName(t))} ${t.is_external?'· 外部群':''} · 状态：${STATUS.find(s=>s.k===t.status)?.n||t.status}</div>
     <div class="info">${info}</div>
+    ${tzHint}
     ${linkRow}
     <label style="font-size:12.5px;color:var(--soft);font-weight:600">💬 沟通记录（和负责人商量，都会留痕）</label>
     <div class="thread" id="mThread"><div class="muted" style="padding:6px">加载中…</div></div>
@@ -367,6 +374,10 @@ async function addExtGroup(){const name=val('egName'),url=val('egUrl'),err=docum
     if(j.ok){await loadExternalGroups();await loadGroups();openExtSettings();toast('✅ 已添加外部群');}else err.textContent=j.error||'添加失败';
   }catch(e){err.textContent='添加失败';}}
 async function delExtGroup(id){if(!confirm('删除这个外部群配置？'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('已删除');}catch(e){toast('删除失败',true);}}
+
+// 每 20 秒自动刷新看板（让负责人的新留言红点及时出现），弹窗打开时不打扰
+setInterval(()=>{const app=document.getElementById('app');const modalOpen=document.getElementById('modalRoot').innerHTML.trim();
+  if(PW&&app&&!app.classList.contains('hide')&&!modalOpen)loadTasks();},20000);
 
 const saved=sessionStorage.getItem('pw');if(saved){PW=saved;enterApp();}
 </script>

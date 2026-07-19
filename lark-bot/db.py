@@ -225,7 +225,7 @@ def delete_task(task_id):
 
 def update_task_fields(task_id, **fields):
     """更新任务的若干字段（截止/优先级/负责人/状态/卡片ID）。"""
-    allowed = {"deadline", "priority", "assignee_open_id", "assignee_name", "status", "card_message_id"}
+    allowed = {"deadline", "priority", "assignee_open_id", "assignee_name", "status", "card_message_id", "unread"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
