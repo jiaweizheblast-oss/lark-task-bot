@@ -45,6 +45,16 @@ def clean_title(text, mention_keys):
 STAGE_ORDER = {"": 0, "due_tomorrow": 1, "due_today": 2, "escalated": 3}
 
 
+def parse_content(text):
+    """解析用户在私聊里输入的任务内容 + 截止日期。
+    返回 (标题, 截止日期date或None)。保留正文里的普通文字（不像 clean_title 会去掉命令词）。"""
+    deadline = extract_deadline(text)
+    t = _DATE_RE.sub(" ", text or "")
+    t = re.sub(r"(截止|deadline|ddl)\s*[:：]?", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t, deadline
+
+
 def overdue_stage(deadline, today, escalate_days, last_stage):
     """
     决定今天要给这个任务发哪一档提醒；不需要发就返回 None。

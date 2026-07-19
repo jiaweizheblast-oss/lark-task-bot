@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 草稿表：私聊终端派任务时，记住"某管理员正在给 X 群的 Y 派任务，等他输入内容"
+CREATE TABLE IF NOT EXISTS drafts (
+    admin_open_id     TEXT PRIMARY KEY,        -- 正在操作的管理员
+    chat_id           TEXT,                    -- 选中的目标群
+    chat_name         TEXT,
+    assignee_open_id  TEXT,                    -- 选中的负责人
+    assignee_name     TEXT,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 给定时任务扫描用的索引（按状态 + 截止日期查）
 CREATE INDEX IF NOT EXISTS idx_tasks_status_deadline ON tasks (status, deadline);
 CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks (group_chat_id);

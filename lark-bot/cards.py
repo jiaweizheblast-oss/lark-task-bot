@@ -89,14 +89,70 @@ def reminder_card(kind, task_id, title, assignee_open_id, deadline, owner_open_i
     }
 
 
+def _btn(text, value, typ="default"):
+    return {"tag": "button", "text": {"tag": "plain_text", "content": text}, "type": typ, "value": value}
+
+
+def group_select_card(groups):
+    """第 1 步：私聊里让管理员点选要派任务的群。groups: [{chat_id,name,external}]。"""
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "**请选择要派任务的群：**"}}, {"tag": "hr"}]
+    shown = groups[:20]
+    for g in shown:
+        tag = "🌐 外部群" if g.get("external") else "🏠 内部群"
+        elements.append({"tag": "action", "actions": [
+            _btn(f"{tag} · {g['name']}", {"action": "pick_group", "chat_id": g["chat_id"], "chat_name": g["name"]})]})
+    if not shown:
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+            "content": "（机器人还没被拉进任何群。请先把它加进相关的群，再回来派任务。）"}})
+    elif len(groups) > len(shown):
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"仅显示前 {len(shown)} 个群"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 新建任务 · 第 1 步：选群"}},
+            "elements": elements}
+
+
+def person_select_card(chat_id, chat_name, members):
+    """第 2 步：选负责人。members: [{open_id,name}]。"""
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": f"群：**{chat_name}**\n**请选择负责人：**"}}, {"tag": "hr"}]
+    shown = members[:30]
+    for m in shown:
+        elements.append({"tag": "action", "actions": [
+            _btn(f"👤 {m['name']}", {"action": "pick_person", "chat_id": chat_id, "chat_name": chat_name,
+                                     "open_id": m["open_id"], "name": m["name"]})]})
+    if not shown:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "（这个群里除了机器人没有别人。）"}})
+    elif len(members) > len(shown):
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"仅显示前 {len(shown)} 人"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 新建任务 · 第 2 步：选负责人"}},
+            "elements": elements}
+
+
+def draft_ready_card(chat_name, assignee_name):
+    """第 3 步：提示管理员输入任务内容。"""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "✍️ 第 3 步：输入任务内容"}},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                "content": f"**目标群：**{chat_name}\n**负责人：**{assignee_name}\n\n"
+                           f"现在直接把**任务内容和截止日期**发给我，例如：\n`写合同初稿 截止:2026-07-25`"}}]}
+
+
+def dispatched_card(chat_name, assignee_name, title, deadline=None):
+    """派发成功后，把私聊里的卡片更新成这个。"""
+    ddl = f"\n**截止：**{deadline}" if deadline else ""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "green", "title": {"tag": "plain_text", "content": "✅ 已派发"}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                    "content": f"**任务：**{title}\n**已发到群：**{chat_name}\n**负责人：**{assignee_name}{ddl}"}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": "负责人会在群里收到 @ 和反馈按钮"}]}]}
+
+
 def help_text():
     return (
-        "**🤖 任务机器人用法**\n"
-        "发命令时请在消息里 **@一下机器人** 来触发（例：`@机器人 /task ...`）。\n\n"
-        "• `@机器人 /task @某人 任务内容 截止:2026-07-25` — 派一个任务（仅管理员/HR）\n"
-        "• 负责人在群里点卡片按钮反馈：完成 / 无法完成 / 跳过\n"
-        "• `@机器人 /whoami` — 查看你自己的身份和 open_id\n"
-        "• `@机器人 /bind @某人 Vendor 供应商A` — 把待确认的人绑定为某角色（仅管理员/HR）\n"
-        "• `@机器人 /pending` — 查看还没绑定身份的人（仅管理员/HR）\n"
-        "• `@机器人 /claimadmin 口令` — 用管理口令把自己设为管理员（首次配置用）"
+        "**🤖 任务终端用法（私聊我操作）**\n"
+        "• 发送 `新建任务` —— 我一步步带你：选群 → 选负责人 → 输入内容，然后我到群里 @ 他派任务\n"
+        "• `/claimadmin 口令` —— 首次把自己设为管理员\n"
+        "• `/whoami` —— 查看你的身份\n\n"
+        "只有管理员能派任务；负责人在群里点卡片按钮反馈：完成 / 无法完成 / 跳过。"
     )

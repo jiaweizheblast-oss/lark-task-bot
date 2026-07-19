@@ -171,3 +171,28 @@ def tasks_still_open():
             ORDER BY deadline ASC
         """)
         return cur.fetchall()
+
+
+# ---------------- 草稿（私聊派任务的中间状态） ----------------
+
+def set_draft(admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO drafts (admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name, updated_at)
+            VALUES (%s,%s,%s,%s,%s, now())
+            ON CONFLICT (admin_open_id) DO UPDATE SET
+                chat_id=EXCLUDED.chat_id, chat_name=EXCLUDED.chat_name,
+                assignee_open_id=EXCLUDED.assignee_open_id, assignee_name=EXCLUDED.assignee_name,
+                updated_at=now()
+        """, (admin_open_id, chat_id, chat_name, assignee_open_id, assignee_name))
+
+
+def get_draft(admin_open_id):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM drafts WHERE admin_open_id=%s", (admin_open_id,))
+        return cur.fetchone()
+
+
+def clear_draft(admin_open_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM drafts WHERE admin_open_id=%s", (admin_open_id,))
