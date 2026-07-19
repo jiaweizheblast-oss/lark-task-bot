@@ -125,15 +125,50 @@ def get_group(chat_id):
 
 def create_task(title, assignee_open_id, group_chat_id, deadline=None,
                 owner_open_id=None, created_by_open_id=None, assignee_name=None,
-                detail=None, note=None, priority=None):
+                detail=None, note=None, priority=None,
+                token=None, is_external=False, external_group_id=None):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             INSERT INTO tasks (title, detail, note, priority, assignee_open_id, assignee_name,
-                               group_chat_id, deadline, owner_open_id, created_by_open_id)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                               group_chat_id, deadline, owner_open_id, created_by_open_id,
+                               token, is_external, external_group_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
         """, (title, detail, note, priority, assignee_open_id, assignee_name,
-              group_chat_id, deadline, owner_open_id, created_by_open_id))
+              group_chat_id, deadline, owner_open_id, created_by_open_id,
+              token, is_external, external_group_id))
         return cur.fetchone()[0]
+
+
+def get_task_by_token(token):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM tasks WHERE token=%s", (token,))
+        return cur.fetchone()
+
+
+# ---------------- 外部群（webhook）配置 ----------------
+
+def list_external_groups():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM external_groups ORDER BY created_at DESC")
+        return cur.fetchall()
+
+
+def add_external_group(name, webhook_url):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO external_groups (name, webhook_url) VALUES (%s,%s) RETURNING id",
+                    (name, webhook_url))
+        return cur.fetchone()[0]
+
+
+def get_external_group(eg_id):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM external_groups WHERE id=%s", (eg_id,))
+        return cur.fetchone()
+
+
+def delete_external_group(eg_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM external_groups WHERE id=%s", (eg_id,))
 
 
 def set_task_card(task_id, card_message_id):

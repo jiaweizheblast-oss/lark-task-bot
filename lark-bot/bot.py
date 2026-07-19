@@ -11,6 +11,8 @@
 """
 import os
 import json
+import secrets
+import requests
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
@@ -40,6 +42,7 @@ MODE = os.environ.get("MODE", "webhook")
 PORT = int(os.environ.get("PORT", "8080"))
 PANEL_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "")       # 网页控制台的登录密码
 ADMIN_NOTIFY_OPEN_ID = os.environ.get("ADMIN_NOTIFY_OPEN_ID", "") # 网页派的任务，负责人反馈时通知谁（可选）
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")           # 可选：你的公开网址，用来生成外部汇报链接
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -89,6 +92,18 @@ def notify_publisher(task, text):
     pub = task.get("created_by_open_id")
     if pub:
         send_dm_to_user(pub, text)
+
+
+def push_to_webhook(url, card):
+    """通过外部群的自定义机器人 webhook 推送一张卡片。"""
+    try:
+        r = requests.post(url, json={"msg_type": "interactive", "card": card}, timeout=10)
+        if not r.ok:
+            print(f"[webhook] 推送失败 status={r.status_code} body={r.text[:200]}")
+        return r.ok
+    except Exception as e:
+        print(f"[webhook] 推送异常: {e}")
+        return False
 
 
 # ---------------- 群 / 成员查询 ----------------
@@ -433,31 +448,86 @@ def api_tasks_list():
     return jsonify([_task_json(t) for t in db.list_tasks()])
 
 
+def _base_url():
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL.rstrip("/")
+    u = request.host_url.rstrip("/")
+    if u.startswith("http://"):
+        u = "https://" + u[len("http://"):]      # Railway 对外是 https
+    return u
+
+
 @app.route("/api/tasks", methods=["POST"])
 def api_tasks_create():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     d = request.get_json(silent=True) or {}
     title = (d.get("title") or "").strip()
-    chat_id = d.get("chat_id")
-    assignee = d.get("assignee_open_id")
     if not title:
         return jsonify({"error": "任务标题必填"}), 400
-    if not chat_id or not assignee:
-        return jsonify({"error": "请选择群和负责人"}), 400
     pr = (d.get("priority") or "").strip()
     priority = pr if pr in ("高", "中", "低") else "中"
     deadline = extract_deadline(d.get("deadline") or "")
+    detail = (d.get("detail") or "").strip() or None
+    note = (d.get("note") or "").strip() or None
+    eg_id = d.get("external_group_id")
+
+    if eg_id:      # 外部群：走 webhook 推送
+        eg = db.get_external_group(int(eg_id))
+        if not eg:
+            return jsonify({"error": "外部群不存在"}), 400
+        token = secrets.token_urlsafe(9)
+        task_id = db.create_task(title, None, None, deadline=deadline,
+                                 created_by_open_id=(ADMIN_NOTIFY_OPEN_ID or None),
+                                 assignee_name=(d.get("assignee_name") or "").strip() or None,
+                                 detail=detail, note=note, priority=priority,
+                                 token=token, is_external=True, external_group_id=int(eg_id))
+        task = db.get_task(task_id)
+        ok = push_to_webhook(eg["webhook_url"], cards.external_task_card(task, f"{_base_url()}/t/{token}"))
+        return jsonify({"ok": True, "task_id": task_id, "pushed": ok})
+
+    # 内部群：机器人卡片
+    chat_id = d.get("chat_id")
+    assignee = d.get("assignee_open_id")
+    if not chat_id or not assignee:
+        return jsonify({"error": "请选择群和负责人"}), 400
     task_id = db.create_task(title, assignee, chat_id, deadline=deadline,
                              created_by_open_id=(ADMIN_NOTIFY_OPEN_ID or None),
-                             assignee_name=d.get("assignee_name"),
-                             detail=(d.get("detail") or "").strip() or None,
-                             note=(d.get("note") or "").strip() or None, priority=priority)
+                             assignee_name=d.get("assignee_name"), detail=detail, note=note, priority=priority)
     task = db.get_task(task_id)
     mid = send_card(chat_id, cards.new_task_card(task))
     if mid:
         db.set_task_card(task_id, mid)
     return jsonify({"ok": True, "task_id": task_id})
+
+
+@app.route("/api/external-groups", methods=["GET"])
+def api_ext_list():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify([{"id": g["id"], "name": g["name"]} for g in db.list_external_groups()])
+
+
+@app.route("/api/external-groups", methods=["POST"])
+def api_ext_add():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip()
+    url = (d.get("webhook_url") or "").strip()
+    if not name or not url:
+        return jsonify({"error": "名字和 webhook 网址都要填"}), 400
+    if not url.startswith("http"):
+        return jsonify({"error": "webhook 网址格式不对"}), 400
+    return jsonify({"ok": True, "id": db.add_external_group(name, url)})
+
+
+@app.route("/api/external-groups/<int:eg_id>", methods=["DELETE"])
+def api_ext_del(eg_id):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    db.delete_external_group(eg_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
@@ -481,6 +551,8 @@ def api_task_patch(task_id):
         fields["deadline"] = extract_deadline(d.get("deadline") or "")
     if "priority" in d and (d.get("priority") or "").strip() in ("高", "中", "低"):
         fields["priority"] = d["priority"].strip()
+    if d.get("status") in ("pending", "accepted", "done", "issue"):
+        fields["status"] = d["status"]
     reassigned = bool(d.get("assignee_open_id"))
     if reassigned:
         fields["assignee_open_id"] = d["assignee_open_id"]
@@ -505,6 +577,87 @@ def api_task_nudge(task_id):
         return jsonify({"error": "任务不存在"}), 404
     send_card(task["group_chat_id"], cards.nudge_card(task))
     return jsonify({"ok": True})
+
+
+# ---------------- 外部人汇报状态的公开页面 ----------------
+_STATUS_CSS = """
+*{box-sizing:border-box} body{margin:0;background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,
+"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif;color:#1c2024;padding:20px;line-height:1.55}
+.card{max-width:440px;margin:24px auto;background:#fff;border:1px solid #e7e9ec;border-radius:16px;
+box-shadow:0 4px 20px rgba(20,25,35,.06);padding:22px 22px 26px}
+.h{font-size:13px;color:#5b5bd6;font-weight:700;letter-spacing:.06em}
+.t{font-size:19px;font-weight:750;margin:6px 0 6px}
+.meta{color:#5b636b;font-size:13px;margin-bottom:12px}
+p{font-size:14px;margin:6px 0} b{color:#1c2024}
+.b{display:block;width:100%;border:0;border-radius:10px;padding:13px;font-size:15px;font-weight:650;
+cursor:pointer;margin-top:12px;color:#fff}
+.b.done{background:#16a34a} .b.issue{background:#c2740a}
+.or{text-align:center;color:#9aa2ab;font-size:12px;margin:14px 0 2px}
+textarea{width:100%;min-height:72px;border:1px solid #d7dade;border-radius:10px;padding:10px;font-size:14px;
+font-family:inherit;resize:vertical;outline:none;margin-top:6px}
+"""
+
+
+def _h(s):
+    return (str(s) if s is not None else "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _status_html(task):
+    bits = []
+    if task.get("priority"):
+        bits.append(f"优先级：{_h(task['priority'])}")
+    if task.get("deadline"):
+        bits.append(f"截止：{_h(task['deadline'])}")
+    if task.get("assignee_name"):
+        bits.append(f"负责人：{_h(task['assignee_name'])}")
+    detail = f"<p><b>详情/安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
+    note = f"<p><b>注意事项：</b>{_h(task['note'])}</p>" if task.get("note") else ""
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>任务汇报</title>
+<style>{_STATUS_CSS}</style></head><body><div class="card">
+<div class="h">📋 任务汇报</div>
+<div class="t">{_h(task.get('title',''))}</div>
+<div class="meta">{'　'.join(bits)}</div>
+{detail}{note}
+<form method="post">
+  <button class="b done" name="action" value="done">✅ 我已完成</button>
+  <div class="or">或者遇到问题：</div>
+  <textarea name="reason" placeholder="遇到什么问题？想怎么处理？（选填）"></textarea>
+  <button class="b issue" name="action" value="issue">🙋 提交问题</button>
+</form></div></body></html>"""
+
+
+def _done_html(msg):
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>已收到</title>
+<style>{_STATUS_CSS}</style></head><body><div class="card" style="text-align:center">
+<div style="font-size:46px;margin:8px 0">🎉</div>
+<div class="t">{_h(msg)}</div>
+<div class="meta">可以关闭这个页面了。</div></div></body></html>"""
+
+
+@app.route("/t/<token>", methods=["GET"])
+def status_page(token):
+    task = db.get_task_by_token(token)
+    if not task:
+        return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效或任务已删除</h3>", 404
+    return _status_html(task)
+
+
+@app.route("/t/<token>", methods=["POST"])
+def status_submit(token):
+    task = db.get_task_by_token(token)
+    if not task:
+        return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效</h3>", 404
+    action = request.form.get("action")
+    reason = (request.form.get("reason") or "").strip()
+    if action == "done":
+        db.update_task_status(task["id"], "done")
+        return _done_html("已记录：完成，谢谢！")
+    if action == "issue":
+        db.update_task_status(task["id"], "issue", result=reason or "有问题（未填写说明）")
+        return _done_html("已记录：有问题，我们会尽快跟进。谢谢！")
+    return _status_html(task)
 
 
 def main():

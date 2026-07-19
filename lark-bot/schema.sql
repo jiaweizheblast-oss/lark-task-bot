@@ -78,6 +78,23 @@ ALTER TABLE drafts ADD COLUMN IF NOT EXISTS title  TEXT;
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS detail TEXT;
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS note   TEXT;
 
+-- 外部群（自定义机器人 webhook）配置
+CREATE TABLE IF NOT EXISTS external_groups (
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,               -- 外部群名字（你自己起）
+    webhook_url  TEXT NOT NULL,               -- 该群 Custom Bot 的 webhook 网址
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- tasks 补外部相关列（幂等）
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token             TEXT;    -- 外部状态汇报链接用的随机口令
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_external       BOOLEAN DEFAULT FALSE;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_group_id INTEGER;
+-- 外部任务没有群 open_id / 负责人 open_id，放开非空约束
+ALTER TABLE tasks ALTER COLUMN group_chat_id DROP NOT NULL;
+ALTER TABLE tasks ALTER COLUMN assignee_open_id DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_token ON tasks (token);
+
 -- 给定时任务扫描用的索引（按状态 + 截止日期查）
 CREATE INDEX IF NOT EXISTS idx_tasks_status_deadline ON tasks (status, deadline);
 CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks (group_chat_id);

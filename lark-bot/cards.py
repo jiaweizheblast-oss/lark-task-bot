@@ -227,6 +227,34 @@ def dispatched_card(chat_name, task):
                     "content": f"已发到群：{chat_name} · 负责人会收到 @ 和反馈按钮"}]}]}
 
 
+def external_task_card(task, status_url):
+    """推给外部群的任务卡片：@全体 + 详情 + 两个 URL 按钮（外部人点了打开网页汇报）。"""
+    lines = [f"**📌 任务：**{task.get('title','')}"]
+    if task.get("detail"):
+        lines.append(f"**📝 详情/安排：**{task['detail']}")
+    if task.get("note"):
+        lines.append(f"**⚠️ 注意事项：**{task['note']}")
+    if task.get("priority"):
+        lines.append(f"**🚩 优先级：**{_pri(task['priority'])}")
+    lines.append(f"**👤 负责人：**{task.get('assignee_name') or '（见群内）'}")
+    if task.get("deadline"):
+        lines.append(f"**📅 截止：**{task['deadline']}")
+    body = "<at id=all></at>\n" + "\n".join(lines)
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📋 新任务"}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": "完成或有问题，请点下面按钮汇报："}},
+                {"tag": "action", "actions": [
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "✅ 我已完成"},
+                     "type": "primary", "url": status_url + "?a=done"},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "🙋 有问题"},
+                     "type": "default", "url": status_url + "?a=issue"},
+                ]},
+            ]}
+
+
 def nudge_card(task):
     """催办提醒卡片（网页/看板点催办时发到群里）。"""
     dl = f"，截止 {task['deadline']}" if task.get("deadline") else ""
