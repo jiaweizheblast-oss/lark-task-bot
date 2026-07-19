@@ -34,10 +34,14 @@ CREATE TABLE IF NOT EXISTS groups (
 CREATE TABLE IF NOT EXISTS tasks (
     id                 SERIAL PRIMARY KEY,
     title              TEXT NOT NULL,
+    detail             TEXT,                    -- 任务详情/安排
+    note               TEXT,                    -- 注意事项
+    priority           TEXT,                    -- 优先级 高/中/低
     assignee_open_id   TEXT NOT NULL,           -- 负责人
+    assignee_name      TEXT,                    -- 负责人名字（通知发布者时用）
     owner_open_id      TEXT,                    -- 升级对象（一般取所在群的 default_owner）
     group_chat_id      TEXT NOT NULL,           -- 卡片发到哪个群
-    status             TEXT NOT NULL DEFAULT 'pending',  -- pending / done / unable / skip
+    status             TEXT NOT NULL DEFAULT 'pending',  -- pending / accepted / done / issue
     deadline           DATE,
     card_message_id    TEXT,                    -- 卡片消息 ID（用于点完后更新卡片）
     result             TEXT,                    -- 反馈结果 / 备注
@@ -46,6 +50,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 已有部署补列（幂等，第一次部署时表已存在也能安全加上新列）
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_name TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS detail   TEXT;   -- 任务详情/安排
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS note     TEXT;   -- 注意事项
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT;   -- 优先级 高/中/低
 
 -- 草稿表：私聊终端派任务时，记住"某管理员正在给 X 群的 Y 派任务，等他输入内容"
 CREATE TABLE IF NOT EXISTS drafts (

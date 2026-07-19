@@ -26,7 +26,7 @@ from lark_oapi.adapter.flask import parse_req, parse_resp
 
 import db
 import cards
-from parse import parse_content
+from parse import extract_deadline
 
 # ---------------- 配置（从环境变量读）----------------
 APP_ID = os.environ.get("APP_ID", "")
@@ -70,6 +70,23 @@ def patch_card(message_id, card):
     resp = client.im.v1.message.patch(req)
     if not resp.success():
         print(f"[patch_card] 失败 code={resp.code} msg={resp.msg}")
+
+
+def send_dm_to_user(open_id, text):
+    """按 open_id 私聊某个用户（用来把负责人的反馈通知任务发布者）。"""
+    body = CreateMessageRequestBody.builder().receive_id(open_id) \
+        .msg_type("text").content(json.dumps({"text": text})).build()
+    req = CreateMessageRequest.builder().receive_id_type("open_id").request_body(body).build()
+    resp = client.im.v1.message.create(req)
+    if not resp.success():
+        print(f"[send_dm_to_user] 失败 code={resp.code} msg={resp.msg}")
+
+
+def notify_publisher(task, text):
+    """把消息私聊发给任务的发布者（创建者）。"""
+    pub = task.get("created_by_open_id")
+    if pub:
+        send_dm_to_user(pub, text)
 
 
 # ---------------- 群 / 成员查询 ----------------
@@ -159,22 +176,6 @@ def handle_dm(sender_open_id, dm_chat_id, text):
         send_card(dm_chat_id, cards.group_select_card(groups))
         return
 
-    # 有草稿在等内容 → 把这条文本当成任务内容和截止
-    draft = db.get_draft(sender_open_id)
-    if draft and draft.get("assignee_open_id"):
-        title, deadline = parse_content(text)
-        if not title:
-            send_text(dm_chat_id, "任务内容不能为空。请发送：任务内容 截止:2026-07-25")
-            return
-        task_id = db.create_task(title, draft["assignee_open_id"], draft["chat_id"],
-                                 deadline=deadline, created_by_open_id=sender_open_id)
-        mid = send_card(draft["chat_id"], cards.task_card(task_id, title, draft["assignee_open_id"], deadline))
-        if mid:
-            db.set_task_card(task_id, mid)
-        db.clear_draft(sender_open_id)
-        send_card(dm_chat_id, cards.dispatched_card(draft["chat_name"], draft["assignee_name"], title, deadline))
-        return
-
     send_text(dm_chat_id, "发送 `新建任务` 开始派任务，或 `/help` 看用法。")
 
 
@@ -242,30 +243,82 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             return card_resp("info", "请选择负责人",
                              cards.person_select_card(value.get("chat_id"), value.get("chat_name"), members))
 
-        # 派任务：选负责人 → 存草稿，把卡片换成"请输入任务内容"
+        # 派任务：选负责人 → 弹出"填写任务详情"表单
         if action == "pick_person":
             if not db.is_admin(operator):
                 return card_resp("error", "只有管理员能派任务")
-            db.set_draft(operator, value.get("chat_id"), value.get("chat_name"),
-                         value.get("open_id"), value.get("name"))
-            return card_resp("success", "已选负责人，请输入任务内容",
-                             cards.draft_ready_card(value.get("chat_name"), value.get("name")))
+            return card_resp("success", "请填写任务详情",
+                             cards.create_form_card(value.get("chat_id"), value.get("chat_name"),
+                                                    value.get("open_id"), value.get("name")))
 
-        # 任务卡片：完成 / 无法完成 / 跳过
+        # 提交派发表单 → 建任务并发到群
+        if action == "create_task":
+            if not db.is_admin(operator):
+                return card_resp("error", "只有管理员能派任务")
+            fv = getattr(data.event.action, "form_value", None)
+            if isinstance(fv, str):
+                try:
+                    fv = json.loads(fv)
+                except Exception:
+                    fv = {}
+            fv = fv if isinstance(fv, dict) else {}
+            title = (fv.get("title") or "").strip()
+            if not title:
+                return card_resp("error", "请填写任务标题后再提交")
+            detail = (fv.get("detail") or "").strip() or None
+            note = (fv.get("note") or "").strip() or None
+            pr = (fv.get("priority") or "").strip()
+            priority = pr if pr in ("高", "中", "低") else "中"
+            deadline = extract_deadline(fv.get("deadline") or "")
+            chat_id, chat_name = value.get("chat_id"), value.get("chat_name")
+            task_id = db.create_task(title, value.get("open_id"), chat_id, deadline=deadline,
+                                     created_by_open_id=operator, assignee_name=value.get("name"),
+                                     detail=detail, note=note, priority=priority)
+            task = db.get_task(task_id)
+            mid = send_card(chat_id, cards.new_task_card(task))
+            if mid:
+                db.set_task_card(task_id, mid)
+            return card_resp("success", "已派发 ✅", cards.dispatched_card(chat_name, task))
+
+        # 任务生命周期：接受 / 完成 / 有问题 / 提交原因
         task_id = value.get("task_id")
         task = db.get_task(int(task_id)) if task_id else None
         if not task:
             return card_resp("error", "任务不存在")
         if operator != task["assignee_open_id"]:
             return card_resp("error", "只有该任务的负责人能操作")
-        new_status = {"done": "done", "unable": "unable", "skip": "skip"}.get(action)
-        if not new_status:
-            return card_resp("error", "未知操作")
-        db.update_task_status(task["id"], new_status)
-        toast = {"done": "已标记完成 ✅", "unable": "已记录：无法完成", "skip": "已跳过"}[new_status]
-        return card_resp("success", toast,
-                         cards.done_card(task["id"], task["title"], task["assignee_open_id"],
-                                         new_status, task["deadline"], operator))
+
+        if action == "accept":
+            db.update_task_status(task["id"], "accepted")
+            return card_resp("success", "已接受 ✅", cards.accepted_card(task))
+
+        if action == "done":
+            db.update_task_status(task["id"], "done")
+            notify_publisher(task, f"✅ {task.get('assignee_name') or '负责人'} 完成了任务 "
+                                   f"#{task['id']}【{task['title']}】")
+            return card_resp("success", "已完成 🎉", cards.final_card(task, "done", operator))
+
+        if action == "raise":
+            return card_resp("info", "请填写原因后提交", cards.reason_form_card(task))
+
+        if action == "submit_issue":
+            fv = getattr(data.event.action, "form_value", None)
+            if isinstance(fv, str):
+                try:
+                    fv = json.loads(fv)
+                except Exception:
+                    fv = {}
+            reason = (fv.get("reason") if isinstance(fv, dict) else "") or ""
+            reason = reason.strip()
+            db.update_task_status(task["id"], "issue", result=reason)
+            who = task.get("assignee_name") or "负责人"
+            notify_publisher(task, f"⚠️ {who} 对任务 #{task['id']}【{task['title']}】反馈：\n"
+                                   f"「{reason or '（未填写）'}」\n"
+                                   f"请沟通处理（可在群里回复，或用『新建任务』重新派发）。")
+            return card_resp("success", "已提交给发布者 ✅",
+                             cards.final_card(task, "issue", operator, reason=reason))
+
+        return card_resp("error", "未知操作")
     except Exception as e:
         print(f"[on_card_action] 出错: {e}")
         return card_resp("error", "处理出错，请稍后再试")

@@ -124,14 +124,15 @@ def get_group(chat_id):
 # ---------------- 任务 ----------------
 
 def create_task(title, assignee_open_id, group_chat_id, deadline=None,
-                owner_open_id=None, created_by_open_id=None):
+                owner_open_id=None, created_by_open_id=None, assignee_name=None,
+                detail=None, note=None, priority=None):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO tasks (title, assignee_open_id, group_chat_id, deadline,
-                               owner_open_id, created_by_open_id)
-            VALUES (%s,%s,%s,%s,%s,%s) RETURNING id
-        """, (title, assignee_open_id, group_chat_id, deadline,
-              owner_open_id, created_by_open_id))
+            INSERT INTO tasks (title, detail, note, priority, assignee_open_id, assignee_name,
+                               group_chat_id, deadline, owner_open_id, created_by_open_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+        """, (title, detail, note, priority, assignee_open_id, assignee_name,
+              group_chat_id, deadline, owner_open_id, created_by_open_id))
         return cur.fetchone()[0]
 
 
@@ -167,7 +168,7 @@ def tasks_still_open():
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT * FROM tasks
-            WHERE status='pending' AND deadline IS NOT NULL
+            WHERE status IN ('pending','accepted') AND deadline IS NOT NULL
             ORDER BY deadline ASC
         """)
         return cur.fetchall()

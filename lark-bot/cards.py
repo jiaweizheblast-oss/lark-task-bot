@@ -5,13 +5,13 @@
 """
 
 STATUS_LABEL = {
+    "pending": "🆕 待接受",
+    "accepted": "⏳ 进行中",
     "done": "✅ 已完成",
-    "unable": "🚫 无法完成",
-    "skip": "⏭️ 已跳过",
-    "pending": "⏳ 待处理",
+    "issue": "🙋 待沟通",
 }
 HEADER_COLOR = {
-    "new": "blue", "done": "green", "unable": "red", "skip": "grey",
+    "new": "blue", "accepted": "turquoise", "done": "green", "issue": "orange",
     "due_tomorrow": "orange", "due_today": "orange", "escalated": "red",
 }
 
@@ -20,50 +20,116 @@ def _at(open_id):
     return f"<at id={open_id}></at>"
 
 
-def task_card(task_id, title, assignee_open_id, deadline=None):
-    """新任务卡片（带按钮）。"""
-    ddl = f"\n**截止：**{deadline}" if deadline else "\n**截止：**未设置"
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": HEADER_COLOR["new"],
-            "title": {"tag": "plain_text", "content": "📋 新任务"},
-        },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md",
-                "content": f"**任务：**{title}\n**负责人：**{_at(assignee_open_id)}{ddl}"}},
-            {"tag": "hr"},
-            {"tag": "note", "elements": [{"tag": "plain_text",
-                "content": f"任务编号 #{task_id} · 请负责人点击下方按钮反馈"}]},
-            {"tag": "action", "actions": [
-                {"tag": "button", "text": {"tag": "plain_text", "content": "✅ 完成"},
-                 "type": "primary", "value": {"action": "done", "task_id": str(task_id)}},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "🚫 无法完成"},
-                 "type": "danger", "value": {"action": "unable", "task_id": str(task_id)}},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "⏭️ 跳过"},
-                 "type": "default", "value": {"action": "skip", "task_id": str(task_id)}},
-            ]},
-        ],
-    }
+PRIORITY_TAG = {"高": "🔴 高", "中": "🟡 中", "低": "🟢 低"}
 
 
-def done_card(task_id, title, assignee_open_id, status, deadline=None, operator_open_id=None):
-    """点完按钮后，把原卡片替换成这个"已处理"样式（没有按钮，不能再点）。"""
-    ddl = f"\n**截止：**{deadline}" if deadline else ""
-    who = f"\n**处理人：**{_at(operator_open_id)}" if operator_open_id else ""
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": HEADER_COLOR.get(status, "grey"),
-            "title": {"tag": "plain_text", "content": f"任务 #{task_id} · {STATUS_LABEL.get(status, status)}"},
-        },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md",
-                "content": f"**任务：**{title}\n**负责人：**{_at(assignee_open_id)}{ddl}{who}"}},
-            {"tag": "note", "elements": [{"tag": "plain_text",
-                "content": f"状态：{STATUS_LABEL.get(status, status)}"}]},
-        ],
-    }
+def _pri(p):
+    return PRIORITY_TAG.get(p, p or "")
+
+
+def _task_detail_block(task):
+    """把一条任务的完整信息渲染成一个 div（标题/详情/注意事项/优先级/负责人/截止）。"""
+    lines = [f"**📌 任务：**{task.get('title', '')}"]
+    if task.get("detail"):
+        lines.append(f"**📝 详情/安排：**{task['detail']}")
+    if task.get("note"):
+        lines.append(f"**⚠️ 注意事项：**{task['note']}")
+    if task.get("priority"):
+        lines.append(f"**🚩 优先级：**{_pri(task['priority'])}")
+    lines.append(f"**👤 负责人：**{_at(task['assignee_open_id'])}")
+    dl = task.get("deadline")
+    lines.append(f"**📅 截止：**{dl if dl else '未设置'}")
+    return {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}
+
+
+def _input(name, label, placeholder, max_length=200):
+    return {"tag": "input", "name": name,
+            "label": {"tag": "plain_text", "content": label},
+            "placeholder": {"tag": "plain_text", "content": placeholder},
+            "max_length": max_length}
+
+
+def create_form_card(chat_id, chat_name, assignee_open_id, assignee_name):
+    """选完负责人后弹出的派发表单：一次填全任务信息。"""
+    v = {"action": "create_task", "chat_id": chat_id, "chat_name": chat_name,
+         "open_id": assignee_open_id, "name": assignee_name}
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 新建任务 · 填写详情"}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                    "content": f"群：**{chat_name}** · 负责人：**{assignee_name}**"}},
+                {"tag": "form", "name": "task_form", "elements": [
+                    _input("title", "任务标题 *", "一句话说清要做什么", 100),
+                    _input("detail", "详情 / 安排", "具体怎么做、分几步、交付什么", 500),
+                    _input("note", "注意事项", "要注意的点、验收标准、易踩的坑", 300),
+                    _input("priority", "优先级（高/中/低）", "默认 中", 4),
+                    _input("deadline", "截止日期", "如 2026-07-25", 20),
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "action_type": "form_submit", "name": "submit",
+                         "text": {"tag": "plain_text", "content": "✅ 提交派发"}, "type": "primary", "value": v}]},
+                ]},
+            ]}
+
+
+def new_task_card(task):
+    """刚派发：负责人可【接受任务】或【无法完成/有问题】。task 为任务字典。"""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": HEADER_COLOR["new"], "title": {"tag": "plain_text", "content": "📋 新任务"}},
+            "elements": [
+                _task_detail_block(task),
+                {"tag": "hr"},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 请负责人选择"}]},
+                {"tag": "action", "actions": [
+                    _btn("✅ 接受任务", {"action": "accept", "task_id": str(task["id"])}, "primary"),
+                    _btn("✋ 无法完成 / 有问题", {"action": "raise", "task_id": str(task["id"])}, "default"),
+                ]},
+            ]}
+
+
+def accepted_card(task):
+    """已接受、进行中：可【完成】或【有问题】。"""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": HEADER_COLOR["accepted"], "title": {"tag": "plain_text", "content": "⏳ 进行中"}},
+            "elements": [
+                _task_detail_block(task),
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 负责人已接受"}]},
+                {"tag": "action", "actions": [
+                    _btn("🎉 完成", {"action": "done", "task_id": str(task["id"])}, "primary"),
+                    _btn("✋ 有问题", {"action": "raise", "task_id": str(task["id"])}, "default"),
+                ]},
+            ]}
+
+
+def reason_form_card(task):
+    """让负责人填写原因/想法，提交后通知发布者商量。"""
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "✋ 说明情况"}},
+            "elements": [
+                _task_detail_block(task),
+                {"tag": "form", "name": "issue_form", "elements": [
+                    _input("reason", "原因 / 你的想法：", "例如：时间来不及，能否延到下周？", 300),
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "action_type": "form_submit", "name": "submit",
+                         "text": {"tag": "plain_text", "content": "提交给发布者"}, "type": "primary",
+                         "value": {"action": "submit_issue", "task_id": str(task["id"])}}]},
+                ]},
+            ]}
+
+
+def final_card(task, status, operator_open_id=None, reason=None):
+    """终态卡片（已完成 / 待沟通），无按钮。"""
+    block = _task_detail_block(task)
+    if operator_open_id:
+        block["text"]["content"] += f"\n**✍️ 处理人：**{_at(operator_open_id)}"
+    if reason:
+        block["text"]["content"] += f"\n**💬 说明：**{reason}"
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": HEADER_COLOR.get(status, "grey"),
+                       "title": {"tag": "plain_text", "content": f"任务 #{task['id']} · {STATUS_LABEL.get(status, status)}"}},
+            "elements": [
+                block,
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"状态：{STATUS_LABEL.get(status, status)}"}]},
+            ]}
 
 
 def reminder_card(kind, task_id, title, assignee_open_id, deadline, owner_open_id=None):
@@ -137,15 +203,14 @@ def draft_ready_card(chat_name, assignee_name):
                            f"现在直接把**任务内容和截止日期**发给我，例如：\n`写合同初稿 截止:2026-07-25`"}}]}
 
 
-def dispatched_card(chat_name, assignee_name, title, deadline=None):
-    """派发成功后，把私聊里的卡片更新成这个。"""
-    ddl = f"\n**截止：**{deadline}" if deadline else ""
+def dispatched_card(chat_name, task):
+    """派发成功后，把私聊里的表单卡片更新成这个确认卡片。"""
     return {"config": {"wide_screen_mode": True},
             "header": {"template": "green", "title": {"tag": "plain_text", "content": "✅ 已派发"}},
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md",
-                    "content": f"**任务：**{title}\n**已发到群：**{chat_name}\n**负责人：**{assignee_name}{ddl}"}},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": "负责人会在群里收到 @ 和反馈按钮"}]}]}
+                _task_detail_block(task),
+                {"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": f"已发到群：{chat_name} · 负责人会收到 @ 和反馈按钮"}]}]}
 
 
 def help_text():
