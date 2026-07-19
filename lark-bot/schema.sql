@@ -58,7 +58,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_name TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS detail   TEXT;   -- 任务详情/安排
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS note     TEXT;   -- 注意事项
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT;   -- 优先级 高/中/低
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS unread   BOOLEAN DEFAULT FALSE;  -- 负责人有新留言待发布者查看（看板红点）
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS unread   BOOLEAN DEFAULT FALSE;  -- 负责人有新留言待发布者查看（= 待沟通）
+-- 迁移旧数据：过去的 "issue"(待沟通) 状态不再是真实状态，改成“有未读留言”叠加在“进行中”上
+UPDATE tasks SET unread = TRUE  WHERE status = 'issue';
+UPDATE tasks SET status = 'accepted' WHERE status = 'issue';
 
 -- 草稿表：私聊终端派任务时，记住"某管理员正在给 X 群的 Y 派任务，等他输入内容"
 CREATE TABLE IF NOT EXISTS drafts (

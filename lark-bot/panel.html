@@ -154,7 +154,7 @@
       <div class="toolbar">
         <select id="flGroup" onchange="renderBoard()"><option value="">全部群</option></select>
         <select id="flAssignee" onchange="renderBoard()"><option value="">全部负责人</option></select>
-        <select id="flStatus" onchange="renderBoard()"><option value="">全部状态</option><option value="pending">待接受</option><option value="accepted">进行中</option><option value="done">已完成</option><option value="issue">待沟通</option><option value="overdue">已超期</option></select>
+        <select id="flStatus" onchange="renderBoard()"><option value="">全部状态</option><option value="pending">待接受</option><option value="accepted">进行中</option><option value="done">已完成</option><option value="overdue">已到期</option><option value="comm">待沟通</option></select>
         <input class="search" id="flSearch" placeholder="🔍 搜索任务…" oninput="renderBoard()">
         <div class="sp"></div>
         <button class="btn ghost sm" onclick="exportCSV()">⬇ 导出</button>
@@ -190,8 +190,12 @@
 let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return '你当地约 '+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
-const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"},{k:"issue",n:"待沟通",c:"var(--s-issue)"}];
-const BOARDCOLS=STATUS.concat([{k:"overdue",n:"🔴 已超期",c:"var(--danger)"}]);   // 超期单独一列，排最后
+// 真实状态只有三个（手动设置、统计都用它）
+const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"}];
+// 看板列 = 三个状态 + 已到期(超期) + 待沟通(有未读留言)，待沟通排最后
+const BOARDCOLS=STATUS.concat([{k:"overdue",n:"🔴 已到期",c:"var(--danger)"},{k:"comm",n:"💬 待沟通",c:"var(--s-issue)"}]);
+// 一个任务归到哪一列：有未读留言→待沟通；否则超期→已到期；否则按真实状态
+function taskCol(t){return t.unread?'comm':(overdue(t)?'overdue':t.status);}
 const SC={pending:"var(--s-pending)",accepted:"var(--s-accepted)",done:"var(--s-done)",issue:"var(--s-issue)"};
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const val=id=>document.getElementById(id).value.trim();
@@ -254,24 +258,23 @@ async function loadTasks(){
 function groupKey(t){return t.is_external?('ext:'+t.external_group_id):t.group_chat_id;}
 function groupName(t){return t.is_external?(EGMAP[t.external_group_id]||'外部群'):(GMAP[t.group_chat_id]?.name||'');}
 function overdue(t){return t.deadline&&(t.status==='pending'||t.status==='accepted')&&t.deadline<todayStr();}
-function renderStats(){const by=k=>TASKS.filter(t=>t.status===k).length;const nover=k=>TASKS.filter(t=>t.status===k&&!overdue(t)).length;const over=TASKS.filter(overdue).length;
-  const tiles=[['总数',TASKS.length,''],['待接受',nover('pending'),''],['进行中',nover('accepted'),''],['已完成',by('done'),''],['待沟通',by('issue'),''],['已超期',over,'over']];
+function renderStats(){const c=k=>TASKS.filter(t=>taskCol(t)===k).length;
+  const tiles=[['总数',TASKS.length,''],['待接受',c('pending'),''],['进行中',c('accepted'),''],['已完成',c('done'),''],['已到期',c('overdue'),'over'],['待沟通',c('comm'),'']];
   document.getElementById('stats').innerHTML=tiles.map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');}
 function filtered(){const g=document.getElementById('flGroup').value,a=document.getElementById('flAssignee').value,s=document.getElementById('flStatus').value,q=document.getElementById('flSearch').value.trim().toLowerCase();
-  return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||(s==='overdue'?overdue(t):t.status===s))&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
+  return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||taskCol(t)===s)&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
 function sortInCol(a,b){const da=a.deadline||'9999-99-99',db2=b.deadline||'9999-99-99';return da<db2?-1:(da>db2?1:0);}  // 截止早的在前
-function colItems(list,k){return k==='overdue'?list.filter(overdue):list.filter(t=>t.status===k&&!overdue(t));}  // 超期的挪到“已超期”列，不再混在原状态里
+function colItems(list,k){return list.filter(t=>taskCol(t)===k);}  // 按 taskCol 归列，每条只进一列
 function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=BOARDCOLS.map(s=>{const items=colItems(list,s.k).sort(sortInCol);
   return `<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${items.length}</span></h3><div>${items.map(tcard).join('')||'<div class="muted">暂无</div>'}</div></div>`;}).join('');}
 function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.priority}</span>`:'';const who=t.assignee_name?`<span class="who">👤 ${esc(t.assignee_name)}</span>`:'';
   const dl=t.deadline?`<span>📅 ${dlText(t.deadline)}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
   const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">外部</span>':''}</div>`:'';
-  const rsn=(t.status==='issue'&&t.result)?`<div class="rsn">💬 ${esc(t.result)}</div>`:'';
-  const unread=t.unread?'<span class="unread" title="负责人有新留言未读"></span>':'';
+  const rsn=(t.unread&&t.result)?`<div class="rsn">💬 ${esc(t.result)}</div>`:'';
+  const unread=t.unread?'<span class="unread" title="负责人有新留言，回复后消除"></span>':'';
   return `<div class="tcard ${overdue(t)?'over':''} ${t.unread?'unreadcard':''}" onclick="openTask(${t.id})">${unread}<div class="tt">#${t.id} ${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
 
 async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
-  if(t.unread){t.unread=false;renderBoard();}
   let reassign='';
   if(!t.is_external){const ms=await membersOf(t.group_chat_id);
     reassign=`<div class="field"><label>负责人（改这里=换人，会给新负责人重发卡片）</label><select id="mAssignee">${ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}" ${m.open_id===t.assignee_open_id?'selected':''}>${esc(m.name)}</option>`).join('')||'<option value="">（无成员）</option>'}</select></div>`;}
@@ -282,7 +285,7 @@ async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
   const stb=STATUS.map(s=>`<button class="${t.status===s.k?'on':''}" style="${t.status===s.k?'background:'+s.c:''}" onclick="setStatus(${t.id},'${s.k}')">${s.n}</button>`).join('');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
     <h3>#${t.id} ${esc(t.title||'')}</h3>
-    <div class="mid">${esc(groupName(t))} ${t.is_external?'· 外部群':''} · 状态：${STATUS.find(s=>s.k===t.status)?.n||t.status}</div>
+    <div class="mid">${esc(groupName(t))} ${t.is_external?'· 外部群':''} · 状态：${STATUS.find(s=>s.k===t.status)?.n||t.status}${t.unread?' · <span style="color:var(--warn);font-weight:600">💬 待沟通（有未读留言，回复后消除）</span>':''}</div>
     <div class="info">${info}</div>
     ${tzHint}
     ${linkRow}
@@ -308,7 +311,9 @@ function renderThread(cs){const el=document.getElementById('mThread');if(!el)ret
   el.scrollTop=el.scrollHeight;}
 async function loadComments(id){try{const cs=await(await api('/api/tasks/'+id+'/comments')).json();renderThread(Array.isArray(cs)?cs:[]);}catch(e){renderThread([]);}}
 async function postComment(id){const inp=document.getElementById('mReply');const v=(inp.value||'').trim();if(!v)return;inp.value='';
-  try{await api('/api/tasks/'+id+'/comments',{method:'POST',body:JSON.stringify({body:v})});loadComments(id);toast('✅ 已回复负责人');}catch(e){toast('发送失败',true);inp.value=v;}}
+  try{await api('/api/tasks/'+id+'/comments',{method:'POST',body:JSON.stringify({body:v})});
+    const t=TASKS.find(x=>x.id===id);if(t&&t.unread){t.unread=false;renderBoard();}   // 回复后清“待沟通”
+    loadComments(id);toast('✅ 已回复，待沟通已消除');}catch(e){toast('发送失败',true);inp.value=v;}}
 async function setStatus(id,st){try{await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify({status:st})});toast('✅ 状态已更新');closeModal();loadTasks();}catch(e){toast('更新失败',true);}}
 async function saveTask(id){const t=TASKS.find(x=>x.id===id);const body={deadline:document.getElementById('mDeadline').value,priority:document.getElementById('mPriority').value};
   const a=document.getElementById('mAssignee');if(a&&a.value&&a.value!==t.assignee_open_id){body.assignee_open_id=a.value;body.assignee_name=a.selectedOptions[0]?.dataset.name||'';}

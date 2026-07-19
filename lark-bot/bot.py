@@ -111,10 +111,10 @@ def _log(task_id, body, side="system", name=None):
 
 
 def _assignee_comment(task_id, body, name):
-    """记一条负责人留言，并把任务标记为“有未读”（看板会显示红点）。"""
+    """记一条负责人留言，并把任务标记为“有未读留言”（= 待沟通；不改变真实状态）。"""
     _log(task_id, body, "assignee", name)
     try:
-        db.update_task_fields(task_id, unread=True)
+        db.update_task_fields(task_id, unread=True, result=body)   # 存最新留言供看板预览；状态不动
     except Exception as e:
         print(f"[unread] 标记失败: {e}")
 
@@ -476,13 +476,13 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
 
         if action == "issue_reason":
             reason = value.get("reason") or "未说明"
-            db.update_task_status(task["id"], "issue", result=reason)
-            _assignee_comment(task["id"], reason, who)
+            _assignee_comment(task["id"], reason, who)   # 记留言 + 标未读（发布者看板→待沟通），状态不变
             notify_publisher(task, f"⚠️ {who} 对任务 #{task['id']}【{task['title']}】反馈：\n"
                                    f"「{reason}」\n"
-                                   f"请沟通处理（可在控制台该任务里回复，或用『新建任务』重新派发）。")
-            return card_resp("success", "已提交给发布者 ✅",
-                             cards.final_card(task, "issue", operator, reason=reason))
+                                   f"请在控制台该任务里回复沟通。")
+            # 状态保持不变，卡片刷回对应状态，负责人仍可接受/完成
+            back = cards.new_task_card(task) if task.get("status") == "pending" else cards.accepted_card(task)
+            return card_resp("success", "已反馈给发布者 ✅", back)
 
         return card_resp("error", "未知操作")
     except Exception as e:
@@ -714,7 +714,7 @@ def api_task_patch(task_id):
         fields["deadline"] = extract_deadline(d.get("deadline") or "")
     if "priority" in d and (d.get("priority") or "").strip() in ("高", "中", "低"):
         fields["priority"] = d["priority"].strip()
-    if d.get("status") in ("pending", "accepted", "done", "issue"):
+    if d.get("status") in ("pending", "accepted", "done"):     # 真实状态只有这三个
         fields["status"] = d["status"]
     reassigned = bool(d.get("assignee_open_id"))
     if reassigned:
@@ -754,7 +754,7 @@ def api_task_nudge(task_id):
 def api_comments_list(task_id):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    _mark_read(task_id)      # 发布者打开看了 → 清红点
+    # 注意：只“看”不清除待沟通；要发布者回复了才算处理完（见下方 POST）
     out = []
     for c in db.list_comments(task_id):
         c = dict(c)
@@ -776,7 +776,7 @@ def api_comments_add(task_id):
     if not body:
         return jsonify({"error": "留言不能为空"}), 400
     db.add_comment(task_id, body, author_side="publisher", author_name="发布者")
-    _mark_read(task_id)      # 发布者回复了 → 清红点
+    _mark_read(task_id)      # 发布者回复了 → 清“待沟通”（读了并回复才算处理完）
     # 内部任务：私聊通知负责人；外部任务：负责人下次打开链接就能看到
     if not task.get("is_external") and task.get("assignee_open_id"):
         send_dm_to_user(task["assignee_open_id"],
@@ -867,18 +867,16 @@ def _msg_box(hint):
 
 
 def _status_actions(task):
-    """按当前状态给一个主按钮 + 一个发送留言按钮，作用一目了然。"""
+    """按当前状态给一个主按钮 + 一个发送留言按钮，作用一目了然。
+    真实状态只有 待接受/进行中/已完成；发留言只是通知发布者，不改变状态。"""
     st = task.get("status", "pending")
-    tip = "发送后这条任务会标记为「待沟通」，发布者会尽快回复你。"
+    tip = "发送后，发布者会在他的控制台看到你的留言并回复你。"
     if st == "pending":
         return '<button class="b done" name="action" value="accept">✅ 接受任务</button>' + _msg_box(tip)
-    if st == "accepted":
-        return '<button class="b done" name="action" value="done">✅ 标记完成</button>' + _msg_box(tip)
     if st == "done":
         return '<div class="okmsg">🎉 已标记完成，谢谢！</div>' + _msg_box("发布者会收到你的补充留言。")
-    # issue / 待沟通：正在和发布者沟通中
-    return ('<button class="b done" name="action" value="done">✅ 问题已解决，标记完成</button>'
-            + _msg_box("发布者会看到你的留言并回复。"))
+    # accepted（含历史 issue 数据）——进行中
+    return '<button class="b done" name="action" value="done">✅ 标记完成</button>' + _msg_box(tip)
 
 
 def _fmt_time(ts):
@@ -989,13 +987,9 @@ def status_submit(token):
         if not msg:
             flash = "请先写点内容再发送哦。"
         else:
-            _assignee_comment(tid, msg, who)
-            notify_publisher(task, f"💬 {who} 对任务 #{tid}【{task['title']}】反馈：\n「{msg}」")
-            if task.get("status") in ("pending", "accepted"):
-                db.update_task_status(tid, "issue")
-                flash = "已发送给发布者 ✅ 这条任务已标为「待沟通」，他会尽快回复你。"
-            else:
-                flash = "已发送给发布者 ✅ 他会尽快回复你。"
+            _assignee_comment(tid, msg, who)     # 标未读（发布者看板会进“待沟通”），不改状态
+            notify_publisher(task, f"💬 {who} 对任务 #{tid}【{task['title']}】留言：\n「{msg}」")
+            flash = "已发送给发布者 ✅ 他看到并回复后会跟你联系。"
     task = db.get_task_by_token(token)      # 重新读取，拿到最新状态再渲染
     return _status_html(task, flash=flash, comments=db.list_comments(tid))
 
