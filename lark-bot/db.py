@@ -145,6 +145,25 @@ def get_task_by_token(token):
         return cur.fetchone()
 
 
+# ---------------- 任务留言 / 沟通时间线 ----------------
+
+def add_comment(task_id, body, author_side="system", author_name=None):
+    """给某个任务加一条留言。author_side: publisher / assignee / system。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO task_comments (task_id, author_side, author_name, body)
+            VALUES (%s,%s,%s,%s) RETURNING id
+        """, (task_id, author_side, author_name, body))
+        return cur.fetchone()[0]
+
+
+def list_comments(task_id):
+    """按时间顺序列出某任务的全部留言。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM task_comments WHERE task_id=%s ORDER BY created_at ASC, id ASC", (task_id,))
+        return cur.fetchall()
+
+
 # ---------------- 外部群（webhook）配置 ----------------
 
 def list_external_groups():

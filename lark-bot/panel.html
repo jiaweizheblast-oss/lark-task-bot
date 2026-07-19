@@ -83,6 +83,14 @@
   .eg-item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
   .eg-item .egn{flex:1;font-weight:600}
   .tip{font-size:12px;color:var(--soft);background:var(--accentS);border-radius:9px;padding:9px 11px;margin:8px 0 12px;line-height:1.55}
+  .thread{display:flex;flex-direction:column;gap:7px;max-height:230px;overflow:auto;padding:4px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;margin-bottom:8px}
+  .cmt{border-radius:9px;padding:7px 10px;font-size:12.5px;max-width:86%;line-height:1.5}
+  .cmt .cw{font-size:10.5px;color:var(--soft);margin-bottom:2px}
+  .cmt.pub{background:var(--accentS);align-self:flex-end;border:1px solid var(--line)}
+  .cmt.asg{background:var(--okB);align-self:flex-start;border:1px solid var(--line)}
+  .cmt.sys{align-self:center;background:transparent;color:var(--soft);font-size:11.5px;text-align:center;max-width:100%}
+  .replybar{display:flex;gap:6px;margin-bottom:14px}
+  .replybar input{flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel);outline:none;font-size:13px}
   #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13.5px;font-weight:600;transition:.25s;pointer-events:none;z-index:60;box-shadow:var(--shadow)}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)} #toast.err{background:var(--danger);color:#fff}
 </style>
@@ -237,12 +245,18 @@ async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
   let reassign='';
   if(!t.is_external){const ms=await membersOf(t.group_chat_id);
     reassign=`<div class="field"><label>负责人（改这里=换人，会给新负责人重发卡片）</label><select id="mAssignee">${ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}" ${m.open_id===t.assignee_open_id?'selected':''}>${esc(m.name)}</option>`).join('')||'<option value="">（无成员）</option>'}</select></div>`;}
-  const info=[t.detail?'详情：'+t.detail:'',t.note?'注意：'+t.note:'',t.result?'反馈：'+t.result:''].filter(Boolean).map(esc).join('\n')||'（无更多详情）';
+  const info=[t.detail?'详情 / 安排：'+t.detail:'',t.note?'注意事项：'+t.note:'',t.result?'最新反馈：'+t.result:''].filter(Boolean).map(esc).join('\n')||'（无更多详情）';
+  const link=(t.is_external&&t.token)?(location.origin+'/t/'+t.token):'';
+  const linkRow=link?`<div class="field"><label>专属汇报链接（可直接发给负责人本人，谁点都记这条任务）</label><div style="display:flex;gap:6px"><input id="mLink" readonly value="${esc(link)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyLink()">复制</button></div></div>`:'';
   const stb=STATUS.map(s=>`<button class="${t.status===s.k?'on':''}" style="${t.status===s.k?'background:'+s.c:''}" onclick="setStatus(${t.id},'${s.k}')">${s.n}</button>`).join('');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
     <h3>#${t.id} ${esc(t.title||'')}</h3>
     <div class="mid">${esc(groupName(t))} ${t.is_external?'· 外部群':''} · 状态：${STATUS.find(s=>s.k===t.status)?.n||t.status}</div>
     <div class="info">${info}</div>
+    ${linkRow}
+    <label style="font-size:12.5px;color:var(--soft);font-weight:600">💬 沟通记录（和负责人商量，都会留痕）</label>
+    <div class="thread" id="mThread"><div class="muted" style="padding:6px">加载中…</div></div>
+    <div class="replybar"><input id="mReply" placeholder="回复负责人…" onkeydown="if(event.key==='Enter')postComment(${t.id})"><button class="btn sm" onclick="postComment(${t.id})">发送</button></div>
     <label style="font-size:12.5px;color:var(--soft);font-weight:600">手动设置状态</label><div class="stbtns">${stb}</div>
     <div class="row2"><div class="field"><label>截止日期</label><input id="mDeadline" type="date" value="${t.deadline||''}"></div>
     <div class="field"><label>优先级</label><select id="mPriority">${['高','中','低'].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}</select></div></div>
@@ -251,8 +265,18 @@ async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
     ${t.is_external?'':`<button class="btn ghost sm" onclick="nudgeTask(${t.id})">⏰ 催办</button>`}
     <div style="flex:1"></div><button class="btn danger sm" onclick="delTask(${t.id})">🗑 删除</button>
     <button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
-  </div></div>`;}
+  </div></div>`;loadComments(id);}
 function closeModal(){document.getElementById('modalRoot').innerHTML='';}
+function copyLink(){const el=document.getElementById('mLink');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ 链接已复制，可直接发给负责人本人');}
+function fmtTime(s){if(!s)return'';const d=new Date(s);if(isNaN(d))return esc(s);return (d.getMonth()+1)+'-'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+const SIDE_CLS={publisher:'pub',assignee:'asg',system:'sys'},SIDE_NM={publisher:'发布者',assignee:'负责人',system:''};
+function renderThread(cs){const el=document.getElementById('mThread');if(!el)return;
+  if(!cs.length){el.innerHTML='<div class="muted" style="padding:6px">还没有沟通记录。派发、接受、完成、反馈都会自动记在这里。</div>';return;}
+  el.innerHTML=cs.map(c=>{const cls=SIDE_CLS[c.author_side]||'sys';const nm=c.author_name||SIDE_NM[c.author_side]||'';const head=(c.author_side==='system')?fmtTime(c.created_at):(esc(nm)+' · '+fmtTime(c.created_at));return `<div class="cmt ${cls}"><div class="cw">${head}</div><div>${esc(c.body)}</div></div>`;}).join('');
+  el.scrollTop=el.scrollHeight;}
+async function loadComments(id){try{const cs=await(await api('/api/tasks/'+id+'/comments')).json();renderThread(Array.isArray(cs)?cs:[]);}catch(e){renderThread([]);}}
+async function postComment(id){const inp=document.getElementById('mReply');const v=(inp.value||'').trim();if(!v)return;inp.value='';
+  try{await api('/api/tasks/'+id+'/comments',{method:'POST',body:JSON.stringify({body:v})});loadComments(id);toast('✅ 已回复负责人');}catch(e){toast('发送失败',true);inp.value=v;}}
 async function setStatus(id,st){try{await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify({status:st})});toast('✅ 状态已更新');closeModal();loadTasks();}catch(e){toast('更新失败',true);}}
 async function saveTask(id){const t=TASKS.find(x=>x.id===id);const body={deadline:document.getElementById('mDeadline').value,priority:document.getElementById('mPriority').value};
   const a=document.getElementById('mAssignee');if(a&&a.value&&a.value!==t.assignee_open_id){body.assignee_open_id=a.value;body.assignee_name=a.selectedOptions[0]?.dataset.name||'';}

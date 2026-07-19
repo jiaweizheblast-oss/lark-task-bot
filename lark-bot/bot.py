@@ -88,10 +88,18 @@ def send_dm_to_user(open_id, text):
 
 
 def notify_publisher(task, text):
-    """把消息私聊发给任务的发布者（创建者）。"""
-    pub = task.get("created_by_open_id")
+    """把消息私聊发给任务的发布者（创建者）；创建者未知时退回到统一通知人。"""
+    pub = task.get("created_by_open_id") or ADMIN_NOTIFY_OPEN_ID
     if pub:
         send_dm_to_user(pub, text)
+
+
+def _log(task_id, body, side="system", name=None):
+    """记一条任务留言（时间线）。失败不影响主流程。"""
+    try:
+        db.add_comment(task_id, body, author_side=side, author_name=name)
+    except Exception as e:
+        print(f"[log] 记录留言失败: {e}")
 
 
 def push_to_webhook(url, card):
@@ -200,6 +208,7 @@ def handle_task_wizard(sender_open_id, dm_chat_id, text, draft):
                                  assignee_name=draft.get("assignee_name"),
                                  detail=draft.get("detail"), note=draft.get("note"), priority=priority)
         task = db.get_task(task_id)
+        _log(task_id, f"任务已派发给 {task.get('assignee_name') or '负责人'}", "system")
         mid = send_card(draft["chat_id"], cards.new_task_card(task))
         if mid:
             db.set_task_card(task_id, mid)
@@ -333,14 +342,16 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         if operator != task["assignee_open_id"]:
             return card_resp("error", "只有该任务的负责人能操作")
 
+        who = task.get("assignee_name") or "负责人"
         if action == "accept":
             db.update_task_status(task["id"], "accepted")
+            _log(task["id"], "接受了任务", "assignee", who)
             return card_resp("success", "已接受 ✅", cards.accepted_card(task))
 
         if action == "done":
             db.update_task_status(task["id"], "done")
-            notify_publisher(task, f"✅ {task.get('assignee_name') or '负责人'} 完成了任务 "
-                                   f"#{task['id']}【{task['title']}】")
+            _log(task["id"], "标记完成", "assignee", who)
+            notify_publisher(task, f"✅ {who} 完成了任务 #{task['id']}【{task['title']}】")
             return card_resp("success", "已完成 🎉", cards.final_card(task, "done", operator))
 
         if action == "raise":
@@ -349,10 +360,10 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         if action == "issue_reason":
             reason = value.get("reason") or "未说明"
             db.update_task_status(task["id"], "issue", result=reason)
-            who = task.get("assignee_name") or "负责人"
+            _log(task["id"], reason, "assignee", who)
             notify_publisher(task, f"⚠️ {who} 对任务 #{task['id']}【{task['title']}】反馈：\n"
                                    f"「{reason}」\n"
-                                   f"请沟通处理（可在群里回复，或用『新建任务』重新派发）。")
+                                   f"请沟通处理（可在控制台该任务里回复，或用『新建任务』重新派发）。")
             return card_resp("success", "已提交给发布者 ✅",
                              cards.final_card(task, "issue", operator, reason=reason))
 
@@ -483,6 +494,7 @@ def api_tasks_create():
                                  detail=detail, note=note, priority=priority,
                                  token=token, is_external=True, external_group_id=int(eg_id))
         task = db.get_task(task_id)
+        _log(task_id, f"任务已派发到外部群，负责人：{task.get('assignee_name') or '（见群内）'}", "system")
         ok = push_to_webhook(eg["webhook_url"], cards.external_task_card(task, f"{_base_url()}/t/{token}"))
         return jsonify({"ok": True, "task_id": task_id, "pushed": ok})
 
@@ -495,6 +507,7 @@ def api_tasks_create():
                              created_by_open_id=(ADMIN_NOTIFY_OPEN_ID or None),
                              assignee_name=d.get("assignee_name"), detail=detail, note=note, priority=priority)
     task = db.get_task(task_id)
+    _log(task_id, f"任务已派发给 {task.get('assignee_name') or '负责人'}", "system")
     mid = send_card(chat_id, cards.new_task_card(task))
     if mid:
         db.set_task_card(task_id, mid)
@@ -560,6 +573,13 @@ def api_task_patch(task_id):
         fields["status"] = "pending"      # 换人后重置为“待接受”
     if fields:
         db.update_task_fields(task_id, **fields)
+        # 记录到时间线（发布者在控制台的改动）
+        if reassigned:
+            _log(task_id, f"发布者改派给 {d.get('assignee_name') or '新负责人'}", "system")
+        elif "status" in fields:
+            _log(task_id, f"发布者把状态改为「{_ST_LABEL.get(fields['status'], fields['status'])}」", "system")
+        if "deadline" in fields and not reassigned:
+            _log(task_id, f"发布者把截止日期改为 {fields['deadline'] or '未设置'}", "system")
     task = db.get_task(task_id)
     if reassigned:                        # 换人后向群里重发一张新卡片
         mid = send_card(task["group_chat_id"], cards.new_task_card(task))
@@ -576,6 +596,39 @@ def api_task_nudge(task_id):
     if not task:
         return jsonify({"error": "任务不存在"}), 404
     send_card(task["group_chat_id"], cards.nudge_card(task))
+    _log(task_id, "发布者在群里催办了一次", "system")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<int:task_id>/comments", methods=["GET"])
+def api_comments_list(task_id):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    out = []
+    for c in db.list_comments(task_id):
+        c = dict(c)
+        if c.get("created_at") is not None:
+            c["created_at"] = c["created_at"].isoformat() if hasattr(c["created_at"], "isoformat") else str(c["created_at"])
+        out.append(c)
+    return jsonify(out)
+
+
+@app.route("/api/tasks/<int:task_id>/comments", methods=["POST"])
+def api_comments_add(task_id):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    task = db.get_task(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    d = request.get_json(silent=True) or {}
+    body = (d.get("body") or "").strip()
+    if not body:
+        return jsonify({"error": "留言不能为空"}), 400
+    db.add_comment(task_id, body, author_side="publisher", author_name="发布者")
+    # 内部任务：私聊通知负责人；外部任务：负责人下次打开链接就能看到
+    if not task.get("is_external") and task.get("assignee_open_id"):
+        send_dm_to_user(task["assignee_open_id"],
+                        f"💬 发布者在任务 #{task_id}【{task['title']}】留言：\n「{body}」")
     return jsonify({"ok": True})
 
 
@@ -606,6 +659,14 @@ padding:10px 12px;margin:12px 0 2px;font-weight:600}
 padding:14px;margin-top:6px}
 .rsnbox{background:#fdf1e3;border:1px solid #f0d9b8;color:#8a5a12;font-size:13px;border-radius:10px;
 padding:10px 12px;margin-top:6px}
+.b.talk{background:#5b5bd6} .msgbtns{display:flex;gap:8px;margin-top:8px} .msgbtns .b{margin-top:0}
+.thread{margin:6px 0 2px;display:flex;flex-direction:column;gap:8px}
+.cmt{border-radius:10px;padding:8px 11px;font-size:13px;max-width:88%}
+.cmt .cw{font-size:11px;color:#8a949e;margin-bottom:2px}
+.cmt.pub{background:#eef1ff;align-self:flex-start;border:1px solid #e0e5fb}
+.cmt.asg{background:#e8f6ec;align-self:flex-end;border:1px solid #cfebd5}
+.cmt.sys{background:#f2f3f5;align-self:center;color:#6b7480;font-size:12px;text-align:center;max-width:100%}
+.sec{font-size:12.5px;color:#5b636b;font-weight:700;margin:16px 0 6px}
 """
 
 
@@ -615,56 +676,79 @@ def _h(s):
 
 _ST_LABEL = {"pending": "🆕 待接受", "accepted": "⏳ 进行中", "done": "✅ 已完成", "issue": "🙋 待沟通"}
 
-# 有问题的输入框 + 提交按钮（多个状态复用）
-_ISSUE_BOX = """
-  <div class="or">遇到问题？写下原因，和发布者商量：</div>
-  <textarea name="reason" placeholder="遇到什么问题？想怎么处理？（选填）"></textarea>
-  <button class="b issue" name="action" value="issue">🙋 提交问题</button>"""
+# 统一的留言框：一个输入框 + 两个按钮（标记有问题 / 只发留言）——两个状态都复用
+_MSG_BOX = """
+  <div class="or">有问题或想和发布者沟通？写在这里（会记进下方沟通记录）：</div>
+  <textarea name="msg" placeholder="例如：能不能延到周五？/ 第一步已完成…（选填）"></textarea>
+  <div class="msgbtns">
+    <button class="b issue" name="action" value="issue">🙋 标记有问题</button>
+    <button class="b talk" name="action" value="comment">💬 发送留言</button>
+  </div>"""
 
 
 def _status_actions(task):
-    """根据任务当前状态，给出该显示哪些按钮（和内部群流程一致：先接受，再完成/有问题）。"""
+    """根据当前状态给出主按钮（先接受→再完成），下面统一带留言框。"""
     st = task.get("status", "pending")
     if st == "pending":
-        return f'<button class="b done" name="action" value="accept">✅ 接受任务</button>{_ISSUE_BOX}'
-    if st == "accepted":
-        return f'<button class="b done" name="action" value="done">✅ 标记完成</button>{_ISSUE_BOX}'
-    if st == "done":
-        return ('<div class="okmsg">🎉 已标记完成，谢谢！</div>'
-                '<div class="or">如状态有误，可重新反馈：</div>'
-                '<textarea name="reason" placeholder="补充说明（选填）"></textarea>'
-                '<button class="b issue" name="action" value="issue">🙋 反馈问题</button>')
-    # issue：显示已反馈的原因，可标记完成或补充
-    rsn = f'<div class="rsnbox">💬 已反馈：{_h(task.get("result") or "有问题")}</div>'
-    return (f'{rsn}<button class="b done" name="action" value="done">✅ 已解决 / 标记完成</button>'
-            '<div class="or">或补充问题：</div>'
-            '<textarea name="reason" placeholder="补充说明（选填）"></textarea>'
-            '<button class="b issue" name="action" value="issue">🙋 更新问题</button>')
+        primary = '<button class="b done" name="action" value="accept">✅ 接受任务</button>'
+    elif st == "accepted":
+        primary = '<button class="b done" name="action" value="done">✅ 标记完成</button>'
+    elif st == "done":
+        primary = '<div class="okmsg">🎉 已标记完成，谢谢！</div>'
+    else:  # issue
+        primary = ('<div class="rsnbox">💬 当前：待沟通，发布者会回复你。</div>'
+                   '<button class="b done" name="action" value="done">✅ 已解决 / 标记完成</button>')
+    return primary + _MSG_BOX
 
 
-def _status_html(task, flash=None):
+def _fmt_time(ts):
+    try:
+        return ts.strftime("%m-%d %H:%M")
+    except Exception:
+        return str(ts or "")
+
+
+_SIDE_LABEL = {"publisher": "发布者", "assignee": "负责人", "system": ""}
+
+
+def _thread_html(comments):
+    if not comments:
+        return ""
+    rows = []
+    for c in comments:
+        side = c.get("author_side", "system")
+        cls = {"publisher": "pub", "assignee": "asg", "system": "sys"}.get(side, "sys")
+        name = c.get("author_name") or _SIDE_LABEL.get(side, "")
+        head = f"{_h(name)} · {_h(_fmt_time(c.get('created_at')))}" if side != "system" else _h(_fmt_time(c.get("created_at")))
+        rows.append(f'<div class="cmt {cls}"><div class="cw">{head}</div><div>{_h(c.get("body",""))}</div></div>')
+    return '<div class="sec">💬 沟通记录</div><div class="thread">' + "".join(rows) + "</div>"
+
+
+def _status_html(task, flash=None, comments=None):
     st = task.get("status", "pending")
     bits = []
     if task.get("priority"):
-        bits.append(f"优先级：{_h(task['priority'])}")
+        bits.append(f"优先级 {_h(task['priority'])}")
     if task.get("deadline"):
-        bits.append(f"截止：{_h(task['deadline'])}")
+        bits.append(f"截止 {_h(task['deadline'])}")
     if task.get("assignee_name"):
-        bits.append(f"负责人：{_h(task['assignee_name'])}")
-    detail = f"<p><b>详情/安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
-    note = f"<p><b>注意事项：</b>{_h(task['note'])}</p>" if task.get("note") else ""
+        bits.append(f"负责人 {_h(task['assignee_name'])}")
+    detail = f"<p><b>📝 详情 / 安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
+    note = f"<p><b>⚠️ 注意事项：</b>{_h(task['note'])}</p>" if task.get("note") else ""
     who = _h(task.get("assignee_name") or "负责人")
     badge = f'<span class="badge b-{st}">当前状态：{_ST_LABEL.get(st, st)}</span>'
     flash_html = f'<div class="flash">{_h(flash)}</div>' if flash else ""
+    thread = _thread_html(comments or [])
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>任务汇报</title>
 <style>{_STATUS_CSS}</style></head><body><div class="card">
 <div class="h">📋 任务汇报</div>
 <div class="t">{_h(task.get('title',''))}</div>
-<div class="meta">{'　'.join(bits)}</div>
+<div class="meta">{'　·　'.join(bits)}</div>
 {badge}
 {detail}{note}
 <div class="warn">⚠️ 请仅由负责人 <b>{who}</b> 操作，其他群成员请勿点击，以免弄乱状态。</div>
+{thread}
 {flash_html}
 <form method="post">{_status_actions(task)}</form>
 </div></body></html>"""
@@ -675,7 +759,7 @@ def status_page(token):
     task = db.get_task_by_token(token)
     if not task:
         return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效或任务已删除</h3>", 404
-    return _status_html(task)
+    return _status_html(task, comments=db.list_comments(task["id"]))
 
 
 @app.route("/t/<token>", methods=["POST"])
@@ -684,19 +768,31 @@ def status_submit(token):
     if not task:
         return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效</h3>", 404
     action = request.form.get("action")
-    reason = (request.form.get("reason") or "").strip()
+    msg = (request.form.get("msg") or "").strip()
+    who = task.get("assignee_name") or "负责人"
+    tid = task["id"]
     flash = None
     if action == "accept":
-        db.update_task_status(task["id"], "accepted")
+        db.update_task_status(tid, "accepted")
+        _log(tid, "接受了任务", "assignee", who)
         flash = "已接受 ✅ 请在截止前完成，快到期时我们会在群里提醒你。"
     elif action == "done":
-        db.update_task_status(task["id"], "done")
+        db.update_task_status(tid, "done")
+        _log(tid, "标记完成" + (f"：{msg}" if msg else ""), "assignee", who)
+        notify_publisher(task, f"✅ {who} 完成了任务 #{tid}【{task['title']}】")
         flash = "已记录：完成，谢谢！🎉"
     elif action == "issue":
-        db.update_task_status(task["id"], "issue", result=reason or "有问题（未填写说明）")
-        flash = "已记录：有问题，发布者会尽快跟进。"
+        db.update_task_status(tid, "issue", result=msg or "有问题（未填写说明）")
+        _log(tid, msg or "（提出问题，未填写说明）", "assignee", who)
+        notify_publisher(task, f"⚠️ {who} 对任务 #{tid}【{task['title']}】提出问题：\n「{msg or '未填写'}」")
+        flash = "已提交问题，发布者会尽快回复。你可以在下面继续留言。"
+    elif action == "comment":
+        if msg:
+            _log(tid, msg, "assignee", who)
+            notify_publisher(task, f"💬 {who} 在任务 #{tid}【{task['title']}】留言：\n「{msg}」")
+            flash = "留言已发送，发布者会看到。"
     task = db.get_task_by_token(token)      # 重新读取，拿到最新状态再渲染
-    return _status_html(task, flash=flash)
+    return _status_html(task, flash=flash, comments=db.list_comments(tid))
 
 
 def main():

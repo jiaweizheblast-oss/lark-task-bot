@@ -95,6 +95,17 @@ ALTER TABLE tasks ALTER COLUMN group_chat_id DROP NOT NULL;
 ALTER TABLE tasks ALTER COLUMN assignee_open_id DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_token ON tasks (token);
 
+-- 任务留言 / 沟通时间线：发布者 ↔ 负责人 来回商量，都留痕（内部外部通用）
+CREATE TABLE IF NOT EXISTS task_comments (
+    id           SERIAL PRIMARY KEY,
+    task_id      INTEGER NOT NULL,
+    author_side  TEXT NOT NULL DEFAULT 'system',  -- publisher(发布者) / assignee(负责人) / system(系统)
+    author_name  TEXT,
+    body         TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_comments_task ON task_comments (task_id, created_at);
+
 -- 给定时任务扫描用的索引（按状态 + 截止日期查）
 CREATE INDEX IF NOT EXISTS idx_tasks_status_deadline ON tasks (status, deadline);
 CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks (group_chat_id);

@@ -27,19 +27,28 @@ def _pri(p):
     return PRIORITY_TAG.get(p, p or "")
 
 
-def _task_detail_block(task):
-    """把一条任务的完整信息渲染成一个 div（标题/详情/注意事项/优先级/负责人/截止）。"""
-    lines = [f"**📌 任务：**{task.get('title', '')}"]
-    if task.get("detail"):
-        lines.append(f"**📝 详情/安排：**{task['detail']}")
-    if task.get("note"):
-        lines.append(f"**⚠️ 注意事项：**{task['note']}")
+def _task_body_lines(task, assignee_display, at_all=False):
+    """统一的任务信息正文（内部群 / 外部群 / 网页共用同一套排版，保证长得一样）。
+    第一行大标题；第二行优先级·截止；第三行负责人；再往下是详情 / 注意事项。"""
+    head = f"**{task.get('title', '(无标题)')}**"
+    if at_all:
+        head = "<at id=all></at>\n" + head
+    meta = []
     if task.get("priority"):
-        lines.append(f"**🚩 优先级：**{_pri(task['priority'])}")
-    lines.append(f"**👤 负责人：**{_at(task['assignee_open_id'])}")
-    dl = task.get("deadline")
-    lines.append(f"**📅 截止：**{dl if dl else '未设置'}")
-    return {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}
+        meta.append(f"优先级 {_pri(task['priority'])}")
+    meta.append(f"截止 {task.get('deadline') or '未设置'}")
+    lines = [head, "　·　".join(meta), f"负责人 {assignee_display}"]
+    if task.get("detail"):
+        lines += ["", f"**📝 详情 / 安排**\n{task['detail']}"]
+    if task.get("note"):
+        lines += ["", f"**⚠️ 注意事项**\n{task['note']}"]
+    return "\n".join(lines)
+
+
+def _task_detail_block(task):
+    """内部群卡片用：负责人以 @ 提及呈现。"""
+    return {"tag": "div", "text": {"tag": "lark_md",
+            "content": _task_body_lines(task, _at(task["assignee_open_id"]))}}
 
 
 def _input(name, label, placeholder, max_length=200):
@@ -87,11 +96,13 @@ def new_task_card(task):
             "elements": [
                 _task_detail_block(task),
                 {"tag": "hr"},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 请负责人选择"}]},
+                {"tag": "div", "text": {"tag": "lark_md",
+                    "content": "👉 请负责人处理：点【接受任务】开始；如无法完成或有疑问，点【无法完成 / 有问题】和发布者沟通。"}},
                 {"tag": "action", "actions": [
                     _btn("✅ 接受任务", {"action": "accept", "task_id": str(task["id"])}, "primary"),
                     _btn("✋ 无法完成 / 有问题", {"action": "raise", "task_id": str(task["id"])}, "default"),
                 ]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 任务终端"}]},
             ]}
 
 
@@ -101,11 +112,14 @@ def accepted_card(task):
             "header": {"template": HEADER_COLOR["accepted"], "title": {"tag": "plain_text", "content": "⏳ 进行中"}},
             "elements": [
                 _task_detail_block(task),
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 负责人已接受"}]},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md",
+                    "content": "👉 完成后点【完成】；如遇到问题，点【有问题】和发布者沟通。"}},
                 {"tag": "action", "actions": [
                     _btn("🎉 完成", {"action": "done", "task_id": str(task["id"])}, "primary"),
                     _btn("✋ 有问题", {"action": "raise", "task_id": str(task["id"])}, "default"),
                 ]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 负责人已接受"}]},
             ]}
 
 
@@ -227,37 +241,24 @@ def dispatched_card(chat_name, task):
                     "content": f"已发到群：{chat_name} · 负责人会收到 @ 和反馈按钮"}]}]}
 
 
-def _ext_task_lines(task):
-    lines = [f"**📌 任务：**{task.get('title','')}"]
-    if task.get("detail"):
-        lines.append(f"**📝 详情/安排：**{task['detail']}")
-    if task.get("note"):
-        lines.append(f"**⚠️ 注意事项：**{task['note']}")
-    if task.get("priority"):
-        lines.append(f"**🚩 优先级：**{_pri(task['priority'])}")
-    lines.append(f"**👤 负责人：**{task.get('assignee_name') or '（见群内）'}")
-    if task.get("deadline"):
-        lines.append(f"**📅 截止：**{task['deadline']}")
-    return lines
-
-
 def external_task_card(task, status_url):
-    """推给外部群的任务卡片：@全体 + 详情 + 一个按钮打开汇报页。
-    点开的网页会根据任务状态，依次给出【接受任务】→【标记完成 / 有问题】，
-    和内部群的流程保持一致。只用一个按钮，避免两个按钮都跳同一个页面的重复。"""
+    """推给外部群的任务卡片：和内部群卡片同一套排版（统一）。
+    差别只在：外部群 @全体（拿不到个人 id，飞书限制），且只有一个按钮——
+    点开网页后再依次【接受任务】→【标记完成 / 有问题】，与内部群流程一致。"""
     name = task.get("assignee_name") or ""
-    body = "<at id=all></at>\n" + "\n".join(_ext_task_lines(task))
-    tip = f"👉 请**负责人 {name}** 点下面按钮：先接受任务，之后再汇报完成或问题。" \
-          f"\n（其他群成员请勿点击，以免弄乱状态）"
+    tip = (f"👉 请负责人 **{name or '（见群内）'}** 点下面按钮：先【接受任务】，之后在同一页面汇报完成或问题。\n"
+           f"⚠️ 其他群成员请勿点击，以免弄乱状态。")
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📋 新任务"}},
+            "header": {"template": HEADER_COLOR["new"], "title": {"tag": "plain_text", "content": "📋 新任务"}},
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+                {"tag": "div", "text": {"tag": "lark_md",
+                    "content": _task_body_lines(task, name or "（见群内）", at_all=True)}},
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md", "content": tip}},
                 {"tag": "action", "actions": [
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "📝 接受 / 汇报进度"},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "✅ 接受任务 / 汇报进度"},
                      "type": "primary", "url": status_url}]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 外部群（webhook）"}]},
             ]}
 
 
