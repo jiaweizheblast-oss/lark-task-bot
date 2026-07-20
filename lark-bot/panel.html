@@ -220,11 +220,21 @@
             <button id="tab-attend" onclick="showTab('attend')">🕒 Attendance</button>
           </div>
         </div>
-        <div class="navitems" style="margin-top:8px"><button id="tab-docs" onclick="showTab('docs')">📄 Docs</button></div>
+        <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">Resources <span class="caret">▾</span></div>
+          <div class="navitems">
+            <button id="tab-docs" onclick="showTab('docs')">📄 Templates</button>
+          </div>
+        </div>
+        <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">Settings <span class="caret">▾</span></div>
+          <div class="navitems">
+            <button onclick="openReminderSettings()">⏰ Reminders</button>
+            <button onclick="openExtSettings()">🤖 Groups &amp; Bot</button>
+          </div>
+        </div>
       </nav>
       <div class="sidefoot">
-        <button class="btn ghost sm" onclick="openReminderSettings()">🔔 Reminders</button>
-        <button class="btn ghost sm" onclick="openExtSettings()">⚙️ External Groups</button>
         <button class="btn ghost sm" onclick="logout()">Log out</button>
       </div>
     </aside>
@@ -623,7 +633,7 @@ async function saveReminderSettings(){const g=k=>document.getElementById('rs_'+k
 async function openExtSettings(){
   const list=EGROUPS.map(g=>`<div class="eg-item"><span class="egn">🌐 ${esc(g.name)}</span><button class="btn danger sm" onclick="delExtGroup(${g.id})">Remove</button></div>`).join('')||'<div class="muted">No external groups yet</div>';
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
-    <h3>⚙️ External Groups</h3><div class="mid">External groups can't add the app bot — they use a webhook instead.</div>
+    <h3>🤖 Groups &amp; Bot</h3><div class="mid">Internal groups connect via the bot automatically. External groups can't add the bot — they use a webhook (managed below). Used across the app: task dispatch and recruiting push.</div>
     <div class="tip">How to get a webhook: in the external group → Settings → Add Bot → choose <b>Custom Bot</b> → copy its <b>Webhook URL</b> and paste it below.</div>
     <div id="egList">${list}</div>
     <div style="margin-top:14px"><div class="field"><label>External group name (your own label)</label><input id="egName" placeholder="e.g. Supplier 21win group"></div>
