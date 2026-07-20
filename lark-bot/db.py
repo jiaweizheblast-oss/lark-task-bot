@@ -304,3 +304,89 @@ def get_draft(admin_open_id):
 def clear_draft(admin_open_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM drafts WHERE admin_open_id=%s", (admin_open_id,))
+
+
+# ---------------- 招聘渠道日报模块 ----------------
+
+def list_job_requests(only_open=True):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if only_open:
+            cur.execute("SELECT * FROM job_requests WHERE status='open' ORDER BY id")
+        else:
+            cur.execute("SELECT * FROM job_requests ORDER BY id")
+        return cur.fetchall()
+
+
+def seed_job_requests():
+    """首次为空时给几个示例职位，方便直接试。已有职位则跳过。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM job_requests LIMIT 1")
+        if cur.fetchone():
+            return
+        cur.execute("""INSERT INTO job_requests (title, target_headcount, target_resume_count)
+                       VALUES ('后端工程师',5,300),('产品经理',3,250),('HRBP',2,150)""")
+
+
+def create_job_request(title, target_headcount=0, target_resume_count=0):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO job_requests (title, target_headcount, target_resume_count)
+                       VALUES (%s,%s,%s) RETURNING id""",
+                    (title, target_headcount, target_resume_count))
+        return cur.fetchone()[0]
+
+
+def list_channel_records(day=None):
+    """某日（或最近）渠道记录，带职位名。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if day:
+            cur.execute("""SELECT r.*, j.title AS job_title FROM channel_daily r
+                           JOIN job_requests j ON j.id = r.job_request_id
+                           WHERE r.record_date=%s ORDER BY r.channel, j.title""", (day,))
+        else:
+            cur.execute("""SELECT r.*, j.title AS job_title FROM channel_daily r
+                           JOIN job_requests j ON j.id = r.job_request_id
+                           ORDER BY r.record_date DESC, r.channel LIMIT 500""")
+        return cur.fetchall()
+
+
+def channel_rows_upto(day):
+    """截止到 day（含）的所有渠道记录，供分析（滚动/累计/环比）用。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM channel_daily WHERE record_date<=%s", (day,))
+        return cur.fetchall()
+
+
+def get_channel_record(rid):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM channel_daily WHERE id=%s", (rid,))
+        return cur.fetchone()
+
+
+def create_channel_record(record_date, channel, job_request_id, filled_by,
+                          new_resumes=0, passed_screening=0, recommended=0, rejected=0, note=""):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO channel_daily
+            (record_date, channel, job_request_id, filled_by,
+             new_resumes, passed_screening, recommended, rejected, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (record_date, channel, job_request_id, filled_by,
+             new_resumes, passed_screening, recommended, rejected, note))
+        return cur.fetchone()[0]
+
+
+def update_channel_record(rid, **fields):
+    allowed = {"record_date", "channel", "job_request_id", "filled_by",
+               "new_resumes", "passed_screening", "recommended", "rejected", "note"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    vals = list(sets.values()) + [rid]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE channel_daily SET {cols}, updated_at=now() WHERE id=%s", vals)
+
+
+def delete_channel_record(rid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM channel_daily WHERE id=%s", (rid,))
+        return cur.rowcount > 0

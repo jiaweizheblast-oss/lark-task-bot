@@ -120,3 +120,38 @@ CREATE INDEX IF NOT EXISTS idx_comments_task ON task_comments (task_id, created_
 CREATE INDEX IF NOT EXISTS idx_tasks_status_deadline ON tasks (status, deadline);
 CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks (group_chat_id);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
+
+-- ============================================================
+--  招聘渠道简历日报模块（新增，纯增量）
+--  HR 每天每渠道每职位填一行；多个 HR 用 filled_by 区分，
+--  汇总统计时按 (record_date, channel, job_request_id) GROUP BY——
+--  行顺序无关，谁先填谁后填都不影响最终数字。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS job_requests (
+    id                  SERIAL PRIMARY KEY,
+    title               TEXT NOT NULL,                 -- 职位名
+    target_headcount    INTEGER NOT NULL DEFAULT 0,    -- 目标人数（要招几个人）
+    target_resume_count INTEGER NOT NULL DEFAULT 0,    -- 目标简历量（可选；0=未设）
+    status              TEXT NOT NULL DEFAULT 'open',  -- open / closed
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS channel_daily (
+    id               SERIAL PRIMARY KEY,
+    record_date      DATE NOT NULL,
+    channel          TEXT NOT NULL,                    -- 招聘渠道（限预设项）
+    job_request_id   INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
+    filled_by        TEXT NOT NULL DEFAULT '',         -- 填写人（多 HR 区分）
+    new_resumes      INTEGER NOT NULL DEFAULT 0,       -- 今日新增简历数
+    passed_screening INTEGER NOT NULL DEFAULT 0,       -- 初筛通过数
+    recommended      INTEGER NOT NULL DEFAULT 0,       -- 已推荐面试数
+    rejected         INTEGER NOT NULL DEFAULT 0,       -- 已拒绝数
+    note             TEXT NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 多 HR 键：同一天+同渠道+同职位+同一填写人 只能一行（防重复提交，不同 HR 各一行）
+    UNIQUE (record_date, channel, job_request_id, filled_by)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_daily_date ON channel_daily (record_date);
+CREATE INDEX IF NOT EXISTS idx_channel_daily_ch ON channel_daily (channel, record_date);

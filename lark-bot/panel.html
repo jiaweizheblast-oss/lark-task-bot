@@ -121,6 +121,7 @@
       <button id="tab-board" onclick="showTab('board')">Board</button>
       <button id="tab-cal" onclick="showTab('cal')">Calendar</button>
       <button id="tab-report" onclick="showTab('report')">Reports</button>
+      <button id="tab-recruit" onclick="showTab('recruit')">Recruiting</button>
     </div>
     <div class="sp"></div>
     <button class="btn ghost sm" onclick="openReminderSettings()">🔔 Reminders</button>
@@ -180,6 +181,46 @@
       <div class="stats" id="reportTiles"></div>
       <div id="reportBody"></div>
     </section>
+    <section id="view-recruit" class="hide">
+      <div class="form-card" style="max-width:860px">
+        <h2 id="cFormTitle">招聘渠道 · 每日录入</h2>
+        <p class="sub">HR 每天每个渠道填一行；多个 HR 各填各的，系统按「日期+渠道+职位」自动汇总，跟谁先填后填无关。</p>
+        <div class="row2">
+          <div class="field"><label>日期</label><input id="cDate" type="date"></div>
+          <div class="field"><label>填写人（你的名字）*</label><input id="cBy" placeholder="多 HR 靠这个区分"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>招聘渠道 *</label><select id="cChannel"></select></div>
+          <div class="field"><label>关联职位 *</label><select id="cJob"></select></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>今日新增简历数</label><input id="cNew" type="number" min="0" value="0"></div>
+          <div class="field"><label>初筛通过数</label><input id="cPassed" type="number" min="0" value="0"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>已推荐面试数</label><input id="cRec" type="number" min="0" value="0"></div>
+          <div class="field"><label>已拒绝数</label><input id="cRej" type="number" min="0" value="0"></div>
+        </div>
+        <div class="field"><label>备注</label><input id="cNote" placeholder="如：渠道质量差／简历重复多"></div>
+        <button class="btn wide" id="cSubmit" onclick="submitChannel()">提交</button>
+        <button class="btn ghost sm" id="cCancel" onclick="cancelChannelEdit()" style="display:none;margin-top:8px">取消编辑</button>
+        <div class="err" id="cErr"></div>
+      </div>
+      <div class="toolbar" style="margin-top:18px">
+        <div style="font-weight:750;font-size:16px">📅 当日记录</div>
+        <input id="cViewDate" type="date" onchange="loadChannelRecords()">
+        <div class="sp"></div>
+        <select id="cPushGroup"></select>
+        <button class="btn ghost sm" onclick="genChannelReport()">📊 生成日报</button>
+        <button class="btn ghost sm" onclick="pushChannelReport()">📤 推送到群</button>
+      </div>
+      <div id="cRecords"></div>
+      <div id="cReportCard" class="hide" style="margin-top:16px">
+        <pre id="cReportText" style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px;white-space:pre-wrap;font-family:inherit;line-height:1.65;margin:0 0 12px"></pre>
+        <div id="cBreakdown"></div>
+        <ul id="cAlerts" style="list-style:none;padding:0;margin:12px 0 0"></ul>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -211,7 +252,7 @@ function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById(
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
   const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();loadTasks();}
 async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
-function showTab(t){['create','board','cal','report'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();}
+function showTab(t){['create','board','cal','report','recruit'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();}
 
 async function loadExternalGroups(){try{const gs=await(await api('/api/external-groups')).json();EGROUPS=Array.isArray(gs)?gs:[];EGMAP={};EGROUPS.forEach(g=>EGMAP[g.id]=g.name);}catch(e){EGROUPS=[];}}
 async function loadGroups(){
@@ -272,7 +313,7 @@ function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.prio
   const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">External</span>':''}</div>`:'';
   const rsn=(t.unread&&t.result)?`<div class="rsn">💬 ${esc(t.result)}</div>`:'';
   const unread=t.unread?'<span class="unread" title="New message from the assignee — clears once you reply"></span>':'';
-  return `<div class="tcard ${overdue(t)?'over':''} ${t.unread?'unreadcard':''}" onclick="openTask(${t.id})">${unread}<div class="tt">#${t.id} ${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
+  return `<div class="tcard ${overdue(t)?'over':''} ${t.unread?'unreadcard':''}" onclick="openTask(${t.id})">${unread}<div class="tt">${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
 
 async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
   let reassign='';
@@ -405,6 +446,60 @@ async function addExtGroup(){const name=val('egName'),url=val('egUrl'),err=docum
     if(j.ok){await loadExternalGroups();await loadGroups();openExtSettings();toast('✅ External group added');}else err.textContent=j.error||'Failed to add';
   }catch(e){err.textContent='Failed to add';}}
 async function delExtGroup(id){if(!confirm('Remove this external group?'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('Removed');}catch(e){toast('Remove failed',true);}}
+
+// ---- 招聘渠道日报模块 ----
+let CMETA={channels:[],jobs:[],today:''}, cEditId=null, CRECS=[];
+const cpct=x=>x==null?'—':Math.round(x*100)+'%';
+const cwow=x=>{if(x==null)return '<span class="muted">—</span>';const s=(x>=0?'+':'')+Math.round(x*100)+'%';return `<span style="color:${x<0?'var(--danger)':'var(--ok)'};font-weight:600">${s}</span>`;};
+async function loadChannelTab(){
+  try{CMETA=await(await api('/api/channel/meta')).json();}catch(e){CMETA={channels:[],jobs:[],today:todayStr()};}
+  document.getElementById('cChannel').innerHTML=(CMETA.channels||[]).map(c=>`<option>${esc(c)}</option>`).join('');
+  document.getElementById('cJob').innerHTML=(CMETA.jobs||[]).map(j=>`<option value="${j.id}">${esc(j.title)}（目标 ${j.target_headcount} 人）</option>`).join('')||'<option value="">（后端暂无职位）</option>';
+  if(!document.getElementById('cDate').value)document.getElementById('cDate').value=CMETA.today;
+  if(!document.getElementById('cViewDate').value)document.getElementById('cViewDate').value=CMETA.today;
+  const pg=document.getElementById('cPushGroup');
+  pg.innerHTML='<option value="">推送到…（选群）</option>'+(GROUPS||[]).map(g=>`<option value="${g.chat_id}">${esc(g.name)}</option>`).join('')+(EGROUPS||[]).map(g=>`<option value="ext:${g.id}">${esc(g.name)} (external)</option>`).join('');
+  loadChannelRecords();
+}
+async function loadChannelRecords(){
+  const d=document.getElementById('cViewDate').value||CMETA.today;
+  try{CRECS=await(await api('/api/channel/records?d='+d)).json();}catch(e){CRECS=[];}
+  if(!Array.isArray(CRECS))CRECS=[];
+  const box=document.getElementById('cRecords');
+  if(!CRECS.length){box.innerHTML='<div class="muted">该日暂无记录。上面录入，或点右上「生成日报」看汇总。</div>';return;}
+  box.innerHTML=`<table class="rtable"><thead><tr><th>渠道</th><th>职位</th><th>填写人</th><th>新增</th><th>初筛</th><th>推荐</th><th>拒绝</th><th>备注</th><th></th></tr></thead><tbody>${CRECS.map(r=>`<tr><td class="name">${esc(r.channel)}</td><td>${esc(r.job_title||r.job_request_id)}</td><td>${esc(r.filled_by)}</td><td>${r.new_resumes}</td><td>${r.passed_screening}</td><td>${r.recommended}</td><td>${r.rejected}</td><td>${esc(r.note||'')}</td><td style="white-space:nowrap"><span onclick="editChannelRecord(${r.id})" style="color:var(--accent);cursor:pointer">编辑</span> · <span onclick="delChannelRecord(${r.id})" style="color:var(--danger);cursor:pointer">删除</span></td></tr>`).join('')}</tbody></table>`;
+}
+function cPayload(){return {record_date:document.getElementById('cDate').value,channel:document.getElementById('cChannel').value,job_request_id:parseInt(document.getElementById('cJob').value||'0',10),filled_by:val('cBy'),new_resumes:parseInt(document.getElementById('cNew').value||'0',10),passed_screening:parseInt(document.getElementById('cPassed').value||'0',10),recommended:parseInt(document.getElementById('cRec').value||'0',10),rejected:parseInt(document.getElementById('cRej').value||'0',10),note:val('cNote')};}
+async function submitChannel(){
+  const err=document.getElementById('cErr');err.textContent='';
+  const body=cPayload();
+  const url=cEditId?('/api/channel/records/'+cEditId):'/api/channel/records';
+  const method=cEditId?'PATCH':'POST';
+  let r,j;try{r=await api(url,{method,body:JSON.stringify(body)});j=await r.json().catch(()=>({}));}catch(e){err.textContent='提交失败';return;}
+  if(!r.ok){err.textContent='提交失败：'+((j.errors&&j.errors.join('；'))||j.error||'');return;}
+  const w=j.warnings||[];toast(w.length?('已保存，请复核：'+w.join('；')):'已保存 ✓');
+  cancelChannelEdit(true);
+  document.getElementById('cViewDate').value=body.record_date;
+  loadChannelRecords();
+}
+function editChannelRecord(id){const r=CRECS.find(x=>x.id===id);if(!r)return;cEditId=r.id;document.getElementById('cDate').value=(r.record_date||'').slice(0,10);document.getElementById('cBy').value=r.filled_by||'';document.getElementById('cChannel').value=r.channel;document.getElementById('cJob').value=r.job_request_id;document.getElementById('cNew').value=r.new_resumes;document.getElementById('cPassed').value=r.passed_screening;document.getElementById('cRec').value=r.recommended;document.getElementById('cRej').value=r.rejected;document.getElementById('cNote').value=r.note||'';document.getElementById('cFormTitle').textContent='编辑记录';document.getElementById('cSubmit').textContent='保存修改';document.getElementById('cCancel').style.display='inline-block';window.scrollTo({top:0,behavior:'smooth'});}
+function cancelChannelEdit(keep){cEditId=null;['cNew','cPassed','cRec','cRej'].forEach(id=>document.getElementById(id).value='0');document.getElementById('cNote').value='';document.getElementById('cFormTitle').textContent='招聘渠道 · 每日录入';document.getElementById('cSubmit').textContent='提交';document.getElementById('cCancel').style.display='none';if(!keep)document.getElementById('cErr').textContent='';}
+async function delChannelRecord(id){if(!confirm('删除这条渠道记录？'))return;try{await api('/api/channel/records/'+id,{method:'DELETE'});loadChannelRecords();}catch(e){toast('删除失败',true);}}
+async function genChannelReport(){
+  const d=document.getElementById('cViewDate').value||CMETA.today;
+  let rep;try{rep=await(await api('/api/channel/report?d='+d)).json();}catch(e){toast('生成失败',true);return;}
+  document.getElementById('cReportCard').classList.remove('hide');
+  document.getElementById('cReportText').textContent=rep.text;
+  document.getElementById('cBreakdown').innerHTML=`<table class="rtable"><thead><tr><th>渠道</th><th>今日新增</th><th>环比</th><th>近7日转化率</th><th>近7日推荐率</th><th>连续0天</th></tr></thead><tbody>${(rep.breakdown||[]).map(b=>`<tr><td class="name">${esc(b.channel)}</td><td>${b.day.new}</td><td>${cwow(b.wow_new)}</td><td>${cpct(b.roll7_conversion)}</td><td>${cpct(b.roll7_recommend_rate)}</td><td>${b.zero_streak>0?('<span style="color:var(--danger)">'+b.zero_streak+'</span>'):0}</td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('cAlerts').innerHTML=(rep.alerts||[]).map(a=>`<li style="background:var(--warnB);color:var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:8px">⚠️ ${esc(a)}</li>`).join('');
+}
+async function pushChannelReport(){
+  const d=document.getElementById('cViewDate').value||CMETA.today;
+  const g=document.getElementById('cPushGroup').value;
+  if(!g){toast('先选一个推送目标群',true);return;}
+  const body={d};if(g.indexOf('ext:')===0)body.external_group_id=parseInt(g.slice(4),10);else body.chat_id=g;
+  try{const j=await(await api('/api/channel/report/push',{method:'POST',body:JSON.stringify(body)})).json();toast(j.pushed?'✅ 已推送到群':'⚠️ 已生成，但推送失败（检查群/webhook）',!j.pushed);}catch(e){toast('推送失败',true);}
+}
 
 // 每 20 秒自动刷新看板（让负责人的新留言红点及时出现），弹窗打开时不打扰
 setInterval(()=>{const app=document.getElementById('app');const modalOpen=document.getElementById('modalRoot').innerHTML.trim();

@@ -16,6 +16,7 @@ import secrets
 import datetime
 import threading
 import requests
+import psycopg2
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
@@ -31,6 +32,7 @@ from lark_oapi.adapter.flask import parse_req, parse_resp
 
 import db
 import cards
+import channel_report
 from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
@@ -787,6 +789,136 @@ def api_comments_add(task_id):
     return jsonify({"ok": True})
 
 
+# ---------------- 招聘渠道日报模块（新增，纯增量） ----------------
+def _chan_json(r):
+    r = dict(r)
+    for k in ("record_date", "created_at", "updated_at"):
+        if r.get(k) is not None:
+            r[k] = r[k].isoformat() if hasattr(r[k], "isoformat") else str(r[k])
+    return r
+
+
+@app.route("/api/channel/meta")
+def api_channel_meta():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    jobs = db.list_job_requests(only_open=True)
+    return jsonify({
+        "channels": channel_report.CHANNELS,
+        "jobs": [{"id": j["id"], "title": j["title"], "target_headcount": j["target_headcount"]} for j in jobs],
+        "today": _company_now().date().isoformat(),
+    })
+
+
+@app.route("/api/channel/records", methods=["GET"])
+def api_channel_records():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify([_chan_json(r) for r in db.list_channel_records(request.args.get("d"))])
+
+
+@app.route("/api/channel/records", methods=["POST"])
+def api_channel_create():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    errors, warnings = channel_report.validate(d)
+    if errors:
+        return jsonify({"error": "；".join(errors), "errors": errors}), 422
+    rd = d.get("record_date") or _company_now().date().isoformat()
+    try:
+        rid = db.create_channel_record(
+            rd, d["channel"], int(d["job_request_id"]), (d.get("filled_by") or "").strip(),
+            int(d.get("new_resumes") or 0), int(d.get("passed_screening") or 0),
+            int(d.get("recommended") or 0), int(d.get("rejected") or 0),
+            (d.get("note") or "").strip())
+    except psycopg2.IntegrityError:
+        return jsonify({"error": "同一天+同渠道+同职位+同一填写人 已有记录（防重复提交），请改为编辑。",
+                        "errors": ["重复记录"]}), 409
+    return jsonify({"ok": True, "id": rid, "warnings": warnings})
+
+
+@app.route("/api/channel/records/<int:rid>", methods=["PATCH", "PUT"])
+def api_channel_update(rid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if not db.get_channel_record(rid):
+        return jsonify({"error": "记录不存在"}), 404
+    d = request.get_json(silent=True) or {}
+    errors, warnings = channel_report.validate(d)
+    if errors:
+        return jsonify({"error": "；".join(errors), "errors": errors}), 422
+    fields = dict(
+        channel=d["channel"], job_request_id=int(d["job_request_id"]),
+        filled_by=(d.get("filled_by") or "").strip(),
+        new_resumes=int(d.get("new_resumes") or 0),
+        passed_screening=int(d.get("passed_screening") or 0),
+        recommended=int(d.get("recommended") or 0),
+        rejected=int(d.get("rejected") or 0),
+        note=(d.get("note") or "").strip())
+    if d.get("record_date"):
+        fields["record_date"] = d["record_date"]
+    try:
+        db.update_channel_record(rid, **fields)
+    except psycopg2.IntegrityError:
+        return jsonify({"error": "改动后与已有记录冲突（日期/渠道/职位/填写人重复）。", "errors": ["冲突"]}), 409
+    return jsonify({"ok": True, "warnings": warnings})
+
+
+@app.route("/api/channel/records/<int:rid>", methods=["DELETE"])
+def api_channel_delete(rid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    db.delete_channel_record(rid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/channel/jobs", methods=["POST"])
+def api_channel_add_job():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    title = (d.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "职位名必填"}), 400
+    jid = db.create_job_request(title, int(d.get("target_headcount") or 0),
+                                int(d.get("target_resume_count") or 0))
+    return jsonify({"ok": True, "id": jid})
+
+
+def _build_channel_report(day=None):
+    target = datetime.date.fromisoformat(day) if day else _company_now().date()
+    rows = db.channel_rows_upto(target)
+    jobs = db.list_job_requests(only_open=False)
+    return channel_report.build_report(rows, target, jobs)
+
+
+@app.route("/api/channel/report")
+def api_channel_report():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(_build_channel_report(request.args.get("d")))
+
+
+@app.route("/api/channel/report/push", methods=["POST"])
+def api_channel_report_push():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    rep = _build_channel_report(d.get("d"))
+    pushed = False
+    if d.get("external_group_id"):
+        eg = db.get_external_group(int(d["external_group_id"]))
+        if eg:
+            card = {"config": {"wide_screen_mode": True},
+                    "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": rep["text"]}}]}
+            pushed = push_to_webhook(eg["webhook_url"], card)
+    elif d.get("chat_id"):
+        resp = send_text(d["chat_id"], rep["text"])
+        pushed = bool(resp and resp.success())
+    return jsonify({"ok": True, "pushed": pushed, "report": rep})
+
+
 # ---------------- 日历订阅（iCal）：把任务截止日期同步进个人日历 ----------------
 def _ics_esc(s):
     return (str(s or "")).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
@@ -1001,6 +1133,10 @@ def main():
     if not APP_ID or not APP_SECRET:
         raise RuntimeError("Missing APP_ID / APP_SECRET environment variables")
     db.init_db()
+    try:
+        db.seed_job_requests()      # 招聘模块：首次为空时放几个示例职位
+    except Exception as e:
+        print(f"[db] seed_job_requests skipped: {e}")
     if MODE == "ws":
         print("[bot] starting in long-connection (ws) mode ...")
         cli = lark.ws.Client(APP_ID, APP_SECRET, event_handler=build_handler(),
