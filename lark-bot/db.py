@@ -327,12 +327,23 @@ def seed_job_requests():
                        VALUES ('后端工程师',5,300),('产品经理',3,250),('HRBP',2,150)""")
 
 
-def create_job_request(title, target_headcount=0, target_resume_count=0):
+def create_job_request(title, target_headcount=0, target_resume_count=0, owner=""):
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""INSERT INTO job_requests (title, target_headcount, target_resume_count)
-                       VALUES (%s,%s,%s) RETURNING id""",
-                    (title, target_headcount, target_resume_count))
+        cur.execute("""INSERT INTO job_requests (title, target_headcount, target_resume_count, owner)
+                       VALUES (%s,%s,%s,%s) RETURNING id""",
+                    (title, target_headcount, target_resume_count, owner))
         return cur.fetchone()[0]
+
+
+def update_job_request(jid, **fields):
+    allowed = {"title", "target_headcount", "target_resume_count", "status", "owner"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    vals = list(sets.values()) + [jid]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE job_requests SET {cols} WHERE id=%s", vals)
 
 
 def list_channel_records(day=None):
@@ -354,6 +365,30 @@ def channel_rows_upto(day):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM channel_daily WHERE record_date<=%s", (day,))
         return cur.fetchall()
+
+
+def list_channel_records_range(dfrom, dto):
+    """[dfrom, dto] 区间内所有渠道记录（含职位名），供多粒度看板分析用。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT r.*, j.title AS job_title FROM channel_daily r
+                       JOIN job_requests j ON j.id = r.job_request_id
+                       WHERE r.record_date BETWEEN %s AND %s
+                       ORDER BY r.record_date, r.channel""", (dfrom, dto))
+        return cur.fetchall()
+
+
+def earliest_channel_date():
+    """最早一条渠道记录的日期（无数据返回 None）。用于推断上线日默认值。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT MIN(record_date) FROM channel_daily")
+        return cur.fetchone()[0]
+
+
+def channel_data_days():
+    """所有有数据的日期（ISO 字符串列表），供日历标注「哪天真的上传过」。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT record_date FROM channel_daily ORDER BY 1")
+        return [r[0].isoformat() for r in cur.fetchall()]
 
 
 def get_channel_record(rid):
@@ -417,3 +452,176 @@ def upsert_channel_record(record_date, channel, job_request_id, filled_by,
                           updated_at=now()""",
             (record_date, channel, job_request_id, filled_by,
              new_resumes, passed_screening, recommended, rejected, note))
+
+
+# ================= Nexus：文档/模板库 =================
+def list_templates():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM templates ORDER BY category, updated_at DESC")
+        rows = cur.fetchall()
+        for r in rows:
+            for k in ("created_at", "updated_at"):
+                if r.get(k) is not None and hasattr(r[k], "isoformat"):
+                    r[k] = r[k].isoformat()
+        return rows
+
+
+def create_template(title, category="其他", content=""):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO templates (title, category, content) VALUES (%s,%s,%s) RETURNING id",
+                    (title, category, content))
+        return cur.fetchone()[0]
+
+
+def update_template(tid, **fields):
+    allowed = {"title", "category", "content"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    vals = list(sets.values()) + [tid]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE templates SET {cols}, updated_at=now() WHERE id=%s", vals)
+
+
+def delete_template(tid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM templates WHERE id=%s", (tid,))
+        return cur.rowcount > 0
+
+
+# ================= Nexus：渠道成本 =================
+def list_channel_costs():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT channel, ym, amount FROM channel_cost ORDER BY ym, channel")
+        rows = cur.fetchall()
+        for r in rows:
+            r["amount"] = float(r["amount"]) if r["amount"] is not None else 0.0
+        return rows
+
+
+def upsert_channel_cost(channel, ym, amount):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO channel_cost (channel, ym, amount) VALUES (%s,%s,%s)
+                       ON CONFLICT (channel, ym) DO UPDATE SET amount=EXCLUDED.amount, updated_at=now()""",
+                    (channel, ym, amount))
+
+
+# ================= Nexus：考勤打卡 =================
+def create_attendance_site(name, lat, lng, radius_m=200, require_selfie=False):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO attendance_site (name, lat, lng, radius_m, require_selfie)
+                       VALUES (%s,%s,%s,%s,%s) RETURNING id""",
+                    (name, lat, lng, radius_m, require_selfie))
+        return cur.fetchone()[0]
+
+
+def list_attendance_sites():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM attendance_site ORDER BY id")
+        rows = cur.fetchall()
+        for r in rows:
+            if r.get("created_at") is not None and hasattr(r["created_at"], "isoformat"):
+                r["created_at"] = r["created_at"].isoformat()
+        return rows
+
+
+def get_attendance_site(sid):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM attendance_site WHERE id=%s", (sid,))
+        return cur.fetchone()
+
+
+def update_attendance_site(sid, **fields):
+    allowed = {"name", "lat", "lng", "radius_m", "require_selfie"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE attendance_site SET {cols} WHERE id=%s", list(sets.values()) + [sid])
+
+
+def delete_attendance_site(sid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM attendance_site WHERE id=%s", (sid,))
+        return cur.rowcount > 0
+
+
+def create_attendance_person(name, kind, token, site_id=None):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO attendance_person (name, kind, token, site_id)
+                       VALUES (%s,%s,%s,%s) RETURNING id""", (name, kind, token, site_id))
+        return cur.fetchone()[0]
+
+
+def list_attendance_persons():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT p.*, s.name AS site_name FROM attendance_person p
+                       LEFT JOIN attendance_site s ON s.id = p.site_id ORDER BY p.id""")
+        rows = cur.fetchall()
+        for r in rows:
+            if r.get("created_at") is not None and hasattr(r["created_at"], "isoformat"):
+                r["created_at"] = r["created_at"].isoformat()
+        return rows
+
+
+def get_attendance_person_by_token(token):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM attendance_person WHERE token=%s", (token,))
+        return cur.fetchone()
+
+
+def delete_attendance_person(pid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM attendance_person WHERE id=%s", (pid,))
+        return cur.rowcount > 0
+
+
+def last_attendance_record(person_id):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM attendance_record WHERE person_id=%s ORDER BY server_time DESC LIMIT 1",
+                    (person_id,))
+        return cur.fetchone()
+
+
+def add_attendance_record(person_id, person_name, kind, punch_type, lat, lng, accuracy,
+                          site_id, distance_m, within_fence, ip, photo, flags, source="web"):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""INSERT INTO attendance_record
+            (person_id, person_name, kind, punch_type, lat, lng, accuracy, site_id,
+             distance_m, within_fence, ip, photo, flags, source)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id, server_time""",
+            (person_id, person_name, kind, punch_type, lat, lng, accuracy, site_id,
+             distance_m, within_fence, ip, photo, flags, source))
+        return cur.fetchone()
+
+
+def list_attendance_records(dfrom=None, dto=None, person_id=None, limit=500):
+    q = ["SELECT id, person_id, person_name, kind, punch_type, server_time, lat, lng, accuracy,",
+         "       site_id, distance_m, within_fence, ip, flags, source,",
+         "       (photo IS NOT NULL) AS has_photo",
+         "FROM attendance_record WHERE 1=1"]
+    args = []
+    if dfrom:
+        q.append("AND server_time >= %s"); args.append(dfrom)
+    if dto:
+        q.append("AND server_time < (%s::date + 1)"); args.append(dto)
+    if person_id:
+        q.append("AND person_id = %s"); args.append(person_id)
+    q.append("ORDER BY server_time DESC LIMIT %s"); args.append(limit)
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("\n".join(q), args)
+        rows = cur.fetchall()
+        for r in rows:
+            if r.get("server_time") is not None and hasattr(r["server_time"], "isoformat"):
+                r["server_time"] = r["server_time"].isoformat()
+        return rows
+
+
+def get_attendance_photo(rid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT photo FROM attendance_record WHERE id=%s", (rid,))
+        r = cur.fetchone()
+        return r[0] if r else None

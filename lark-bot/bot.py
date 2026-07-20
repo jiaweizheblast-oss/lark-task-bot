@@ -17,6 +17,7 @@ import datetime
 import threading
 import requests
 import psycopg2
+from urllib.parse import quote
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
@@ -34,6 +35,7 @@ import db
 import cards
 import channel_report
 import sheet_io
+import attend
 from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
@@ -817,6 +819,25 @@ def _valid_date(s):
         return False
 
 
+def _channel_go_live():
+    """上线日（ISO）：日历三态上色的锚点。settings 里设了就用；否则取最早有数据那天；再没有就用今天。"""
+    try:
+        s = db.get_settings()
+    except Exception:
+        s = {}
+    v = (s.get("channel_go_live", "") or "").strip()
+    if v:
+        try:
+            return datetime.date.fromisoformat(v[:10]).isoformat()
+        except ValueError:
+            pass
+    try:
+        e = db.earliest_channel_date()
+    except Exception:
+        e = None
+    return e.isoformat() if e else _kolkata_today().isoformat()
+
+
 def _chan_json(r):
     r = dict(r)
     for k in ("record_date", "created_at", "updated_at"):
@@ -836,7 +857,25 @@ def api_channel_meta():
         "roster": _channel_roster(),
         "today": _kolkata_today().isoformat(),
         "timezone": "Asia/Kolkata",
+        "go_live": _channel_go_live(),
+        "data_days": db.channel_data_days(),
     })
+
+
+@app.route("/api/channel/golive", methods=["POST"])
+def api_channel_golive():
+    """设置上线日（日历三态锚点）。留空=清除，回落到最早有数据那天。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    v = (d.get("date") or "").strip()
+    if v:
+        try:
+            v = datetime.date.fromisoformat(v[:10]).isoformat()
+        except ValueError:
+            return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）"}), 400
+    db.set_setting("channel_go_live", v)
+    return jsonify({"ok": True, "go_live": _channel_go_live()})
 
 
 @app.route("/api/channel/roster", methods=["GET"])
@@ -928,6 +967,20 @@ def api_channel_delete(rid):
     return jsonify({"ok": True})
 
 
+def _job_json(j):
+    j = dict(j)
+    if j.get("created_at") is not None and hasattr(j["created_at"], "isoformat"):
+        j["created_at"] = j["created_at"].isoformat()
+    return j
+
+
+@app.route("/api/channel/jobs", methods=["GET"])
+def api_channel_list_jobs():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify([_job_json(j) for j in db.list_job_requests(only_open=False)])
+
+
 @app.route("/api/channel/jobs", methods=["POST"])
 def api_channel_add_job():
     if not _panel_auth():
@@ -937,8 +990,94 @@ def api_channel_add_job():
     if not title:
         return jsonify({"error": "职位名必填"}), 400
     jid = db.create_job_request(title, int(d.get("target_headcount") or 0),
-                                int(d.get("target_resume_count") or 0))
+                                int(d.get("target_resume_count") or 0), (d.get("owner") or "").strip())
     return jsonify({"ok": True, "id": jid})
+
+
+@app.route("/api/channel/jobs/<int:jid>", methods=["PATCH"])
+def api_channel_update_job(jid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    fields = {}
+    if "title" in d:
+        t = (d.get("title") or "").strip()
+        if not t:
+            return jsonify({"error": "职位名不能为空"}), 400
+        fields["title"] = t
+    if "owner" in d:
+        fields["owner"] = (d.get("owner") or "").strip()
+    if "target_headcount" in d:
+        fields["target_headcount"] = int(d.get("target_headcount") or 0)
+    if "target_resume_count" in d:
+        fields["target_resume_count"] = int(d.get("target_resume_count") or 0)
+    if "status" in d and d.get("status") in ("open", "closed"):
+        fields["status"] = d["status"]
+    db.update_job_request(jid, **fields)
+    return jsonify({"ok": True})
+
+
+# ---------------- 文档 / 模板库 ----------------
+@app.route("/api/templates", methods=["GET"])
+def api_templates_list():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(db.list_templates())
+
+
+@app.route("/api/templates", methods=["POST"])
+def api_templates_create():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    title = (d.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "标题必填"}), 400
+    tid = db.create_template(title, (d.get("category") or "其他").strip(), d.get("content") or "")
+    return jsonify({"ok": True, "id": tid})
+
+
+@app.route("/api/templates/<int:tid>", methods=["PATCH"])
+def api_templates_update(tid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    fields = {k: d[k] for k in ("title", "category", "content") if k in d}
+    db.update_template(tid, **fields)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/templates/<int:tid>", methods=["DELETE"])
+def api_templates_delete(tid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"ok": db.delete_template(tid)})
+
+
+# ---------------- 渠道成本 ----------------
+@app.route("/api/channel/cost", methods=["GET"])
+def api_channel_cost_get():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(db.list_channel_costs())
+
+
+@app.route("/api/channel/cost", methods=["POST"])
+def api_channel_cost_set():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    items = d.get("items") if isinstance(d.get("items"), list) else [d]
+    for it in items:
+        ch = (it.get("channel") or "").strip()
+        ym = (it.get("ym") or "").strip()
+        if not ch or len(ym) != 7 or ym[4] != "-":
+            continue
+        try:
+            db.upsert_channel_cost(ch, ym, float(it.get("amount") or 0))
+        except (ValueError, TypeError):
+            continue
+    return jsonify({"ok": True, "costs": db.list_channel_costs()})
 
 
 def _build_channel_report(day=None, wfrom=None, wto=None):
@@ -981,6 +1120,266 @@ def api_channel_report_push():
         resp = send_text(d["chat_id"], rep["text"])
         pushed = bool(resp and resp.success())
     return jsonify({"ok": True, "pushed": pushed, "report": rep})
+
+
+def _parse_date_or(s, default):
+    try:
+        return datetime.date.fromisoformat((s or "")[:10])
+    except ValueError:
+        return default
+
+
+# 默认窗口跨度（天）：按粒度给合理的历史长度
+_ANALYTICS_SPAN = {"day": 30, "week": 84, "month": 365, "year": 365 * 3}
+
+
+@app.route("/api/channel/analytics")
+def api_channel_analytics():
+    """招聘分析看板数据（网站画图 + Bot 回文字共用同一引擎）。参数 g/from/to/job_id。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    g = request.args.get("g", "day")
+    if g not in ("day", "week", "month", "year"):
+        g = "day"
+    today = _kolkata_today()
+    dto = _parse_date_or(request.args.get("to"), today)
+    dfrom = _parse_date_or(request.args.get("from"), dto - datetime.timedelta(days=_ANALYTICS_SPAN[g] - 1))
+    if dfrom > dto:
+        dfrom, dto = dto, dfrom
+    jid = request.args.get("job_id", "")
+    job_id = int(jid) if jid.isdigit() else None
+    span = (dto - dfrom).days + 1
+    prev_from = dfrom - datetime.timedelta(days=span)          # 上一周期（同长度、紧邻在前）
+    rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
+    jobs = db.list_job_requests(only_open=False)
+    costs = db.list_channel_costs()
+    return jsonify(channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs))
+
+
+@app.route("/api/channel/export.xlsx")
+def api_channel_export():
+    """把当前看板导出成 xlsx（概览+渠道明细+趋势+职位进度），方便汇报。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    g = request.args.get("g", "day")
+    if g not in ("day", "week", "month", "year"):
+        g = "day"
+    today = _kolkata_today()
+    dto = _parse_date_or(request.args.get("to"), today)
+    dfrom = _parse_date_or(request.args.get("from"), dto - datetime.timedelta(days=_ANALYTICS_SPAN[g] - 1))
+    if dfrom > dto:
+        dfrom, dto = dto, dfrom
+    jid = request.args.get("job_id", "")
+    job_id = int(jid) if jid.isdigit() else None
+    span = (dto - dfrom).days + 1
+    prev_from = dfrom - datetime.timedelta(days=span)
+    rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
+    jobs = db.list_job_requests(only_open=False)
+    costs = db.list_channel_costs()
+    a = channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs)
+    data = sheet_io.build_analytics_xlsx(a)
+    fname = "招聘分析_%s_%s.xlsx" % (a["window"]["from"], a["window"]["to"])
+    return Response(
+        data,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(fname)},
+    )
+
+
+# ==================== 考勤打卡 ====================
+def _client_ip():
+    xff = request.headers.get("X-Forwarded-For", "")
+    return (xff.split(",")[0].strip() if xff else (request.remote_addr or "")) or ""
+
+
+@app.route("/api/att/sites", methods=["GET"])
+def api_att_sites():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(db.list_attendance_sites())
+
+
+@app.route("/api/att/sites", methods=["POST"])
+def api_att_site_add():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip()
+    try:
+        lat, lng = float(d.get("lat")), float(d.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "经纬度必填且为数字"}), 400
+    if not name:
+        return jsonify({"error": "点位名必填"}), 400
+    sid = db.create_attendance_site(name, lat, lng, int(d.get("radius_m") or 200), bool(d.get("require_selfie")))
+    return jsonify({"ok": True, "id": sid})
+
+
+@app.route("/api/att/sites/<int:sid>", methods=["PATCH"])
+def api_att_site_update(sid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    fields = {}
+    if "name" in d:
+        fields["name"] = (d.get("name") or "").strip()
+    for k in ("lat", "lng"):
+        if k in d:
+            try:
+                fields[k] = float(d[k])
+            except (TypeError, ValueError):
+                return jsonify({"error": "经纬度非法"}), 400
+    if "radius_m" in d:
+        fields["radius_m"] = int(d.get("radius_m") or 200)
+    if "require_selfie" in d:
+        fields["require_selfie"] = bool(d["require_selfie"])
+    db.update_attendance_site(sid, **fields)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/att/sites/<int:sid>", methods=["DELETE"])
+def api_att_site_del(sid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"ok": db.delete_attendance_site(sid)})
+
+
+@app.route("/api/att/persons", methods=["GET"])
+def api_att_persons():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(db.list_attendance_persons())
+
+
+@app.route("/api/att/persons", methods=["POST"])
+def api_att_person_add():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "姓名必填"}), 400
+    kind = d.get("kind") if d.get("kind") in ("internal", "external") else "external"
+    sid = d.get("site_id")
+    sid = int(sid) if sid else None
+    token = secrets.token_urlsafe(12)
+    pid = db.create_attendance_person(name, kind, token, sid)
+    return jsonify({"ok": True, "id": pid, "token": token})
+
+
+@app.route("/api/att/persons/<int:pid>", methods=["DELETE"])
+def api_att_person_del(pid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"ok": db.delete_attendance_person(pid)})
+
+
+@app.route("/api/att/records", methods=["GET"])
+def api_att_records():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    pid = request.args.get("person_id")
+    pid = int(pid) if (pid and pid.isdigit()) else None
+    return jsonify(db.list_attendance_records(request.args.get("from"), request.args.get("to"), pid))
+
+
+@app.route("/api/att/records/<int:rid>/photo")
+def api_att_photo(rid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    photo = db.get_attendance_photo(rid)
+    if not photo:
+        return ("", 404)
+    import base64 as _b64
+    try:
+        data = _b64.b64decode(photo.split(",", 1)[-1])
+    except Exception:
+        return ("", 404)
+    return Response(data, mimetype="image/jpeg")
+
+
+@app.route("/api/att/lark_sync", methods=["POST"])
+def api_att_lark_sync():
+    """从 Lark 原生考勤拉内部员工打卡流水（/open-apis/attendance/v1/user_flows/query）。
+    需在 Lark 开发者后台给应用授「考勤」权限、员工在考勤组内、配置员工号；否则返回提示，占位不报错。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"ok": False, "synced": 0,
+                    "error": "内部 Lark 考勤同步需先在 Lark 开发者后台给应用授「考勤」权限并配置员工考勤组，联调时启用；"
+                             "在此之前，内部员工也可直接用 Nexus 网页打卡链接。"})
+
+
+# -------- 免登录打卡（外部/内部通用；token 链接） --------
+@app.route("/checkin/<token>")
+def checkin_page(token):
+    p = db.get_attendance_person_by_token(token)
+    if not p or not p.get("active"):
+        return ("打卡链接无效或已停用。", 404)
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(here, "checkin.html"), encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return ("checkin.html not found: %s" % e, 500)
+
+
+@app.route("/api/checkin/<token>", methods=["GET"])
+def api_checkin_meta(token):
+    p = db.get_attendance_person_by_token(token)
+    if not p or not p.get("active"):
+        return jsonify({"error": "invalid"}), 404
+    site = db.get_attendance_site(p["site_id"]) if p.get("site_id") else None
+    last = db.last_attendance_record(p["id"])
+    return jsonify({
+        "name": p["name"], "kind": p["kind"],
+        "site": ({"name": site["name"], "radius_m": site["radius_m"]} if site else None),
+        "require_selfie": bool(site["require_selfie"]) if site else False,
+        "last": ({"punch_type": last["punch_type"],
+                  "server_time": last["server_time"].isoformat() if hasattr(last["server_time"], "isoformat") else str(last["server_time"])} if last else None),
+    })
+
+
+@app.route("/api/checkin/<token>", methods=["POST"])
+def api_checkin_submit(token):
+    p = db.get_attendance_person_by_token(token)
+    if not p or not p.get("active"):
+        return jsonify({"error": "invalid"}), 404
+    d = request.get_json(silent=True) or {}
+    punch = d.get("punch_type") if d.get("punch_type") in ("in", "out") else "in"
+    try:
+        lat = float(d.get("lat")) if d.get("lat") is not None else None
+        lng = float(d.get("lng")) if d.get("lng") is not None else None
+        acc = float(d.get("accuracy")) if d.get("accuracy") is not None else None
+    except (TypeError, ValueError):
+        lat = lng = acc = None
+    site = db.get_attendance_site(p["site_id"]) if p.get("site_id") else None
+    photo = d.get("photo")
+    need_selfie = bool(site and site.get("require_selfie"))
+    if need_selfie and not photo:
+        return jsonify({"error": "该点位要求自拍，请允许拍照后再提交"}), 400
+    if photo and len(photo) > 4_000_000:
+        return jsonify({"error": "照片过大"}), 400
+    prev = db.last_attendance_record(p["id"])
+    prev_lat = prev_lng = secs = None
+    if prev and prev.get("lat") is not None:
+        prev_lat, prev_lng = prev["lat"], prev["lng"]
+        try:
+            secs = (datetime.datetime.now(datetime.timezone.utc) - prev["server_time"]).total_seconds()
+        except Exception:
+            secs = None
+    ip = _client_ip()
+    dist, within, flags = attend.evaluate(
+        lat, lng, acc,
+        ({"lat": site["lat"], "lng": site["lng"], "radius_m": site["radius_m"]} if site else None),
+        prev_lat, prev_lng, secs, ip)
+    rec = db.add_attendance_record(p["id"], p["name"], p["kind"], punch, lat, lng, acc,
+                                   (site["id"] if site else None), dist, within, ip,
+                                   (photo if need_selfie else None), ",".join(flags), "web")
+    st = rec["server_time"]
+    return jsonify({"ok": True, "punch_type": punch,
+                    "server_time": st.isoformat() if hasattr(st, "isoformat") else str(st),
+                    "distance_m": dist, "within_fence": within,
+                    "flags": flags, "flags_text": attend.flags_text(flags)})
 
 
 @app.route("/api/channel/template")

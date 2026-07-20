@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Task Console</title>
+<title>Nexus</title>
 <style>
   :root{
     --bg:#f6f7f9;--panel:#fff;--panel2:#fbfbfd;--ink:#1c2024;--soft:#5b636b;--line:#e7e9ec;--lineS:#d7dade;
@@ -101,12 +101,90 @@
   .rate.good{color:var(--ok);background:var(--okB)} .rate.mid{color:var(--warn);background:var(--warnB)} .rate.bad{color:var(--danger);background:var(--dangerB)}
   #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13.5px;font-weight:600;transition:.25s;pointer-events:none;z-index:60;box-shadow:var(--shadow)}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)} #toast.err{background:var(--danger);color:#fff}
+  /* ---- 招聘分析看板 ---- */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:2px 0 16px}
+  @media(max-width:960px){.kpis{grid-template-columns:repeat(3,1fr)}} @media(max-width:520px){.kpis{grid-template-columns:repeat(2,1fr)}}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 13px;box-shadow:var(--shadow)}
+  .kpi .n{font-size:21px;font-weight:750;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:11.5px;color:var(--soft);margin-top:2px} .kpi .s{font-size:11px;margin-top:3px;color:var(--soft)}
+  .agrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px} @media(max-width:900px){.agrid{grid-template-columns:1fr}}
+  .acard{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:14px 16px}
+  .acard-h{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px} .acard-h b{font-size:14.5px}
+  .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px}
+  .seg button{border:0;background:transparent;color:var(--soft);font-weight:600;padding:5px 11px;border-radius:7px;cursor:pointer;font-size:13px}
+  .seg button.on{background:var(--accent);color:#fff}
+  .fbar{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .fbar .fl{width:44px;font-size:12.5px;color:var(--soft);flex:none}
+  .fbar .ft{flex:1;background:var(--panel2);border-radius:7px;height:26px;overflow:hidden}
+  .fbar .ff{height:100%;border-radius:7px;min-width:2px;transition:width .3s}
+  .fbar .fn{width:120px;flex:none;font-size:12.5px;text-align:right;font-variant-numeric:tabular-nums}
+  .prog{margin:10px 0} .prog .pt{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;gap:8px}
+  .prog .pb{background:var(--panel2);border-radius:7px;height:12px;overflow:hidden} .prog .pf{height:100%;background:var(--accent);border-radius:7px;transition:width .3s}
+  /* ---- 日历区间选择 ---- */
+  .rcal-wrap{position:relative;display:inline-block}
+  .rcal{position:absolute;top:calc(100% + 6px);left:0;z-index:30;background:var(--panel);border:1px solid var(--lineS);border-radius:12px;box-shadow:var(--shadow);padding:12px;width:290px}
+  .rcpre{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+  .rcpre button{border:1px solid var(--line);background:var(--panel2);color:var(--soft);border-radius:7px;padding:4px 9px;font-size:12px;cursor:pointer}
+  .rcpre button:hover{border-color:var(--accent);color:var(--accent)}
+  .rchead{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .rchead b{font-size:13.5px} .rchead button{border:0;background:var(--panel2);color:var(--ink);border-radius:7px;width:26px;height:26px;cursor:pointer;font-size:15px}
+  .rcgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+  .rcdow span{text-align:center;font-size:11px;color:var(--soft);padding:2px 0}
+  .rcd{text-align:center;font-size:12.5px;padding:6px 0;border-radius:7px;cursor:pointer;color:var(--ink);position:relative;font-variant-numeric:tabular-nums}
+  .rcd.out{cursor:default} .rcd:not(.out):not(.future):hover{background:var(--accentS)}
+  .rcd.future,.rcd.pre{color:var(--soft);opacity:.4} .rcd.future{cursor:not-allowed}
+  .rcd.today{outline:1.5px solid var(--accent);outline-offset:-1.5px;font-weight:750}
+  .rcd.hasdata::after{content:"";position:absolute;bottom:3px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--ok)}
+  .rcd.nodata::after{content:"";position:absolute;bottom:3px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;border:1px solid var(--lineS);opacity:.7}
+  .rcleg .lg-hollow{background:transparent;border:1px solid var(--lineS);border-radius:50%;width:6px;height:6px}
+  .rcd.inrange{background:var(--accentS)} .rcd.edge{background:var(--accent);color:#fff} .rcd.edge.hasdata::after{background:#fff}
+  .rcleg{display:flex;flex-wrap:wrap;gap:10px;margin:9px 1px 4px;font-size:10.5px;color:var(--soft)}
+  .rcleg span{display:inline-flex;align-items:center;gap:4px} .rcleg i{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .rcleg .lg-n{background:var(--accentS);border:1px solid var(--accent)} .rcleg .lg-d{background:var(--line);opacity:.6} .rcleg .lg-dot{background:var(--ok);border-radius:50%;width:6px;height:6px}
+  .rcfoot{display:flex;align-items:center;gap:6px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line);font-size:12px;color:var(--soft)}
+  .rcfoot input{padding:4px 7px;border:1px solid var(--lineS);border-radius:7px;background:var(--panel);font-size:12px}
+  .cins{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 14px}
+  .cins .chip{background:var(--accentS);color:var(--accent);border-radius:8px;padding:6px 11px;font-size:12.5px;font-weight:600;line-height:1.45}
+  .kpi .n{white-space:nowrap} .kpi .dl{font-size:11px;font-weight:700;margin-left:6px}
+  .dl.up{color:var(--ok)} .dl.down{color:var(--danger)} .dl.flat{color:var(--soft)}
+  /* ---- Nexus 左栏控制台 ---- */
+  .shell{display:flex;align-items:flex-start;min-height:100vh}
+  .sidebar{width:214px;flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto;z-index:5}
+  .sidebar .brand{font-weight:800;font-size:19px;padding:16px 16px 12px;display:flex;align-items:center;gap:8px;letter-spacing:.02em}
+  .sidebar .brand .mark{color:var(--accent);font-size:15px}
+  .sidebar nav{flex:1;padding:4px 10px}
+  .navgroup{margin-bottom:8px}
+  .navhead{display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.05em;padding:9px 8px 5px;cursor:pointer;user-select:none}
+  .navhead .caret{font-size:9px;transition:.15s}
+  .navgroup.collapsed .navhead .caret{transform:rotate(-90deg)}
+  .navgroup.collapsed .navitems{display:none}
+  .navitems{display:flex;flex-direction:column;gap:2px}
+  .navitems button{text-align:left;border:0;background:transparent;color:var(--ink);font-weight:600;padding:9px 11px;border-radius:9px;cursor:pointer;font-size:13.5px}
+  .navitems button:hover{background:var(--panel2)} .navitems button.on{background:var(--accent);color:#fff}
+  .sidefoot{padding:10px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line)}
+  .sidefoot .btn{width:100%;text-align:left}
+  .main{flex:1;min-width:0}
+  @media(max-width:820px){
+    .shell{flex-direction:column}
+    .sidebar{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}
+    .sidebar nav{display:flex;flex-wrap:wrap;gap:10px} .navgroup{margin-bottom:0}
+    .navitems{flex-direction:row;flex-wrap:wrap}
+  }
+  /* ---- Nexus: Home / Docs / Jobs ---- */
+  .home-head{display:flex;align-items:baseline;gap:10px;margin-bottom:14px;flex-wrap:wrap} .home-head h2{margin:0;font-size:19px}
+  .hsec{margin-bottom:14px} .hsec-t{font-size:12px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.04em;margin:0 2px 8px}
+  .doccard{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:12px 14px;margin-bottom:10px}
+  .doch{display:flex;align-items:center;gap:8px} .doch b{font-size:14px}
+  .doctag{font-size:11px;font-weight:700;background:var(--accentS);color:var(--accent);border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .docbody{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0 0;font-size:12.5px;font-family:inherit;max-height:180px;overflow:auto;line-height:1.6}
+  .dact{color:var(--accent);cursor:pointer;font-size:12.5px} .dact.del{color:var(--danger)}
+  .jstat{font-size:11.5px;font-weight:700;border-radius:6px;padding:2px 8px} .jstat.open{background:var(--okB);color:var(--ok)} .jstat.closed{background:var(--panel2);color:var(--soft)}
 </style>
 </head>
 <body>
 <div id="login">
   <div class="login-card">
-    <h1>🤖 Task Console</h1><p>Enter your password to continue.</p>
+    <h1><span style="color:var(--accent)">◆</span> Nexus</h1><p>Enter your password to continue.</p>
     <div class="field"><label>Password</label><input id="pw" type="password" placeholder="Console password" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <button class="btn wide" onclick="doLogin()">Log in</button>
     <div class="err" id="loginErr"></div>
@@ -114,22 +192,45 @@
 </div>
 
 <div id="app" class="hide">
-  <header>
-    <div class="logo">🤖 Task <span>Console</span></div>
-    <div class="tabs">
-      <button id="tab-create" class="on" onclick="showTab('create')">New Task</button>
-      <button id="tab-board" onclick="showTab('board')">Board</button>
-      <button id="tab-cal" onclick="showTab('cal')">Calendar</button>
-      <button id="tab-report" onclick="showTab('report')">Reports</button>
-      <button id="tab-recruit" onclick="showTab('recruit')">Recruiting</button>
-    </div>
-    <div class="sp"></div>
-    <button class="btn ghost sm" onclick="openReminderSettings()">🔔 Reminders</button>
-    <button class="btn ghost sm" onclick="openExtSettings()">⚙️ External Groups</button>
-    <button class="btn ghost sm" onclick="logout()">Log out</button>
-  </header>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark">◆</span> Nexus</div>
+      <nav>
+        <div class="navitems" style="margin-bottom:8px"><button id="tab-home" class="on" onclick="showTab('home')">🏠 Home</button></div>
+        <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">Tasks <span class="caret">▾</span></div>
+          <div class="navitems">
+            <button id="tab-create" onclick="showTab('create')">📝 New Task</button>
+            <button id="tab-board" onclick="showTab('board')">📋 Board</button>
+            <button id="tab-cal" onclick="showTab('cal')">📅 Calendar</button>
+            <button id="tab-report" onclick="showTab('report')">📊 Reports</button>
+          </div>
+        </div>
+        <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">Recruiting <span class="caret">▾</span></div>
+          <div class="navitems">
+            <button id="tab-talent" onclick="showTab('talent')">🔎 Talent Discovery</button>
+            <button id="tab-recruit" onclick="showTab('recruit')">📈 Channel Analytics</button>
+            <button id="tab-jobs" onclick="showTab('jobs')">🎯 Job Reqs</button>
+          </div>
+        </div>
+        <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">People <span class="caret">▾</span></div>
+          <div class="navitems">
+            <button id="tab-attend" onclick="showTab('attend')">🕒 Attendance</button>
+          </div>
+        </div>
+        <div class="navitems" style="margin-top:8px"><button id="tab-docs" onclick="showTab('docs')">📄 Docs</button></div>
+      </nav>
+      <div class="sidefoot">
+        <button class="btn ghost sm" onclick="openReminderSettings()">🔔 Reminders</button>
+        <button class="btn ghost sm" onclick="openExtSettings()">⚙️ External Groups</button>
+        <button class="btn ghost sm" onclick="logout()">Log out</button>
+      </div>
+    </aside>
+    <main class="main">
   <div class="wrap">
-    <section id="view-create">
+    <section id="view-create" class="hide">
       <div class="form-card">
         <h2>Assign a task</h2>
         <p class="sub">Pick a group → pick an assignee → add the details → assign. Internal groups use the bot; external groups use a webhook.</p>
@@ -182,63 +283,140 @@
       <div id="reportBody"></div>
     </section>
     <section id="view-recruit" class="hide">
-      <div class="form-card" style="max-width:860px">
-        <h2 id="cFormTitle">招聘渠道 · 每日录入</h2>
-        <p class="sub">HR 每天每个渠道填一行；多个 HR 各填各的，系统按「日期+渠道+职位」自动汇总，跟谁先填后填无关。</p>
-        <div class="row2">
-          <div class="field"><label>日期</label><input id="cDate" type="date"></div>
-          <div class="field"><label>填报人（受控名单）</label>
-            <div style="display:flex;gap:6px">
-              <select id="cBy" style="flex:1"></select>
-              <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增填报人">＋</button>
-            </div>
-          </div>
-        </div>
-        <div class="row2">
-          <div class="field"><label>招聘渠道 *</label><select id="cChannel"></select></div>
-          <div class="field"><label>关联职位 *</label><select id="cJob"></select></div>
-        </div>
-        <div class="row2">
-          <div class="field"><label>今日新增简历数</label><input id="cNew" type="number" min="0" value="0"></div>
-          <div class="field"><label>初筛通过数</label><input id="cPassed" type="number" min="0" value="0"></div>
-        </div>
-        <div class="row2">
-          <div class="field"><label>已推荐面试数</label><input id="cRec" type="number" min="0" value="0"></div>
-          <div class="field"><label>已拒绝数</label><input id="cRej" type="number" min="0" value="0"></div>
-        </div>
-        <div class="field"><label>备注</label><input id="cNote" placeholder="如：渠道质量差／简历重复多"></div>
-        <button class="btn wide" id="cSubmit" onclick="submitChannel()">提交</button>
-        <button class="btn ghost sm" id="cCancel" onclick="cancelChannelEdit()" style="display:none;margin-top:8px">取消编辑</button>
-        <div class="err" id="cErr"></div>
-      </div>
-      <div class="toolbar" style="margin-top:18px">
-        <div style="font-weight:750;font-size:16px">📅 当日记录</div>
-        <input id="cViewDate" type="date" onchange="loadChannelRecords()">
+      <!-- 数据入口：表格进（网站 或 Lark Bot 拿表/回传；网页不手填） -->
+      <div class="toolbar" style="flex-wrap:wrap">
+        <div style="font-weight:750;font-size:16px">📥 数据入口</div>
+        <span style="font-size:12px;color:var(--soft)">填报人</span>
+        <select id="cBy" style="min-width:140px"></select>
+        <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增填报人（受控名单）">＋</button>
+        <span style="font-size:12px;color:var(--soft)">表日期</span>
+        <input id="cTplDate" type="date" style="width:150px">
         <button class="btn ghost sm" onclick="downloadChannelTemplate()">⬇ 下载空表</button>
         <button class="btn ghost sm" onclick="pickChannelUpload()">⬆ 上传填好的表</button>
         <input id="cUpFile" type="file" accept=".xlsx,.csv" style="display:none" onchange="onChannelUpload(event)">
-        <div class="sp"></div>
+        <span style="font-size:12px;color:var(--soft)">HR 在 Lark 表里填，交回你上传；网页不手工录入。</span>
+      </div>
+      <div id="cUpResult" class="hide" style="margin:0 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);font-size:13px"></div>
+
+      <!-- 分析控制条 -->
+      <div class="toolbar" style="flex-wrap:wrap">
+        <div style="font-weight:750;font-size:16px">📊 招聘分析</div>
         <span style="font-size:12px;color:var(--soft)">窗口</span>
-        <input id="cFrom" type="date" title="窗口开始（留空=近30天）" style="width:140px">
-        <input id="cTo" type="date" title="窗口结束（留空=当日）" style="width:140px">
+        <span class="rcal-wrap">
+          <button class="btn ghost sm" id="cRangeBtn" onclick="toggleRangeCal(event)">📅 <span id="cRangeLbl">选择区间</span></button>
+          <div id="cRangeCal" class="rcal hide"></div>
+        </span>
+        <input id="cFrom" type="hidden"><input id="cTo" type="hidden">
+        <div class="seg" id="cGranBtns">
+          <button data-g="day" class="on" onclick="setGran('day')">日</button>
+          <button data-g="week" onclick="setGran('week')">周</button>
+          <button data-g="month" onclick="setGran('month')">月</button>
+          <button data-g="year" onclick="setGran('year')">年</button>
+        </div>
+        <select id="cJobFilter" onchange="loadAnalytics()"><option value="">全部职位</option></select>
+        <button class="btn ghost sm" onclick="loadAnalytics()">🔄 刷新</button>
+        <button class="btn ghost sm" onclick="openCost()">💰 渠道成本</button>
+        <button class="btn ghost sm" onclick="exportXlsx()">⬇ 导出数据</button>
+        <button class="btn ghost sm" onclick="exportImage()">🖼 导出看板图</button>
+        <div class="sp"></div>
         <select id="cPushGroup"></select>
-        <button class="btn ghost sm" onclick="genChannelReport()">📊 生成日报</button>
+        <button class="btn ghost sm" onclick="genChannelReport()">📄 文字日报</button>
         <button class="btn ghost sm" onclick="pushChannelReport()">📤 推送到群</button>
       </div>
-      <div id="cUpResult" class="hide" style="margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);font-size:13px"></div>
-      <div id="cRecords"></div>
-      <div id="cReportCard" class="hide" style="margin-top:16px">
-        <pre id="cReportText" style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px;white-space:pre-wrap;font-family:inherit;line-height:1.65;margin:0 0 12px"></pre>
+
+      <div id="cDash">
+      <div id="cInsights" class="cins hide"></div>
+      <div id="cKpis" class="kpis"></div>
+      <div id="cEmpty" class="acard hide" style="margin-bottom:14px;text-align:center;color:var(--soft);line-height:1.7">该区间还没有数据。用上面的「⬇ 下载空表」发给 HR 填，收回后「⬆ 上传填好的表」，这里就会自动出图。<br>想看全部，把窗口点成「上线至今」。</div>
+
+      <div class="agrid">
+        <div class="acard">
+          <div class="acard-h"><b>趋势</b><select id="cTrendChan" onchange="if(CANA)renderTrend(CANA)" style="padding:4px 8px;border:1px solid var(--lineS);border-radius:7px;background:var(--panel);font-size:12px;color:var(--ink)"><option value="">全部渠道</option></select></div>
+          <div style="height:210px;position:relative"><canvas id="cTrendChart"></canvas></div>
+        </div>
+        <div class="acard">
+          <div class="acard-h"><b>渠道对比</b><span class="muted" style="padding:0">窗口累计</span></div>
+          <div style="height:210px;position:relative"><canvas id="cChannelChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="acard" style="margin-bottom:14px">
+        <div class="acard-h"><b>职位进度</b><span class="muted" style="padding:0">对目标简历量</span></div>
+        <div id="cJobProgress"></div>
+      </div>
+
+      <div class="acard" style="margin-bottom:14px">
+        <div class="acard-h"><b>渠道明细</b><span class="muted" style="padding:0" id="cChanWin"></span></div>
+        <div id="cChannelTable"></div>
+      </div>
+
+      </div><!-- /cDash -->
+      <div id="cReportCard" class="acard hide" style="margin-bottom:14px">
+        <div class="acard-h"><b>📄 文字日报</b><span class="muted" style="padding:0">可推送到 Lark 群</span></div>
+        <pre id="cReportText" style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px;white-space:pre-wrap;font-family:inherit;line-height:1.65;margin:6px 0 12px"></pre>
         <div id="cBreakdown"></div>
         <ul id="cAlerts" style="list-style:none;padding:0;margin:12px 0 0"></ul>
       </div>
+
+      <div style="font-size:12px;color:var(--soft);line-height:1.6">口径：人工录入（未逐人建档）· 时区 Asia/Kolkata · 逐人去重指标由 AI-TD 核心派生后接入，不与此处相加。</div>
     </section>
+    <section id="view-talent" class="hide">
+      <div class="form-card" style="max-width:720px">
+        <h2>Talent Discovery</h2>
+        <p class="sub">AI 候选人发现（AI Talent Discovery）——爬取 / 去重 / 匹配 / 打分 / 联系任务 + 不可变联系历史。由核心系统（CODEX）提供。</p>
+        <div style="background:var(--accentS);color:var(--accent);border-radius:10px;padding:14px 16px;font-size:13.5px;line-height:1.75">
+          这是独立系统的入口占位。按已锁定的协作边界：两套系统不合并代码/数据库；候选人交换走 v3 签名往返（核心签发 token + 行签名，运营侧只投递 / 读回 / 原样往返，不持密钥、不重算签名）。<br>
+          联调完成后，这里接入候选人队列与 Review 池。
+        </div>
+        <div class="muted" style="text-align:left;padding:12px 2px 0">当前状态：待联调（fixture 阶段往返测试已通过）。</div>
+      </div>
+    </section>
+    <section id="view-home" class="hide">
+      <div class="home-head"><h2>Home</h2><span class="muted" style="padding:0">团队运营总览 · <span id="homeDate"></span> · Asia/Kolkata</span></div>
+      <div class="hsec"><div class="hsec-t">任务</div><div id="homeTasks" class="kpis"></div></div>
+      <div class="hsec"><div class="hsec-t">招聘（近 30 天）</div><div id="homeRecruit" class="kpis"></div></div>
+      <div class="acard"><div class="acard-h"><b>在招职位进度</b><span class="muted" style="padding:0">对目标简历量</span></div><div id="homeJobBars"></div></div>
+    </section>
+    <section id="view-jobs" class="hide">
+      <div class="toolbar"><div style="font-weight:750;font-size:16px">🎯 职位管理</div><div class="sp"></div>
+        <label style="font-size:12px;color:var(--soft);display:flex;align-items:center;gap:5px"><input type="checkbox" id="jobShowClosed" onchange="renderJobsList()"> 显示已关闭</label>
+        <button class="btn ghost sm" onclick="newJob()">＋ 新建职位</button></div>
+      <div id="jobList"></div>
+      <div class="muted" style="text-align:left;padding:10px 2px 0;font-size:12px">这里设的目标简历量 / 人数，直接驱动看板的「职位进度」「简历量进度」；关闭的职位自动从看板目标里移除。</div>
+    </section>
+    <section id="view-docs" class="hide">
+      <div class="toolbar" style="flex-wrap:wrap"><div style="font-weight:750;font-size:16px">📄 文档 / 模板库</div>
+        <select id="docCat" onchange="renderDocs()"><option value="">全部分类</option></select>
+        <div class="sp"></div><button class="btn ghost sm" onclick="newDoc()">＋ 新建模板</button></div>
+      <div id="docList"></div>
+      <div class="muted" style="text-align:left;padding:10px 2px 0;font-size:12px">招聘话术 / JD / 面试评估表 / 任务 SOP 等可复用模板，一键复制。不是通用文档编辑器，是贴着业务的模板库。</div>
+    </section>
+    <section id="view-attend" class="hide">
+      <div class="home-head"><h2>Attendance 打卡</h2><span class="muted" style="padding:0">GPS + 地理围栏 · 服务器时间戳 · 内外通用</span></div>
+      <div class="acard" style="margin-bottom:14px">
+        <div class="acard-h"><b>打卡点位（地理围栏）</b><button class="btn ghost sm" onclick="newSite()">＋ 新增点位</button></div>
+        <div id="siteList"></div>
+      </div>
+      <div class="acard" style="margin-bottom:14px">
+        <div class="acard-h"><b>人员 / 打卡链接</b><button class="btn ghost sm" onclick="newPerson()">＋ 新增人员</button></div>
+        <div id="personList"></div>
+      </div>
+      <div class="acard">
+        <div class="acard-h"><b>打卡记录</b><span style="display:flex;gap:8px;align-items:center"><button class="btn ghost sm" onclick="larkSync()">↻ 从 Lark 同步内部</button><button class="btn ghost sm" onclick="loadAttRecords()">🔄 刷新</button></span></div>
+        <div id="attRecords"></div>
+      </div>
+      <div class="muted" style="text-align:left;padding:10px 2px 0;font-size:12px">诚实提示：网页 GPS 无法 100% 防伪；本页用「围栏 + 服务器时间 + 精度校验 + 不可能位移」拦截并全程留痕，异常打卡标红待你复核。坐标仅管理员可见、只在打卡这一刻采集。</div>
+    </section>
+      </div>
+    </main>
   </div>
 </div>
 
 <div id="modalRoot"></div>
 <div id="toast"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
 let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
@@ -262,9 +440,10 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
     PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='Connection failed';}}
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
-  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();loadTasks();}
+  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();showTab('home');}
 async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
-function showTab(t){['create','board','cal','report','recruit'].forEach(x=>{document.getElementById('tab-'+x).classList.toggle('on',x===t);document.getElementById('view-'+x).classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();}
+function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();}
+function toggleGroup(h){h.closest('.navgroup').classList.toggle('collapsed');}
 
 async function loadExternalGroups(){try{const gs=await(await api('/api/external-groups')).json();EGROUPS=Array.isArray(gs)?gs:[];EGMAP={};EGROUPS.forEach(g=>EGMAP[g.id]=g.name);}catch(e){EGROUPS=[];}}
 async function loadGroups(){
@@ -459,20 +638,22 @@ async function addExtGroup(){const name=val('egName'),url=val('egUrl'),err=docum
   }catch(e){err.textContent='Failed to add';}}
 async function delExtGroup(id){if(!confirm('Remove this external group?'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('Removed');}catch(e){toast('Remove failed',true);}}
 
-// ---- 招聘渠道日报模块 ----
-let CMETA={channels:[],jobs:[],today:''}, cEditId=null, CRECS=[];
+// ---- 招聘分析看板模块（表格进 + 分析出；网页不手填，图表与 Bot 同一数据源） ----
+let CMETA={channels:[],jobs:[],today:''}, CGRAN='day', CANA=null, cTrend=null, cChan=null;
 const cpct=x=>x==null?'—':Math.round(x*100)+'%';
-const cwow=x=>{if(x==null)return '<span class="muted">—</span>';const s=(x>=0?'+':'')+Math.round(x*100)+'%';return `<span style="color:${x<0?'var(--danger)':'var(--ok)'};font-weight:600">${s}</span>`;};
+const cwow=x=>{if(x==null)return '<span class="muted" style="padding:0">—</span>';const s=(x>=0?'+':'')+Math.round(x*100)+'%';return `<span style="color:${x<0?'var(--danger)':'var(--ok)'};font-weight:600">${s}</span>`;};
+const rateClass=x=>x==null?'':(x>=0.5?'good':(x>=0.25?'mid':'bad'));
+const PAL={new:'#5b5bd6',passed:'#0d9488',recommended:'#16a34a',rejected:'#dc2626'};
+const fmt=n=>(typeof n==='number'&&isFinite(n))?n.toLocaleString('en-US'):n;
+function _ctheme(){const dark=(window.matchMedia&&matchMedia('(prefers-color-scheme:dark)').matches);if(typeof Chart!=='undefined')Chart.defaults.color=dark?'#9aa2ab':'#5b636b';return{grid:dark?'rgba(255,255,255,.08)':'rgba(20,25,35,.08)'};}
 async function loadChannelTab(){
-  try{CMETA=await(await api('/api/channel/meta')).json();}catch(e){CMETA={channels:[],jobs:[],today:todayStr()};}
-  document.getElementById('cChannel').innerHTML=(CMETA.channels||[]).map(c=>`<option>${esc(c)}</option>`).join('');
-  document.getElementById('cJob').innerHTML=(CMETA.jobs||[]).map(j=>`<option value="${j.id}">${esc(j.title)}（目标 ${j.target_headcount} 人）</option>`).join('')||'<option value="">（后端暂无职位）</option>';
-  if(!document.getElementById('cDate').value)document.getElementById('cDate').value=CMETA.today;
-  if(!document.getElementById('cViewDate').value)document.getElementById('cViewDate').value=CMETA.today;
+  try{CMETA=await(await api('/api/channel/meta')).json();}catch(e){CMETA={channels:[],jobs:[],today:todayStr(),roster:[]};}
+  if(!document.getElementById('cTplDate').value)document.getElementById('cTplDate').value=CMETA.today||todayStr();
+  document.getElementById('cJobFilter').innerHTML='<option value="">全部职位</option>'+(CMETA.jobs||[]).map(j=>`<option value="${j.id}">${esc(j.title)}</option>`).join('');
   const pg=document.getElementById('cPushGroup');
   pg.innerHTML='<option value="">推送到…（选群）</option>'+(GROUPS||[]).map(g=>`<option value="${g.chat_id}">${esc(g.name)}</option>`).join('')+(EGROUPS||[]).map(g=>`<option value="ext:${g.id}">${esc(g.name)} (external)</option>`).join('');
   renderRoster();
-  loadChannelRecords();
+  loadAnalytics();
 }
 function renderRoster(){
   const cur=document.getElementById('cBy').value;
@@ -484,52 +665,120 @@ async function addRoster(){
   const names=(CMETA.roster||[]).concat([n]);
   try{const r=await(await api('/api/channel/roster',{method:'POST',body:JSON.stringify({names})})).json();CMETA.roster=r.roster||names;renderRoster();document.getElementById('cBy').value=n;toast('✅ 已加入名单');}catch(e){toast('添加失败',true);}
 }
-async function loadChannelRecords(){
-  const d=document.getElementById('cViewDate').value||CMETA.today;
-  try{CRECS=await(await api('/api/channel/records?d='+d)).json();}catch(e){CRECS=[];}
-  if(!Array.isArray(CRECS))CRECS=[];
-  const box=document.getElementById('cRecords');
-  if(!CRECS.length){box.innerHTML='<div class="muted">该日暂无记录。上面录入，或点右上「生成日报」看汇总。</div>';return;}
-  box.innerHTML=`<table class="rtable"><thead><tr><th>渠道</th><th>职位</th><th>填写人</th><th>新增</th><th>初筛</th><th>推荐</th><th>拒绝</th><th>备注</th><th></th></tr></thead><tbody>${CRECS.map(r=>`<tr><td class="name">${esc(r.channel)}</td><td>${esc(r.job_title||r.job_request_id)}</td><td>${esc(r.filled_by)}</td><td>${r.new_resumes}</td><td>${r.passed_screening}</td><td>${r.recommended}</td><td>${r.rejected}</td><td>${esc(r.note||'')}</td><td style="white-space:nowrap"><span onclick="editChannelRecord(${r.id})" style="color:var(--accent);cursor:pointer">编辑</span> · <span onclick="delChannelRecord(${r.id})" style="color:var(--danger);cursor:pointer">删除</span></td></tr>`).join('')}</tbody></table>`;
+function setGran(g){CGRAN=g;document.querySelectorAll('#cGranBtns button').forEach(b=>b.classList.toggle('on',b.dataset.g===g));loadAnalytics();}
+async function loadAnalytics(){
+  const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value,job=document.getElementById('cJobFilter').value;
+  const qs='/api/channel/analytics?g='+CGRAN+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'')+(job?'&job_id='+encodeURIComponent(job):'');
+  let a;try{a=await(await api(qs)).json();}catch(e){toast('加载分析失败',true);return;}
+  CANA=a;
+  const _empty=!a.timeseries.length;const _eb=document.getElementById('cEmpty');if(_eb)_eb.classList.toggle('hide',!_empty);
+  const _ts=document.getElementById('cTrendChan');
+  if(_ts){const prev=_ts.value;const chans=Object.keys(a.channel_series||{}).filter(k=>(a.channel_series[k]||[]).some(b=>b.new||b.passed||b.recommended||b.rejected));_ts.innerHTML='<option value="">全部渠道</option>'+chans.map(c=>`<option ${c===prev?'selected':''}>${esc(c)}</option>`).join('');}
+  renderInsights(a);renderKpis(a);renderTrend(a);renderChannelChart(a);renderJobs(a);renderChannelTable(a);
+  document.getElementById('cChanWin').textContent=a.window.from+' ~ '+a.window.to+'（按'+({day:'日',week:'周',month:'月',year:'年'}[a.granularity]||a.granularity)+'）';
+  const _lbl=document.getElementById('cRangeLbl');if(_lbl)_lbl.textContent=a.window.from+' ~ '+a.window.to;
 }
-function cPayload(){return {record_date:document.getElementById('cDate').value,channel:document.getElementById('cChannel').value,job_request_id:parseInt(document.getElementById('cJob').value||'0',10),filled_by:val('cBy'),new_resumes:parseInt(document.getElementById('cNew').value||'0',10),passed_screening:parseInt(document.getElementById('cPassed').value||'0',10),recommended:parseInt(document.getElementById('cRec').value||'0',10),rejected:parseInt(document.getElementById('cRej').value||'0',10),note:val('cNote')};}
-async function submitChannel(){
-  const err=document.getElementById('cErr');err.textContent='';
-  const body=cPayload();
-  const url=cEditId?('/api/channel/records/'+cEditId):'/api/channel/records';
-  const method=cEditId?'PATCH':'POST';
-  let r,j;try{r=await api(url,{method,body:JSON.stringify(body)});j=await r.json().catch(()=>({}));}catch(e){err.textContent='提交失败';return;}
-  if(!r.ok){err.textContent='提交失败：'+((j.errors&&j.errors.join('；'))||j.error||'');return;}
-  const w=j.warnings||[];toast(w.length?('已保存，请复核：'+w.join('；')):'已保存 ✓');
-  cancelChannelEdit(true);
-  document.getElementById('cViewDate').value=body.record_date;
-  loadChannelRecords();
+function _delta(cur,prev,rate){
+  if(prev==null||cur==null)return '';
+  if(rate){const d=(cur-prev)*100;if(Math.abs(d)<0.05)return '<span class="dl flat">±0pp</span>';return `<span class="dl ${d>0?'up':'down'}">${d>0?'▲':'▼'}${Math.abs(d).toFixed(0)}pp</span>`;}
+  if(!prev)return '';const d=(cur-prev)/prev*100;if(Math.abs(d)<0.5)return '<span class="dl flat">±0%</span>';return `<span class="dl ${d>0?'up':'down'}">${d>0?'▲':'▼'}${Math.abs(d).toFixed(0)}%</span>`;
 }
-function editChannelRecord(id){const r=CRECS.find(x=>x.id===id);if(!r)return;cEditId=r.id;document.getElementById('cDate').value=(r.record_date||'').slice(0,10);document.getElementById('cBy').value=r.filled_by||'';document.getElementById('cChannel').value=r.channel;document.getElementById('cJob').value=r.job_request_id;document.getElementById('cNew').value=r.new_resumes;document.getElementById('cPassed').value=r.passed_screening;document.getElementById('cRec').value=r.recommended;document.getElementById('cRej').value=r.rejected;document.getElementById('cNote').value=r.note||'';document.getElementById('cFormTitle').textContent='编辑记录';document.getElementById('cSubmit').textContent='保存修改';document.getElementById('cCancel').style.display='inline-block';window.scrollTo({top:0,behavior:'smooth'});}
-function cancelChannelEdit(keep){cEditId=null;['cNew','cPassed','cRec','cRej'].forEach(id=>document.getElementById(id).value='0');document.getElementById('cNote').value='';document.getElementById('cFormTitle').textContent='招聘渠道 · 每日录入';document.getElementById('cSubmit').textContent='提交';document.getElementById('cCancel').style.display='none';if(!keep)document.getElementById('cErr').textContent='';}
-async function delChannelRecord(id){if(!confirm('删除这条渠道记录？'))return;try{await api('/api/channel/records/'+id,{method:'DELETE'});loadChannelRecords();}catch(e){toast('删除失败',true);}}
+function kpi(n,l,s,dl){return `<div class="kpi"><div class="n">${n}${dl||''}</div><div class="l">${esc(l)}</div>${s?`<div class="s">${esc(s)}</div>`:''}</div>`;}
+function renderKpis(a){
+  const s=a.summary,p=a.prev_summary||null;
+  const D=(k,rate)=>p?_delta(s[k],p[k],rate):'';
+  document.getElementById('cKpis').innerHTML=[
+    kpi(fmt(s.new),'新增简历','环比上一周期',D('new')),
+    kpi(cpct(s.conversion),'初筛通过率',s.passed+' 份',D('conversion',true)),
+    kpi(cpct(s.recommend_rate),'推荐率',s.recommended+' 人次',D('recommend_rate',true)),
+    kpi(s.resumes_per_day==null?'—':s.resumes_per_day,'简历/天','招聘速度',D('resumes_per_day')),
+    kpi(s.recommended_per_week==null?'—':s.recommended_per_week,'推荐/周','领先指标',D('recommended_per_week')),
+    kpi(s.resume_target_progress==null?'—':cpct(s.resume_target_progress),'简历量进度',s.target_resumes?('目标 '+s.target_resumes):'未设目标',''),
+  ].join('');
+}
+function noChart(id,msg){const c=document.getElementById(id);if(c&&c.parentNode)c.parentNode.innerHTML='<div class="muted">'+msg+'</div>';}
+function renderTrend(a){
+  if(typeof Chart==='undefined'){noChart('cTrendChart','图表库未加载（检查网络/CDN）');return;}
+  const th=_ctheme();
+  const _sel=document.getElementById('cTrendChan');const _ch=_sel?_sel.value:'';
+  const series=(_ch&&a.channel_series&&a.channel_series[_ch])?a.channel_series[_ch]:a.timeseries;
+  const L=series.map(b=>b.label);
+  const ds=(name,key)=>({label:name,data:series.map(b=>b[key]),borderColor:PAL[key],backgroundColor:PAL[key],tension:.25,borderWidth:2,pointRadius:L.length>40?0:2});
+  if(cTrend)cTrend.destroy();
+  cTrend=new Chart(document.getElementById('cTrendChart'),{type:'line',
+    data:{labels:L,datasets:[ds('新增','new'),ds('初筛','passed'),ds('推荐','recommended'),ds('拒绝','rejected')]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{boxWidth:12,font:{size:11}}}},scales:{y:{beginAtZero:true,ticks:{precision:0},grid:{color:th.grid}},x:{ticks:{maxRotation:0,autoSkip:true,font:{size:10}},grid:{color:th.grid}}}}});
+}
+function renderChannelChart(a){
+  if(typeof Chart==='undefined'){noChart('cChannelChart','图表库未加载（检查网络/CDN）');return;}
+  const th=_ctheme();
+  const rows=a.channels.filter(c=>c.new||c.passed||c.recommended||c.rejected);
+  const L=rows.map(c=>c.channel);
+  if(cChan)cChan.destroy();
+  cChan=new Chart(document.getElementById('cChannelChart'),{type:'bar',
+    data:{labels:L,datasets:[
+      {label:'新增',data:rows.map(c=>c.new),backgroundColor:PAL.new},
+      {label:'初筛',data:rows.map(c=>c.passed),backgroundColor:PAL.passed},
+      {label:'推荐',data:rows.map(c=>c.recommended),backgroundColor:PAL.recommended}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{boxWidth:12,font:{size:11}}}},
+      scales:{y:{beginAtZero:true,ticks:{precision:0},grid:{color:th.grid}},x:{ticks:{font:{size:11}},grid:{display:false}}}}});
+}
+function renderJobs(a){
+  if(!a.jobs.length){document.getElementById('cJobProgress').innerHTML='<div class="muted">暂无在招职位</div>';return;}
+  document.getElementById('cJobProgress').innerHTML=a.jobs.map(j=>{
+    const p=j.resume_progress,pct=p==null?0:Math.min(Math.round(p*100),100),done=p!=null&&p>=1;
+    return `<div class="prog"><div class="pt"><span>${esc(j.title)}</span><span>${fmt(j.window_new)}${j.target_resumes?(' / '+fmt(j.target_resumes)):''} 份　${p==null?'':('<b style="color:'+(done?'var(--ok)':'var(--ink)')+'">'+cpct(p)+'</b>')}</span></div><div class="pb"><div class="pf" style="width:${pct}%;background:${done?'var(--ok)':'var(--accent)'}"></div></div></div>`;
+  }).join('');
+}
+function renderChannelTable(a){
+  const hc=a.has_cost;
+  const head=`<th>渠道</th><th>新增</th><th>占比</th><th>初筛</th><th>转化率</th><th>推荐</th><th>推荐率</th><th>拒绝</th>`+(hc?`<th>成本</th><th>每份成本</th>`:``);
+  const body=a.channels.map(c=>`<tr><td class="name">${esc(c.channel)}</td><td>${c.new}</td><td>${cpct(c.share)}</td><td>${c.passed}</td><td><span class="rate ${rateClass(c.conversion)}">${cpct(c.conversion)}</span></td><td>${c.recommended}</td><td>${cpct(c.recommend_rate)}</td><td>${c.rejected}</td>`+(hc?`<td>${c.cost?('￥'+fmt(c.cost)):'—'}</td><td>${c.cost_per_resume!=null?('￥'+c.cost_per_resume):'—'}</td>`:``)+`</tr>`).join('');
+  document.getElementById('cChannelTable').innerHTML=`<table class="rtable"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+function renderInsights(a){
+  const el=document.getElementById('cInsights');if(!el)return;
+  const ins=a.insights||[];
+  if(!ins.length){el.classList.add('hide');el.innerHTML='';return;}
+  el.classList.remove('hide');
+  el.innerHTML=ins.map(x=>`<span class="chip">💡 ${esc(x)}</span>`).join('');
+}
+function _cparams(){const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value,job=document.getElementById('cJobFilter').value;return 'g='+CGRAN+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'')+(job?'&job_id='+encodeURIComponent(job):'');}
+async function exportXlsx(){
+  try{const r=await api('/api/channel/export.xlsx?'+_cparams());if(!r.ok){toast('导出失败',true);return;}
+    const blob=await r.blob();const el=document.createElement('a');const w=CANA?CANA.window:{from:'',to:''};
+    el.href=URL.createObjectURL(blob);el.download='招聘分析_'+w.from+'_'+w.to+'.xlsx';
+    document.body.appendChild(el);el.click();el.remove();toast('✅ 数据已导出 xlsx');}catch(e){toast('导出失败',true);}
+}
+async function exportImage(){
+  if(typeof html2canvas==='undefined'){toast('图片库未加载（检查网络）',true);return;}
+  const node=document.getElementById('cDash');if(!node)return;
+  toast('生成图片中…');
+  try{const dark=(window.matchMedia&&matchMedia('(prefers-color-scheme:dark)').matches);
+    const canvas=await html2canvas(node,{backgroundColor:dark?'#0e1013':'#f6f7f9',scale:2});
+    const el=document.createElement('a');el.href=canvas.toDataURL('image/png');const w=CANA?CANA.window:{from:'',to:''};
+    el.download='招聘看板_'+w.from+'_'+w.to+'.png';document.body.appendChild(el);el.click();el.remove();toast('✅ 看板图已导出 PNG');}catch(e){toast('导出图片失败',true);}
+}
 async function genChannelReport(){
-  const d=document.getElementById('cViewDate').value||CMETA.today;
-  const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value;
-  const qs='/api/channel/report?d='+encodeURIComponent(d)+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'');
+  const t=document.getElementById('cTo').value||CMETA.today,f=document.getElementById('cFrom').value;
+  const qs='/api/channel/report?d='+encodeURIComponent(t)+(f?'&from='+encodeURIComponent(f):'')+'&to='+encodeURIComponent(t);
   let rep;try{rep=await(await api(qs)).json();}catch(e){toast('生成失败',true);return;}
   document.getElementById('cReportCard').classList.remove('hide');
   document.getElementById('cReportText').textContent=rep.text;
   document.getElementById('cBreakdown').innerHTML=`<table class="rtable"><thead><tr><th>渠道</th><th>今日新增</th><th>环比</th><th>近7日转化率</th><th>近7日推荐率</th><th>连续0天</th></tr></thead><tbody>${(rep.breakdown||[]).map(b=>`<tr><td class="name">${esc(b.channel)}</td><td>${b.day.new}</td><td>${cwow(b.wow_new)}</td><td>${cpct(b.roll7_conversion)}</td><td>${cpct(b.roll7_recommend_rate)}</td><td>${b.zero_streak>0?('<span style="color:var(--danger)">'+b.zero_streak+'</span>'):0}</td></tr>`).join('')}</tbody></table>`;
   const derived=(rep.identity_derived&&!rep.identity_derived.available)?`<li style="background:var(--accentS);color:var(--accent);padding:8px 12px;border-radius:8px;margin-bottom:8px">ℹ️ 以上为人工录入（未逐人建档）。${esc(rep.identity_derived.note||'')}</li>`:'';
-  document.getElementById('cAlerts').innerHTML=derived+(rep.alerts||[]).map(a=>`<li style="background:var(--warnB);color:var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:8px">⚠️ ${esc(a)}</li>`).join('');
+  document.getElementById('cAlerts').innerHTML=derived+(rep.alerts||[]).map(x=>`<li style="background:var(--warnB);color:var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:8px">⚠️ ${esc(x)}</li>`).join('');
 }
 async function pushChannelReport(){
-  const d=document.getElementById('cViewDate').value||CMETA.today;
-  const g=document.getElementById('cPushGroup').value;
+  const t=document.getElementById('cTo').value||CMETA.today,g=document.getElementById('cPushGroup').value;
   if(!g){toast('先选一个推送目标群',true);return;}
-  const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value;
-  const body={d};if(f)body.from=f;if(t)body.to=t;if(g.indexOf('ext:')===0)body.external_group_id=parseInt(g.slice(4),10);else body.chat_id=g;
+  const f=document.getElementById('cFrom').value,body={d:t,to:t};if(f)body.from=f;
+  if(g.indexOf('ext:')===0)body.external_group_id=parseInt(g.slice(4),10);else body.chat_id=g;
   try{const j=await(await api('/api/channel/report/push',{method:'POST',body:JSON.stringify(body)})).json();toast(j.pushed?'✅ 已推送到群':'⚠️ 已生成，但推送失败（检查群/webhook）',!j.pushed);}catch(e){toast('推送失败',true);}
 }
 async function downloadChannelTemplate(){
-  const d=document.getElementById('cDate').value||CMETA.today;
-  const by=val('cBy');
+  const d=document.getElementById('cTplDate').value||CMETA.today,by=val('cBy');
   try{
     const r=await api('/api/channel/template?d='+encodeURIComponent(d)+'&by='+encodeURIComponent(by));
     if(!r.ok){toast('生成空表失败',true);return;}
@@ -542,7 +791,7 @@ async function downloadChannelTemplate(){
 function pickChannelUpload(){document.getElementById('cUpFile').click();}
 async function onChannelUpload(ev){
   const f=ev.target.files[0];if(!f)return;
-  const fd=new FormData();fd.append('file',f);fd.append('by',val('cBy'));fd.append('d',document.getElementById('cViewDate').value||CMETA.today);
+  const fd=new FormData();fd.append('file',f);fd.append('by',val('cBy'));fd.append('d',document.getElementById('cTplDate').value||CMETA.today);
   let j;
   try{const r=await fetch('/api/channel/upload',{method:'POST',headers:{'X-Auth':PW},body:fd});j=await r.json().catch(()=>({}));
     if(!r.ok){toast('上传失败：'+(j.error||''),true);ev.target.value='';return;}
@@ -552,9 +801,257 @@ async function onChannelUpload(ev){
   const errs=j.errors||[];
   box.innerHTML='<b>✅ 已入库 '+j.imported+' 行</b>'+(j.skipped?('　跳过 '+j.skipped+' 空行'):'')+(errs.length?('　<span style="color:var(--danger)">'+errs.length+' 行有问题</span>'):'')+(errs.length?('<ul style="margin:8px 0 0;padding-left:18px;color:var(--danger)">'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>'):'');
   toast(j.imported?('✅ 已入库 '+j.imported+' 行'):'没有可入库的行',!j.imported);
-  loadChannelRecords();
-  if(!document.getElementById('cReportCard').classList.contains('hide'))genChannelReport();
+  loadAnalytics();
 }
+
+// ---- 日历区间选择 + 三态上色（未来/上线前=淡；上线起=正常，即使某天没上传） ----
+let rcalY=0,rcalM=0,rcalStart=null,rcalEnd=null,rcalPick=0;
+function _iso(y,m,d){return y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');}
+function _addDays(iso,n){const p=iso.split('-').map(Number);const dt=new Date(Date.UTC(p[0],p[1]-1,p[2]));dt.setUTCDate(dt.getUTCDate()+n);return dt.toISOString().slice(0,10);}
+function _mondayOf(iso){const p=iso.split('-').map(Number);const dt=new Date(Date.UTC(p[0],p[1]-1,p[2]));const wd=(dt.getUTCDay()+6)%7;return _addDays(iso,-wd);}
+function toggleRangeCal(ev){if(ev)ev.stopPropagation();const el=document.getElementById('cRangeCal');if(el.classList.contains('hide'))openRangeCal();else el.classList.add('hide');}
+function openRangeCal(){
+  const today=CMETA.today||todayStr();
+  const cur=document.getElementById('cFrom').value||today;const p=cur.split('-').map(Number);
+  rcalY=p[0];rcalM=p[1]-1;
+  rcalStart=document.getElementById('cFrom').value||null;rcalEnd=document.getElementById('cTo').value||null;rcalPick=0;
+  document.getElementById('cRangeCal').classList.remove('hide');renderRangeCal();
+}
+function closeRangeCal(){document.getElementById('cRangeCal').classList.add('hide');}
+function rcalPreset(k){
+  const today=CMETA.today||todayStr();let f=today,t=today;
+  if(k==='7'){f=_addDays(today,-6);}
+  else if(k==='thisweek'){f=_mondayOf(today);}
+  else if(k==='lastweek'){const m=_mondayOf(today);f=_addDays(m,-7);t=_addDays(m,-1);}
+  else if(k==='thismonth'){f=today.slice(0,8)+'01';}
+  else if(k==='golive'){f=CMETA.go_live||today;}
+  applyRange(f,t);
+}
+function applyRange(f,t){
+  if(f>t){const x=f;f=t;t=x;}
+  document.getElementById('cFrom').value=f;document.getElementById('cTo').value=t;
+  closeRangeCal();loadAnalytics();
+}
+function rcalClickDay(iso){
+  const today=CMETA.today||todayStr();
+  if(iso>today)return;
+  if(rcalPick===0){rcalStart=iso;rcalEnd=null;rcalPick=1;renderRangeCal();}
+  else applyRange(rcalStart,iso);
+}
+function rcalNav(n){rcalM+=n;if(rcalM<0){rcalM=11;rcalY--;}else if(rcalM>11){rcalM=0;rcalY++;}renderRangeCal();}
+function renderRangeCal(){
+  const today=CMETA.today||todayStr(),gl=CMETA.go_live||today,data=new Set(CMETA.data_days||[]);
+  const lead=(new Date(Date.UTC(rcalY,rcalM,1)).getUTCDay()+6)%7;
+  const dim=new Date(Date.UTC(rcalY,rcalM+1,0)).getUTCDate();
+  const pre='<div class="rcpre">'+[['today','今天'],['7','近7天'],['thisweek','本周'],['lastweek','上周'],['thismonth','本月'],['golive','上线至今']].map(p=>`<button onclick="rcalPreset('${p[0]}')">${p[1]}</button>`).join('')+'</div>';
+  const head=`<div class="rchead"><button onclick="rcalNav(-1)">‹</button><b>${rcalY} 年 ${rcalM+1} 月</b><button onclick="rcalNav(1)">›</button></div>`;
+  const dows='<div class="rcgrid rcdow">'+['一','二','三','四','五','六','日'].map(d=>`<span>${d}</span>`).join('')+'</div>';
+  let cells='';
+  for(let i=0;i<lead;i++)cells+='<span class="rcd out"></span>';
+  for(let d=1;d<=dim;d++){
+    const iso=_iso(rcalY,rcalM,d);let cls='rcd';
+    const inScope=(iso>=gl&&iso<=today);           // 只有「上线日~今天」是有效跟踪期
+    if(iso>today)cls+=' future';else if(iso<gl)cls+=' pre';
+    if(iso===today)cls+=' today';
+    if(inScope&&data.has(iso))cls+=' hasdata';      // 绿点严格=有效期内且当天真的上传过；上线前/未来不点
+    else if(inScope)cls+=' nodata';                 // 有效期内但那天没上传：留个淡色空心点，方便看漏填
+    if(rcalStart&&rcalEnd&&iso>=rcalStart&&iso<=rcalEnd)cls+=' inrange';
+    if(iso===rcalStart||iso===rcalEnd)cls+=' edge';
+    cells+=`<span class="${cls}" onclick="rcalClickDay('${iso}')">${d}</span>`;
+  }
+  const grid='<div class="rcgrid">'+cells+'</div>';
+  const leg='<div class="rcleg"><span><i class="lg-n"></i>上线后</span><span><i class="lg-d"></i>上线前/未来</span><span><i class="lg-dot"></i>已上传</span><span><i class="lg-hollow"></i>未上传</span></div>';
+  const foot=`<div class="rcfoot">上线日 <input type="date" id="cGoLive" value="${esc(gl)}"><button class="btn ghost sm" onclick="saveGoLive()">保存</button></div>`;
+  document.getElementById('cRangeCal').innerHTML=pre+head+dows+grid+leg+foot;
+}
+async function saveGoLive(){
+  const v=document.getElementById('cGoLive').value;
+  try{const r=await(await api('/api/channel/golive',{method:'POST',body:JSON.stringify({date:v})})).json();CMETA.go_live=r.go_live;renderRangeCal();toast('✅ 上线日已更新');loadAnalytics();}catch(e){toast('设置失败',true);}
+}
+document.addEventListener('click',function(ev){if(!ev.target.isConnected)return;if(ev.target.closest('.rcal-wrap'))return;const el=document.getElementById('cRangeCal');if(el)el.classList.add('hide');});
+
+// ================= Nexus: Home / Docs / Job Reqs / Cost =================
+async function renderHome(){
+  document.getElementById('homeDate').textContent=(CMETA.today||todayStr());
+  let tasks=[];try{tasks=await(await api('/api/tasks')).json();if(!Array.isArray(tasks))tasks=[];}catch(e){tasks=[];}
+  const cnt=k=>tasks.filter(t=>taskCol(t)===k).length;
+  const tk=(n,l,st)=>`<div class="kpi"><div class="n" style="${st||''}">${n}</div><div class="l">${l}</div></div>`;
+  document.getElementById('homeTasks').innerHTML=[
+    tk(cnt('pending'),'待办 To Do'),tk(cnt('accepted'),'进行中'),
+    tk(cnt('overdue'),'超期',cnt('overdue')?'color:var(--danger)':''),
+    tk(cnt('comm'),'待沟通',cnt('comm')?'color:var(--warn)':''),
+    tk(cnt('done'),'已完成'),
+  ].join('');
+  let a=null;try{a=await(await api('/api/channel/analytics?g=day')).json();}catch(e){}
+  const box=document.getElementById('homeRecruit');
+  if(a&&a.summary){
+    const s=a.summary,p=a.prev_summary;
+    const rk=(n,l,dl)=>`<div class="kpi"><div class="n">${n}${dl||''}</div><div class="l">${l}</div></div>`;
+    box.innerHTML=[
+      rk(fmt(s.new),'近30天新增',p?_delta(s.new,p.new):''),
+      rk(cpct(s.conversion),'初筛通过率'),
+      rk(s.resume_target_progress==null?'—':cpct(s.resume_target_progress),'简历量进度'),
+      rk(esc(a.best_channel||'—'),'转化最好渠道'),
+      rk(s.total_cost?('￥'+fmt(s.total_cost)):'—','近30天投入'),
+    ].join('');
+    homeJobBars(a.jobs);
+  } else { box.innerHTML='<div class="muted">招聘数据暂不可用</div>'; }
+}
+function homeJobBars(jobs){
+  const el=document.getElementById('homeJobBars');if(!el)return;
+  if(!jobs||!jobs.length){el.innerHTML='<div class="muted">暂无在招职位</div>';return;}
+  el.innerHTML=jobs.map(j=>{const p=j.resume_progress,pct=p==null?0:Math.min(Math.round(p*100),100),done=p!=null&&p>=1;
+    return `<div class="prog"><div class="pt"><span>${esc(j.title)}</span><span>${fmt(j.window_new)}${j.target_resumes?(' / '+fmt(j.target_resumes)):''} 份　${p==null?'':('<b style="color:'+(done?'var(--ok)':'var(--ink)')+'">'+cpct(p)+'</b>')}</span></div><div class="pb"><div class="pf" style="width:${pct}%;background:${done?'var(--ok)':'var(--accent)'}"></div></div></div>`;}).join('');
+}
+// 文档/模板库
+let DOCS=[];
+const DOC_CATS=['招聘话术','JD','面试评估','任务SOP','Offer/入职','其他'];
+async function loadDocs(){
+  try{DOCS=await(await api('/api/templates')).json();if(!Array.isArray(DOCS))DOCS=[];}catch(e){DOCS=[];}
+  const sel=document.getElementById('docCat');
+  if(sel&&sel.options.length<=1)sel.innerHTML='<option value="">全部分类</option>'+DOC_CATS.map(c=>`<option>${c}</option>`).join('');
+  renderDocs();
+}
+function renderDocs(){
+  const cat=document.getElementById('docCat').value;
+  const list=DOCS.filter(d=>!cat||d.category===cat);
+  const box=document.getElementById('docList');
+  if(!list.length){box.innerHTML='<div class="muted">还没有模板。点右上「新建模板」添加招聘话术 / JD / 面试评估表 / 任务 SOP。</div>';return;}
+  box.innerHTML=list.map(d=>`<div class="doccard"><div class="doch"><span class="doctag">${esc(d.category)}</span><b>${esc(d.title)}</b><div class="sp"></div><span class="dact" onclick="copyDoc(${d.id})">复制</span><span class="dact" onclick="editDoc(${d.id})">编辑</span><span class="dact del" onclick="delDoc(${d.id})">删除</span></div><pre class="docbody">${esc(d.content||'')}</pre></div>`).join('');
+}
+function copyDoc(id){const d=DOCS.find(x=>x.id===id);if(!d)return;const t=d.content||'';if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(()=>toast('✅ 已复制'),()=>toast('复制失败',true));}else{toast('浏览器不支持自动复制',true);}}
+function docModal(d){
+  const cats=DOC_CATS.map(c=>`<option ${d&&d.category===c?'selected':''}>${c}</option>`).join('');
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${d?'编辑模板':'新建模板'}</h3>`
+    +`<div class="field"><label>标题</label><input id="dmTitle" value="${d?esc(d.title):''}"></div>`
+    +`<div class="field"><label>分类</label><select id="dmCat">${cats}</select></div>`
+    +`<div class="field"><label>内容</label><textarea id="dmBody" style="min-height:180px">${d?esc(d.content||''):''}</textarea></div>`
+    +`<div class="acts"><button class="btn" onclick="saveDoc(${d?d.id:0})">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
+}
+function newDoc(){docModal(null);}
+function editDoc(id){const d=DOCS.find(x=>x.id===id);if(d)docModal(d);}
+async function saveDoc(id){
+  const body={title:val('dmTitle'),category:document.getElementById('dmCat').value,content:document.getElementById('dmBody').value};
+  if(!body.title){toast('标题必填',true);return;}
+  try{if(id)await api('/api/templates/'+id,{method:'PATCH',body:JSON.stringify(body)});else await api('/api/templates',{method:'POST',body:JSON.stringify(body)});
+    closeModal();toast('已保存 ✓');loadDocs();}catch(e){toast('保存失败',true);}
+}
+async function delDoc(id){if(!confirm('删除这个模板？'))return;try{await api('/api/templates/'+id,{method:'DELETE'});loadDocs();}catch(e){toast('删除失败',true);}}
+// 职位管理
+let JOBS=[];
+async function loadJobs(){try{JOBS=await(await api('/api/channel/jobs')).json();if(!Array.isArray(JOBS))JOBS=[];}catch(e){JOBS=[];}renderJobsList();}
+function renderJobsList(){
+  const showClosed=document.getElementById('jobShowClosed').checked;
+  const list=JOBS.filter(j=>showClosed||j.status==='open');
+  const box=document.getElementById('jobList');
+  if(!list.length){box.innerHTML='<div class="muted">还没有职位。点「新建职位」添加。</div>';return;}
+  box.innerHTML=`<table class="rtable"><thead><tr><th>职位</th><th>负责人</th><th>目标简历量</th><th>目标人数</th><th>状态</th><th></th></tr></thead><tbody>${list.map(j=>`<tr><td class="name">${esc(j.title)}</td><td>${esc(j.owner||'—')}</td><td>${j.target_resume_count||'—'}</td><td>${j.target_headcount||'—'}</td><td><span class="jstat ${j.status}">${j.status==='open'?'在招':'已关闭'}</span></td><td style="white-space:nowrap"><span class="dact" onclick="editJob(${j.id})">编辑</span> · <span class="dact" onclick="toggleJob(${j.id})">${j.status==='open'?'关闭':'重开'}</span></td></tr>`).join('')}</tbody></table>`;
+}
+function jobModal(j){
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${j?'编辑职位':'新建职位'}</h3>`
+    +`<div class="field"><label>职位名 *</label><input id="jmTitle" value="${j?esc(j.title):''}"></div>`
+    +`<div class="field"><label>负责人</label><input id="jmOwner" value="${j?esc(j.owner||''):''}"></div>`
+    +`<div class="row2"><div class="field"><label>目标简历量</label><input id="jmRes" type="number" min="0" value="${j?j.target_resume_count:0}"></div>`
+    +`<div class="field"><label>目标人数</label><input id="jmHead" type="number" min="0" value="${j?j.target_headcount:0}"></div></div>`
+    +`<div class="acts"><button class="btn" onclick="saveJob(${j?j.id:0})">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
+}
+function newJob(){jobModal(null);}
+function editJob(id){const j=JOBS.find(x=>x.id===id);if(j)jobModal(j);}
+async function saveJob(id){
+  const body={title:val('jmTitle'),owner:val('jmOwner'),target_resume_count:parseInt(document.getElementById('jmRes').value||'0',10),target_headcount:parseInt(document.getElementById('jmHead').value||'0',10)};
+  if(!body.title){toast('职位名必填',true);return;}
+  try{if(id)await api('/api/channel/jobs/'+id,{method:'PATCH',body:JSON.stringify(body)});else await api('/api/channel/jobs',{method:'POST',body:JSON.stringify(body)});
+    closeModal();toast('已保存 ✓');loadJobs();}catch(e){toast('保存失败',true);}
+}
+async function toggleJob(id){const j=JOBS.find(x=>x.id===id);if(!j)return;const ns=j.status==='open'?'closed':'open';try{await api('/api/channel/jobs/'+id,{method:'PATCH',body:JSON.stringify({status:ns})});loadJobs();}catch(e){toast('操作失败',true);}}
+// 渠道成本录入
+function _costChans(){return (CMETA.channels&&CMETA.channels.length)?CMETA.channels:['BOSS直聘','猎聘','内推','LinkedIn','招聘会','其他'];}
+function _costRows(m){return _costChans().map(ch=>{const f=(window._COSTS||[]).find(c=>c.channel===ch&&c.ym===m);return `<div class="row2" style="align-items:center;gap:8px;margin-bottom:6px"><div style="font-size:13px">${esc(ch)}</div><input type="number" min="0" step="1" data-ch="${esc(ch)}" value="${f?f.amount:''}" placeholder="0" style="padding:7px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel)"></div>`;}).join('');}
+async function openCost(){
+  try{const r=await(await api('/api/channel/cost')).json();window._COSTS=Array.isArray(r)?r:[];}catch(e){window._COSTS=[];}
+  const ym=(CMETA.today||todayStr()).slice(0,7);
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>渠道成本 · 月度投入</h3><div class="mid">按渠道填当月投入（元）；分析时按窗口天数自动分摊，算「每份简历成本 / 性价比」。</div>`
+    +`<div class="field"><label>月份</label><input id="costYm" type="month" value="${ym}" onchange="reloadCostRows()"></div>`
+    +`<div id="costRows">${_costRows(ym)}</div>`
+    +`<div class="acts"><button class="btn" onclick="saveCost()">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
+}
+function reloadCostRows(){document.getElementById('costRows').innerHTML=_costRows(document.getElementById('costYm').value);}
+async function saveCost(){
+  const ym=document.getElementById('costYm').value;
+  const items=[...document.querySelectorAll('#costRows input[data-ch]')].map(i=>({channel:i.dataset.ch,ym,amount:parseFloat(i.value||'0')||0}));
+  try{const r=await(await api('/api/channel/cost',{method:'POST',body:JSON.stringify({items})})).json();window._COSTS=r.costs||[];closeModal();toast('✅ 成本已保存');loadAnalytics();}catch(e){toast('保存失败',true);}
+}
+
+// ================= Nexus: Attendance 打卡 =================
+let ATT={sites:[],persons:[]};
+const _FL={out_of_fence:'不在范围内',no_gps:'无定位',low_accuracy:'精度异常',impossible_travel:'位移不可能'};
+function flLabel(f){return _FL[f]||f;}
+function fmtTs(iso){try{return new Date(iso).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}catch(e){return iso;}}
+async function loadAttend(){
+  try{ATT.sites=await(await api('/api/att/sites')).json();if(!Array.isArray(ATT.sites))ATT.sites=[];}catch(e){ATT.sites=[];}
+  try{ATT.persons=await(await api('/api/att/persons')).json();if(!Array.isArray(ATT.persons))ATT.persons=[];}catch(e){ATT.persons=[];}
+  renderSites();renderPersons();loadAttRecords();
+}
+function renderSites(){
+  const box=document.getElementById('siteList');
+  if(!ATT.sites.length){box.innerHTML='<div class="muted">还没有点位。新增一个办公点/工地，设经纬度和半径，打卡就在这个圈里才算有效。</div>';return;}
+  box.innerHTML=`<table class="rtable"><thead><tr><th>点位</th><th>坐标</th><th>半径</th><th>自拍</th><th></th></tr></thead><tbody>${ATT.sites.map(s=>`<tr><td class="name">${esc(s.name)}</td><td style="font-size:12px">${s.lat.toFixed(5)}, ${s.lng.toFixed(5)} · <a href="https://maps.google.com/?q=${s.lat},${s.lng}" target="_blank" style="color:var(--accent)">地图</a></td><td>${s.radius_m}m</td><td>${s.require_selfie?'<span style="color:var(--accent)">开</span>':'关'}</td><td style="white-space:nowrap"><span class="dact" onclick="editSite(${s.id})">编辑</span> · <span class="dact del" onclick="delSite(${s.id})">删除</span></td></tr>`).join('')}</tbody></table>`;
+}
+function siteModal(s){
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${s?'编辑点位':'新增点位'}</h3>`
+    +`<div class="field"><label>点位名 *</label><input id="smName" value="${s?esc(s.name):''}"></div>`
+    +`<div class="row2"><div class="field"><label>纬度 lat *</label><input id="smLat" value="${s?s.lat:''}"></div><div class="field"><label>经度 lng *</label><input id="smLng" value="${s?s.lng:''}"></div></div>`
+    +`<button class="btn ghost sm" onclick="fillSiteLoc()" style="margin-bottom:12px">📍 用我当前定位填充</button>`
+    +`<div class="row2"><div class="field"><label>允许半径(米)</label><input id="smR" type="number" min="20" value="${s?s.radius_m:200}"></div>`
+    +`<div class="field"><label>自拍（防代打卡）</label><select id="smSelfie"><option value="0" ${s&&s.require_selfie?'':'selected'}>关（更隐私）</option><option value="1" ${s&&s.require_selfie?'selected':''}>开</option></select></div></div>`
+    +`<div class="acts"><button class="btn" onclick="saveSite(${s?s.id:0})">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
+}
+function newSite(){siteModal(null);}
+function editSite(id){const s=ATT.sites.find(x=>x.id===id);if(s)siteModal(s);}
+function fillSiteLoc(){if(!navigator.geolocation){toast('本设备不支持定位',true);return;}navigator.geolocation.getCurrentPosition(p=>{document.getElementById('smLat').value=p.coords.latitude.toFixed(6);document.getElementById('smLng').value=p.coords.longitude.toFixed(6);toast('已填入当前定位');},e=>toast('取不到定位（需 HTTPS + 授权）',true),{enableHighAccuracy:true});}
+async function saveSite(id){
+  const body={name:val('smName'),lat:parseFloat(val('smLat')),lng:parseFloat(val('smLng')),radius_m:parseInt(document.getElementById('smR').value||'200',10),require_selfie:document.getElementById('smSelfie').value==='1'};
+  if(!body.name||isNaN(body.lat)||isNaN(body.lng)){toast('点位名和经纬度必填',true);return;}
+  try{if(id)await api('/api/att/sites/'+id,{method:'PATCH',body:JSON.stringify(body)});else await api('/api/att/sites',{method:'POST',body:JSON.stringify(body)});closeModal();toast('已保存 ✓');loadAttend();}catch(e){toast('保存失败',true);}
+}
+async function delSite(id){if(!confirm('删除该点位？'))return;try{await api('/api/att/sites/'+id,{method:'DELETE'});loadAttend();}catch(e){toast('删除失败',true);}}
+function renderPersons(){
+  const box=document.getElementById('personList');
+  if(!ATT.persons.length){box.innerHTML='<div class="muted">还没有人员。新增后生成一个专属打卡链接，发给对方（内部/外部都行），点开就能带 GPS 打卡。</div>';return;}
+  const base=location.origin;
+  box.innerHTML=`<table class="rtable"><thead><tr><th>姓名</th><th>类型</th><th>点位</th><th>打卡链接</th><th></th></tr></thead><tbody>${ATT.persons.map(p=>`<tr><td class="name">${esc(p.name)}</td><td>${p.kind==='internal'?'内部':'外部'}</td><td>${esc(p.site_name||'—')}</td><td><span class="dact" onclick="copyLink('${p.token}')">复制链接</span> · <a href="${base}/checkin/${p.token}" target="_blank" style="color:var(--accent);font-size:12.5px">打开</a></td><td><span class="dact del" onclick="delPerson(${p.id})">删除</span></td></tr>`).join('')}</tbody></table>`;
+}
+function personModal(){
+  const sites=ATT.sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>新增人员</h3>`
+    +`<div class="field"><label>姓名 *</label><input id="pmName"></div>`
+    +`<div class="row2"><div class="field"><label>类型</label><select id="pmKind"><option value="external">外部</option><option value="internal">内部</option></select></div>`
+    +`<div class="field"><label>绑定点位</label><select id="pmSite"><option value="">（不绑定）</option>${sites}</select></div></div>`
+    +`<div class="acts"><button class="btn" onclick="savePerson()">生成打卡链接</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
+}
+function newPerson(){if(!ATT.sites.length)toast('建议先建一个点位，再加人绑定',false);personModal();}
+async function savePerson(){
+  const body={name:val('pmName'),kind:document.getElementById('pmKind').value,site_id:document.getElementById('pmSite').value||null};
+  if(!body.name){toast('姓名必填',true);return;}
+  try{const j=await(await api('/api/att/persons',{method:'POST',body:JSON.stringify(body)})).json();closeModal();loadAttend();copyLink(j.token);toast('✅ 已生成并复制打卡链接');}catch(e){toast('失败',true);}
+}
+function copyLink(token){const url=location.origin+'/checkin/'+token;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(url).then(()=>toast('✅ 链接已复制'),()=>prompt('复制链接：',url));}else{prompt('复制链接：',url);}}
+async function delPerson(id){if(!confirm('删除该人员及其链接？'))return;try{await api('/api/att/persons/'+id,{method:'DELETE'});loadAttend();}catch(e){toast('删除失败',true);}}
+async function loadAttRecords(){
+  let recs=[];try{recs=await(await api('/api/att/records')).json();if(!Array.isArray(recs))recs=[];}catch(e){recs=[];}
+  const box=document.getElementById('attRecords');
+  if(!recs.length){box.innerHTML='<div class="muted">还没有打卡记录。发链接给对方，打了就出现在这里。</div>';return;}
+  box.innerHTML=`<table class="rtable"><thead><tr><th>时间</th><th>姓名</th><th>班次</th><th>在范围</th><th>距离</th><th>异常</th><th>坐标/照片</th><th>来源</th></tr></thead><tbody>${recs.map(r=>{
+    const fl=(r.flags||'').split(',').filter(Boolean);
+    const on=r.within_fence===true?'<span style="color:var(--ok);font-weight:700">✓</span>':(r.within_fence===false?'<span style="color:var(--danger);font-weight:700">✗</span>':'—');
+    const flTxt=fl.length?('<span style="color:var(--danger)">'+fl.map(flLabel).join('、')+'</span>'):'—';
+    const coord=(r.lat!=null)?`<a href="https://maps.google.com/?q=${r.lat},${r.lng}" target="_blank" style="color:var(--accent)">地图</a>`:'—';
+    const photo=r.has_photo?(' · <span class="dact" onclick="viewPhoto('+r.id+')">照片</span>'):'';
+    return `<tr><td style="white-space:nowrap">${fmtTs(r.server_time)}</td><td class="name">${esc(r.person_name)}</td><td>${r.punch_type==='in'?'上班':'下班'}</td><td>${on}</td><td>${r.distance_m!=null?r.distance_m+'m':'—'}</td><td>${flTxt}</td><td style="white-space:nowrap">${coord}${photo}</td><td>${esc(r.source)}</td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+async function viewPhoto(id){try{const r=await api('/api/att/records/'+id+'/photo');const b=await r.blob();window.open(URL.createObjectURL(b),'_blank');}catch(e){toast('打不开照片',true);}}
+async function larkSync(){try{const j=await(await api('/api/att/lark_sync',{method:'POST'})).json();toast(j.ok?('已同步 '+j.synced+' 条'):(j.error||'未启用'),!j.ok);}catch(e){toast('同步失败',true);}}
 
 // 每 20 秒自动刷新看板（让负责人的新留言红点及时出现），弹窗打开时不打扰
 setInterval(()=>{const app=document.getElementById('app');const modalOpen=document.getElementById('modalRoot').innerHTML.trim();

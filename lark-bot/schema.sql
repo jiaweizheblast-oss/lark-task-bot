@@ -172,3 +172,76 @@ DO $$ BEGIN
     ALTER TABLE channel_daily ADD CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, job_request_id);
   END IF;
 END $$;
+
+-- ============================================================
+--  Nexus 运营模块（纯增量：职位 owner、文档模板库、渠道成本）
+-- ============================================================
+
+-- 职位补负责人列（幂等）
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT '';
+
+-- 文档 / 模板库：招聘话术、JD、面试评估表、任务 SOP 等可复用模板
+CREATE TABLE IF NOT EXISTS templates (
+    id          SERIAL PRIMARY KEY,
+    title       TEXT NOT NULL,
+    category    TEXT NOT NULL DEFAULT '其他',       -- 招聘话术/JD/面试评估/任务SOP/其他
+    content     TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_templates_cat ON templates (category);
+
+-- 渠道月度投入（成本/ROI）：按 渠道 × 月(YYYY-MM) 记一笔当月投入
+CREATE TABLE IF NOT EXISTS channel_cost (
+    id          SERIAL PRIMARY KEY,
+    channel     TEXT NOT NULL,
+    ym          TEXT NOT NULL,                      -- YYYY-MM
+    amount      NUMERIC NOT NULL DEFAULT 0,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_channel_cost UNIQUE (channel, ym)
+);
+
+-- ============================================================
+--  Nexus 考勤打卡（内部/外部；GPS + 地理围栏 + 防作弊留痕）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS attendance_site (
+    id             SERIAL PRIMARY KEY,
+    name           TEXT NOT NULL,
+    lat            DOUBLE PRECISION NOT NULL,
+    lng            DOUBLE PRECISION NOT NULL,
+    radius_m       INTEGER NOT NULL DEFAULT 200,     -- 允许打卡半径（米）
+    require_selfie BOOLEAN NOT NULL DEFAULT FALSE,    -- 该点位是否要求自拍（按点位开关）
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS attendance_person (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'external',      -- internal / external
+    token      TEXT UNIQUE NOT NULL,                  -- 免登录打卡链接口令
+    site_id    INTEGER REFERENCES attendance_site(id) ON DELETE SET NULL,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS attendance_record (
+    id           SERIAL PRIMARY KEY,
+    person_id    INTEGER REFERENCES attendance_person(id) ON DELETE CASCADE,
+    person_name  TEXT NOT NULL DEFAULT '',
+    kind         TEXT NOT NULL DEFAULT 'external',
+    punch_type   TEXT NOT NULL DEFAULT 'in',          -- in(上班) / out(下班)
+    server_time  TIMESTAMPTZ NOT NULL DEFAULT now(),  -- 服务器盖章，非手机时间
+    lat          DOUBLE PRECISION,
+    lng          DOUBLE PRECISION,
+    accuracy     DOUBLE PRECISION,                    -- 定位精度（米）
+    site_id      INTEGER,
+    distance_m   INTEGER,                             -- 距点位距离（米）
+    within_fence BOOLEAN,
+    ip           TEXT NOT NULL DEFAULT '',
+    photo        TEXT,                                -- base64（仅点位要求自拍时）
+    flags        TEXT NOT NULL DEFAULT '',            -- 逗号分隔异常标记
+    source       TEXT NOT NULL DEFAULT 'web',         -- web / lark
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_att_rec_person ON attendance_record (person_id, server_time);
+CREATE INDEX IF NOT EXISTS idx_att_rec_time ON attendance_record (server_time);

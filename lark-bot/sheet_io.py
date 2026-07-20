@@ -279,3 +279,106 @@ def parse_candidate_sheet(data, filename, jobs, sources=None):
         return not (r.get("candidate_ref") or r.get("name"))
 
     return parse_rows(cols, data, filename, required=["name"], skip=skip)
+
+
+# ================= 招聘分析导出（汇报用 xlsx；供 /api/channel/export.xlsx） =================
+def build_analytics_xlsx(a):
+    """把 channel_report.analytics() 结果导出成多 sheet 工作簿。返回 bytes。"""
+    wb = Workbook()
+    hf = Font(bold=True)
+    hfill = PatternFill("solid", fgColor="EEF1F5")
+    gname = {"day": "日", "week": "周", "month": "月", "year": "年"}
+
+    def pct(x):
+        return "" if x is None else ("%.0f%%" % round(x * 100))
+
+    sc = a["summary"]
+    pc = a.get("prev_summary")
+
+    def chg(key, rate=False):
+        if not pc:
+            return ""
+        cur, prev = sc.get(key), pc.get(key)
+        if rate:
+            if cur is None or prev is None:
+                return ""
+            return "%+.1fpp" % ((cur - prev) * 100)
+        if not prev:
+            return ""
+        return "%+.0f%%" % ((cur - prev) / prev * 100)
+
+    # ---- 概览 ----
+    ws = wb.active
+    ws.title = "概览"
+    ws.append(["招聘分析概览"]); ws["A1"].font = Font(bold=True, size=14)
+    win = a["window"]
+    ws.append(["窗口", "%s ~ %s" % (win["from"], win["to"])])
+    ws.append(["粒度", gname.get(a["granularity"], a["granularity"])])
+    pw = a.get("prev_window")
+    if pw:
+        ws.append(["上一周期", "%s ~ %s" % (pw["from"], pw["to"])])
+    ws.append(["口径", "人工录入（未逐人建档）· 时区 Asia/Kolkata"])
+    ws.append([])
+    ws.append(["指标", "本期", "上一周期", "环比"])
+    for c in ws[ws.max_row]:
+        c.font = hf; c.fill = hfill
+    disp = [
+        ("新增简历", sc["new"], (pc["new"] if pc else ""), chg("new")),
+        ("初筛通过", sc["passed"], (pc["passed"] if pc else ""), chg("passed")),
+        ("推荐", sc["recommended"], (pc["recommended"] if pc else ""), chg("recommended")),
+        ("拒绝", sc["rejected"], (pc["rejected"] if pc else ""), chg("rejected")),
+        ("初筛通过率", pct(sc["conversion"]), (pct(pc["conversion"]) if pc else ""), chg("conversion", True)),
+        ("推荐率", pct(sc["recommend_rate"]), (pct(pc["recommend_rate"]) if pc else ""), chg("recommend_rate", True)),
+        ("简历/天", sc["resumes_per_day"], (pc["resumes_per_day"] if pc else ""), chg("resumes_per_day")),
+        ("推荐/周", sc["recommended_per_week"], (pc["recommended_per_week"] if pc else ""), chg("recommended_per_week")),
+        ("简历量进度", pct(sc["resume_target_progress"]), "", ""),
+    ]
+    for r in disp:
+        ws.append(list(r))
+    ws.append([])
+    ws.append(["自动摘要"]); ws[ws.max_row][0].font = hf
+    for line in a.get("insights", []):
+        ws.append([line])
+
+    # ---- 渠道明细 ----
+    ws2 = wb.create_sheet("渠道明细")
+    hascost = a.get("has_cost")
+    head2 = ["渠道", "新增", "占比", "初筛", "转化率", "推荐", "推荐率", "拒绝"]
+    if hascost:
+        head2 += ["成本", "每份成本"]
+    ws2.append(head2)
+    for c in ws2[1]:
+        c.font = hf; c.fill = hfill
+    for c in a["channels"]:
+        row = [c["channel"], c["new"], pct(c["share"]), c["passed"], pct(c["conversion"]),
+               c["recommended"], pct(c["recommend_rate"]), c["rejected"]]
+        if hascost:
+            row += [c.get("cost") or 0, c.get("cost_per_resume") if c.get("cost_per_resume") is not None else ""]
+        ws2.append(row)
+
+    # ---- 趋势 ----
+    ws3 = wb.create_sheet("趋势")
+    ws3.append(["时间", "新增", "初筛", "推荐", "拒绝", "转化率", "推荐率"])
+    for c in ws3[1]:
+        c.font = hf; c.fill = hfill
+    for b in a["timeseries"]:
+        ws3.append([b["label"], b["new"], b["passed"], b["recommended"], b["rejected"],
+                    pct(b["conversion"]), pct(b["recommend_rate"])])
+
+    # ---- 职位进度 ----
+    ws4 = wb.create_sheet("职位进度")
+    ws4.append(["职位", "窗口新增", "目标简历量", "简历量进度", "窗口推荐", "目标录用"])
+    for c in ws4[1]:
+        c.font = hf; c.fill = hfill
+    for j in a["jobs"]:
+        ws4.append([j["title"], j["window_new"], j["target_resumes"], pct(j["resume_progress"]),
+                    j["window_recommended"], j["target_headcount"]])
+
+    for wsx in (ws, ws2, ws3, ws4):
+        for col in wsx.columns:
+            width = max((len(str(c.value)) if c.value is not None else 0) for c in col)
+            wsx.column_dimensions[col[0].column_letter].width = min(max(width + 2, 10), 42)
+
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()

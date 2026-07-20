@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>打卡 · Nexus</title>
+<style>
+  :root{--bg:#f6f7f9;--panel:#fff;--ink:#1c2024;--soft:#5b636b;--line:#e7e9ec;--accent:#5b5bd6;--ok:#16a34a;--okB:#e8f6ec;--danger:#dc2626;--dangerB:#fdecec;--warn:#c2740a;--warnB:#fdf1e3}
+  @media(prefers-color-scheme:dark){:root{--bg:#0e1013;--panel:#171a1f;--ink:#e6e8eb;--soft:#9aa2ab;--line:#262b31;--accent:#8b8bf0;--ok:#4ade80;--okB:#16281c;--danger:#f87171;--dangerB:#38201f;--warn:#e5a44b;--warnB:#33280f}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:22px 16px}
+  .brand{font-weight:800;font-size:18px;margin-bottom:14px}.brand span{color:var(--accent)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 4px 16px rgba(20,25,35,.06);width:100%;max-width:380px;padding:22px 20px}
+  h1{font-size:20px;margin:0 0 3px}.sub{color:var(--soft);font-size:13px;margin:0 0 16px}
+  .row{display:flex;gap:10px}.row .btn{flex:1}
+  .btn{border:0;border-radius:12px;padding:15px 10px;font-size:16px;font-weight:700;cursor:pointer;color:#fff}
+  .btn.in{background:var(--accent)}.btn.out{background:#0d9488}.btn:disabled{opacity:.5}
+  .note{font-size:12.5px;color:var(--soft);margin-top:14px;line-height:1.6}
+  .res{margin-top:16px;border-radius:12px;padding:14px 15px;font-size:14px;line-height:1.65;display:none}
+  .res.ok{background:var(--okB);color:var(--ok)}.res.bad{background:var(--dangerB);color:var(--danger)}.res.warn{background:var(--warnB);color:var(--warn)}
+  .res b{font-size:16px}
+  video,canvas{width:100%;border-radius:12px;margin-top:12px;background:#000}
+  .cam{display:none}
+  .muted{color:var(--soft);font-size:12px;text-align:center;margin-top:18px;line-height:1.6}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+  <div class="brand">◆ <span>Nexus</span> 打卡</div>
+  <div class="card">
+    <h1 id="name">…</h1>
+    <div class="sub" id="site"></div>
+    <div class="row">
+      <button class="btn in" id="btnIn" onclick="punch('in')">上班打卡</button>
+      <button class="btn out" id="btnOut" onclick="punch('out')">下班打卡</button>
+    </div>
+    <div class="cam" id="cam">
+      <video id="video" autoplay playsinline muted></video>
+      <button class="btn in" style="width:100%;margin-top:10px" id="snap" onclick="snap()">📷 拍照并打卡</button>
+    </div>
+    <canvas id="canvas" style="display:none"></canvas>
+    <div class="res" id="res"></div>
+    <div class="note" id="note"></div>
+  </div>
+  <div class="muted">打卡会记录你此刻的定位与服务器时间用于考勤核对；仅打卡这一刻采集，不做后台跟踪。</div>
+<script>
+const token=location.pathname.split('/').filter(Boolean).pop();
+let META=null, pendingPunch=null, stream=null;
+const $=id=>document.getElementById(id);
+function setRes(cls,html){const r=$('res');r.className='res '+cls;r.style.display='block';r.innerHTML=html;}
+function busy(b){$('btnIn').disabled=b;$('btnOut').disabled=b;}
+async function load(){
+  try{const r=await fetch('/api/checkin/'+token);if(!r.ok)throw 0;META=await r.json();}
+  catch(e){$('name').textContent='链接无效';$('site').textContent='请向管理员确认打卡链接。';busy(true);return;}
+  $('name').textContent=META.name;
+  $('site').textContent=META.site?('点位：'+META.site.name+'（'+META.site.radius_m+' 米内有效）'):'未绑定固定点位（仅记录位置）';
+  let n=[];
+  if(META.require_selfie)n.push('本点位需自拍');
+  if(META.last)n.push('上次：'+(META.last.punch_type==='in'?'上班':'下班')+' · '+fmtTime(META.last.server_time));
+  $('note').innerHTML=n.join(' · ');
+}
+function fmtTime(iso){try{return new Date(iso).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}catch(e){return iso;}}
+function getGPS(){return new Promise((res,rej)=>{
+  if(!navigator.geolocation)return rej('本设备不支持定位');
+  navigator.geolocation.getCurrentPosition(
+    p=>res({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy}),
+    e=>rej(e.code===1?'打卡必须开启定位权限':'无法获取定位，请到室外或开启 GPS 后重试'),
+    {enableHighAccuracy:true,timeout:15000,maximumAge:0});
+});}
+async function punch(type){
+  if(META&&META.require_selfie){pendingPunch=type;return startCam();}
+  await doSubmit(type,null);
+}
+async function startCam(){
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});
+    $('video').srcObject=stream;$('cam').style.display='block';$('res').style.display='none';}
+  catch(e){setRes('bad','需要相机权限才能自拍打卡。');}
+}
+function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}$('cam').style.display='none';}
+async function snap(){
+  const v=$('video'),c=$('canvas');c.width=v.videoWidth||480;c.height=v.videoHeight||640;
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  const photo=c.toDataURL('image/jpeg',0.55);
+  stopCam();
+  await doSubmit(pendingPunch,photo);
+}
+async function doSubmit(type,photo){
+  busy(true);setRes('warn','<span class="spin"></span> 正在获取定位…');
+  let gps;
+  try{gps=await getGPS();}catch(err){setRes('bad',err);busy(false);return;}
+  setRes('warn','<span class="spin"></span> 提交中…');
+  const body={punch_type:type,lat:gps.lat,lng:gps.lng,accuracy:gps.accuracy};
+  if(photo)body.photo=photo;
+  let j;
+  try{const r=await fetch('/api/checkin/'+token,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});j=await r.json();
+    if(!r.ok){setRes('bad',j.error||'打卡失败');busy(false);return;}}
+  catch(e){setRes('bad','网络错误，请重试');busy(false);return;}
+  const okFence=j.within_fence!==false && (!j.flags||!j.flags.length);
+  const cls=okFence?'ok':(j.within_fence===false?'bad':'warn');
+  let html='<b>'+(j.punch_type==='in'?'✅ 上班打卡成功':'✅ 下班打卡成功')+'</b><br>'+fmtTime(j.server_time);
+  if(j.distance_m!=null)html+='<br>距点位 '+j.distance_m+' 米 · '+(j.within_fence?'在范围内':'⚠️ 不在范围内');
+  if(j.flags_text)html+='<br>⚠️ '+j.flags_text+'（已记录待核对）';
+  setRes(cls,html);
+  busy(false);
+  fetch('/api/checkin/'+token).then(r=>r.json()).then(m=>{META=m;}).catch(()=>{});
+}
+load();
+</script>
+</body>
+</html>
