@@ -62,7 +62,7 @@ def send_text(chat_id, text):
     req = CreateMessageRequest.builder().receive_id_type("chat_id").request_body(body).build()
     resp = client.im.v1.message.create(req)
     if not resp.success():
-        print(f"[send_text] 失败 code={resp.code} msg={resp.msg}")
+        print(f"[send_text] failed code={resp.code} msg={resp.msg}")
     return resp
 
 
@@ -72,7 +72,7 @@ def send_card(chat_id, card):
     req = CreateMessageRequest.builder().receive_id_type("chat_id").request_body(body).build()
     resp = client.im.v1.message.create(req)
     if not resp.success():
-        print(f"[send_card] 失败 code={resp.code} msg={resp.msg}")
+        print(f"[send_card] failed code={resp.code} msg={resp.msg}")
         return None
     return resp.data.message_id
 
@@ -82,7 +82,7 @@ def patch_card(message_id, card):
     req = PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
     resp = client.im.v1.message.patch(req)
     if not resp.success():
-        print(f"[patch_card] 失败 code={resp.code} msg={resp.msg}")
+        print(f"[patch_card] failed code={resp.code} msg={resp.msg}")
 
 
 def send_dm_to_user(open_id, text):
@@ -92,7 +92,7 @@ def send_dm_to_user(open_id, text):
     req = CreateMessageRequest.builder().receive_id_type("open_id").request_body(body).build()
     resp = client.im.v1.message.create(req)
     if not resp.success():
-        print(f"[send_dm_to_user] 失败 code={resp.code} msg={resp.msg}")
+        print(f"[send_dm_to_user] failed code={resp.code} msg={resp.msg}")
 
 
 def notify_publisher(task, text):
@@ -107,7 +107,7 @@ def _log(task_id, body, side="system", name=None):
     try:
         db.add_comment(task_id, body, author_side=side, author_name=name)
     except Exception as e:
-        print(f"[log] 记录留言失败: {e}")
+        print(f"[log] failed to record comment: {e}")
 
 
 def _assignee_comment(task_id, body, name):
@@ -116,7 +116,7 @@ def _assignee_comment(task_id, body, name):
     try:
         db.update_task_fields(task_id, unread=True, result=body)   # 存最新留言供看板预览；状态不动
     except Exception as e:
-        print(f"[unread] 标记失败: {e}")
+        print(f"[unread] failed to set: {e}")
 
 
 def _mark_read(task_id):
@@ -124,7 +124,7 @@ def _mark_read(task_id):
     try:
         db.update_task_fields(task_id, unread=False)
     except Exception as e:
-        print(f"[unread] 清除失败: {e}")
+        print(f"[unread] failed to clear: {e}")
 
 
 # ---------------- 到期提醒（内置每日定时，只在工作时间发）----------------
@@ -180,13 +180,13 @@ def run_reminders():
     now = _company_now()
     today = now.date()
     if not cfg["enabled"]:
-        print("[reminder] 自动提醒已关闭，跳过")
+        print("[reminder] automatic reminders are off, skipping")
         return 0
     if cfg["skip_weekends"] and now.weekday() >= 5:      # 5=周六 6=周日
-        print(f"[reminder] {today} 周末，跳过")
+        print(f"[reminder] {today} weekend, skipping")
         return 0
     if today.isoformat() in cfg["holidays"]:
-        print(f"[reminder] {today} 节假日，跳过")
+        print(f"[reminder] {today} holiday, skipping")
         return 0
     tier_on = {"due_tomorrow": cfg["tier_before"], "due_today": cfg["tier_today"], "escalated": cfg["tier_over"]}
     tasks = db.tasks_still_open()
@@ -199,23 +199,23 @@ def run_reminders():
         if ok:
             db.set_reminder_stage(t["id"], stage)
             sent += 1
-    print(f"[reminder] {today}（公司时区）扫描 {len(tasks)} 个未完成，发出 {sent} 条提醒")
+    print(f"[reminder] {today} (company tz) scanned {len(tasks)} open tasks, sent {sent} reminders")
     return sent
 
 
 def _reminder_scheduler():
     """内置每日定时：每天在工作时间开始那一小时（公司时区）跑一次，避免非工作时间打扰。"""
     last_run_date = None
-    print(f"[scheduler] 已启动：每天 {WORK_START}:00（GMT+{COMPANY_TZ_OFFSET}）发送每日提醒")
+    print(f"[scheduler] started: daily reminders at {WORK_START}:00 (GMT+{COMPANY_TZ_OFFSET})")
     while True:
         try:
             now = _company_now()
             if now.hour == WORK_START and now.date() != last_run_date:
                 last_run_date = now.date()
-                print(f"[scheduler] {now} 到达工作时间，发送每日提醒")
+                print(f"[scheduler] {now} working hours reached, sending daily reminders")
                 run_reminders()
         except Exception as e:
-            print(f"[scheduler] 出错: {e}")
+            print(f"[scheduler] error: {e}")
         time.sleep(300)   # 每 5 分钟检查一次
 
 
@@ -224,10 +224,10 @@ def push_to_webhook(url, card):
     try:
         r = requests.post(url, json={"msg_type": "interactive", "card": card}, timeout=10)
         if not r.ok:
-            print(f"[webhook] 推送失败 status={r.status_code} body={r.text[:200]}")
+            print(f"[webhook] push failed status={r.status_code} body={r.text[:200]}")
         return r.ok
     except Exception as e:
-        print(f"[webhook] 推送异常: {e}")
+        print(f"[webhook] push error: {e}")
         return False
 
 
@@ -241,7 +241,7 @@ def list_bot_groups():
             b = b.page_token(page_token)
         resp = client.im.v1.chat.list(b.build())
         if not resp.success():
-            print(f"[groups] 拉取群列表失败 code={resp.code} msg={resp.msg}")
+            print(f"[groups] failed to fetch groups code={resp.code} msg={resp.msg}")
             break
         for it in (resp.data.items or []):
             groups.append({"chat_id": it.chat_id, "name": it.name or "(未命名群)",
@@ -262,7 +262,7 @@ def list_group_members(chat_id):
             b = b.page_token(page_token)
         resp = client.im.v1.chat_members.get(b.build())
         if not resp.success():
-            print(f"[members] 拉取失败 code={resp.code} msg={resp.msg}")
+            print(f"[members] failed to fetch code={resp.code} msg={resp.msg}")
             break
         for m in (resp.data.items or []):
             oid = getattr(m, "member_id", None)
@@ -292,40 +292,42 @@ def sync_chat_members(chat_id):
 def handle_task_wizard(sender_open_id, dm_chat_id, text, draft):
     """派任务逐步问答：标题 → 详情 → 注意事项 → 优先级+截止。"""
     ans = text.strip()
-    skip = ans in ("无", "跳过", "没有", "none", "-")
+    skip = ans.lower() in ("none", "skip", "no", "n/a", "-") or ans in ("无", "跳过", "没有")
     stage = draft.get("stage")
 
     if stage == "title":
         if not ans or skip:
-            send_text(dm_chat_id, "任务标题不能为空，请输入 **任务标题**：")
+            send_text(dm_chat_id, "The title can't be empty. Please enter the **task title**:")
             return
         db.update_draft(sender_open_id, title=ans, stage="detail")
-        send_text(dm_chat_id, "好的。**详情 / 安排**？（具体怎么做、分几步、交付什么；没有就发「无」）")
+        send_text(dm_chat_id, "Got it. **Details**? (how to do it, the steps, deliverables — send 'none' to skip)")
         return
 
     if stage == "detail":
         db.update_draft(sender_open_id, detail=(None if skip else ans), stage="note")
-        send_text(dm_chat_id, "**注意事项**？（要注意的点、验收标准、易踩的坑；没有就发「无」）")
+        send_text(dm_chat_id, "**Notes**? (things to watch, acceptance criteria — send 'none' to skip)")
         return
 
     if stage == "note":
         db.update_draft(sender_open_id, note=(None if skip else ans), stage="pridl")
-        send_text(dm_chat_id, "最后，**优先级和截止日期**？例如「高 2026-07-25」（可只发其一，或发「无」）")
+        send_text(dm_chat_id, "Last: **priority and due date**? e.g. 'High 2026-07-25' (either one alone is fine, or send 'none')")
         return
 
     if stage == "pridl":
-        priority = "中"
-        for p in ("高", "中", "低"):
-            if p in ans:
-                priority = p
+        priority = "Medium"
+        low_ans = ans.lower()
+        for kw, pv in (("high", "High"), ("medium", "Medium"), ("low", "Low"),
+                       ("高", "High"), ("中", "Medium"), ("低", "Low")):
+            if kw in low_ans or kw in ans:
+                priority = pv
                 break
         deadline = None if skip else extract_deadline(ans)
-        task_id = db.create_task(draft.get("title") or "（无标题）", draft["assignee_open_id"], draft["chat_id"],
+        task_id = db.create_task(draft.get("title") or "(Untitled)", draft["assignee_open_id"], draft["chat_id"],
                                  deadline=deadline, created_by_open_id=sender_open_id,
                                  assignee_name=draft.get("assignee_name"),
                                  detail=draft.get("detail"), note=draft.get("note"), priority=priority)
         task = db.get_task(task_id)
-        _log(task_id, f"任务已派发给 {task.get('assignee_name') or '负责人'}", "system")
+        _log(task_id, f"Task assigned to {task.get('assignee_name') or '负责人'}", "system")
         mid = send_card(draft["chat_id"], cards.new_task_card(task))
         if mid:
             db.set_task_card(task_id, mid)
@@ -334,7 +336,7 @@ def handle_task_wizard(sender_open_id, dm_chat_id, text, draft):
         return
 
     db.clear_draft(sender_open_id)
-    send_text(dm_chat_id, "发送 `新建任务` 重新开始。")
+    send_text(dm_chat_id, "Send `new task` to start over.")
 
 
 def handle_dm(sender_open_id, dm_chat_id, text):
@@ -345,22 +347,22 @@ def handle_dm(sender_open_id, dm_chat_id, text):
         return
 
     if low.startswith("/whoami"):
-        send_text(dm_chat_id, f"你的 open_id：{sender_open_id}\n当前身份：{db.get_role(sender_open_id)}")
+        send_text(dm_chat_id, f"Your open_id: {sender_open_id}\nRole: {db.get_role(sender_open_id)}")
         return
 
     if low.startswith("/claimadmin"):
         code = low.replace("/claimadmin", "").strip()
         if ADMIN_SETUP_CODE and code == ADMIN_SETUP_CODE:
             db.upsert_user(sender_open_id, role="Admin", kind="internal", status="bound")
-            send_text(dm_chat_id, "✅ 已把你设为管理员。发送 `新建任务` 开始派任务。")
+            send_text(dm_chat_id, "✅ You're now an admin. Send `new task` to start assigning.")
         else:
-            send_text(dm_chat_id, "❌ 口令不对。")
+            send_text(dm_chat_id, "❌ Incorrect code.")
         return
 
-    # 开始派任务
-    if low in ("新建任务", "/task", "派任务", "/新建任务", "新任务"):
+    # start assigning a task
+    if low.lower() in ("new task", "/task", "/new", "assign", "newtask") or low in ("新建任务", "派任务", "新任务"):
         if not db.is_admin(sender_open_id):
-            send_text(dm_chat_id, "❌ 只有管理员能派任务。请先发送 `/claimadmin 口令` 把自己设为管理员。")
+            send_text(dm_chat_id, "❌ Only admins can assign tasks. Send `/claimadmin <code>` to become an admin first.")
             return
         groups = list_bot_groups()
         send_card(dm_chat_id, cards.group_select_card(groups))
@@ -372,7 +374,7 @@ def handle_dm(sender_open_id, dm_chat_id, text):
         handle_task_wizard(sender_open_id, dm_chat_id, text, draft)
         return
 
-    send_text(dm_chat_id, "发送 `新建任务` 开始派任务，或 `/help` 看用法。")
+    send_text(dm_chat_id, "Send `new task` to start, or `/help` for usage.")
 
 
 # ---------------- 事件回调 ----------------
@@ -386,24 +388,25 @@ def on_message(data: P2ImMessageReceiveV1):
         if msg.chat_type == "p2p":
             handle_dm(sender_open_id, msg.chat_id, text)
         else:
-            # 群里被 @ 且像是想派任务 → 提示去私聊
-            if text.startswith("/") or "新建任务" in text or "派任务" in text:
-                send_text(msg.chat_id, "派任务请私聊我，发送 `新建任务` 即可～")
+            # @-ed in a group and looks like a task command → point them to DM
+            tl = text.lower()
+            if text.startswith("/") or "new task" in tl or "assign" in tl or "新建任务" in text or "派任务" in text:
+                send_text(msg.chat_id, "To assign a task, message me directly and send `new task`.")
     except Exception as e:
-        print(f"[on_message] 出错: {e}")
+        print(f"[on_message] error: {e}")
 
 
 def on_bot_added(data):
     try:
         chat_id = data.event.chat_id
         name = getattr(data.event, "name", None)
-        print(f"[event] 机器人被拉进群 {chat_id} ({name})")
+        print(f"[event] bot added to group {chat_id} ({name})")
         db.upsert_group(chat_id, name=name)
         sync_chat_members(chat_id)
-        send_text(chat_id, "👋 任务机器人已就位。管理员请私聊我发送 `新建任务` 来派活；"
-                           "首次请先私聊我发送 `/claimadmin 口令`。")
+        send_text(chat_id, "👋 Task bot is ready. Admins: message me and send `new task` to assign. "
+                           "First time: send me `/claimadmin <code>`.")
     except Exception as e:
-        print(f"[on_bot_added] 出错: {e}")
+        print(f"[on_bot_added] error: {e}")
 
 
 def on_user_added(data):
@@ -414,7 +417,7 @@ def on_user_added(data):
             if oid and not db.get_user(oid):
                 db.upsert_user(oid, display_name=name, role="Unknown", status="pending")
     except Exception as e:
-        print(f"[on_user_added] 出错: {e}")
+        print(f"[on_user_added] error: {e}")
 
 
 def card_resp(toast_type, content, card=None):
@@ -434,60 +437,60 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         # 派任务：选群 → 直接把卡片换成"选负责人"
         if action == "pick_group":
             if not db.is_admin(operator):
-                return card_resp("error", "只有管理员能派任务")
+                return card_resp("error", "Only admins can assign tasks")
             members = list_group_members(value.get("chat_id"))
-            return card_resp("info", "请选择负责人",
+            return card_resp("info", "Select an assignee",
                              cards.person_select_card(value.get("chat_id"), value.get("chat_name"), members))
 
         # 派任务：选负责人 → 开始"逐步问答"（第一步问标题）
         if action == "pick_person":
             if not db.is_admin(operator):
-                return card_resp("error", "只有管理员能派任务")
+                return card_resp("error", "Only admins can assign tasks")
             db.set_draft(operator, value.get("chat_id"), value.get("chat_name"),
                          value.get("open_id"), value.get("name"), stage="title")
             dm_chat = data.event.context.open_chat_id
             if dm_chat:
-                send_text(dm_chat, f"开始给【{value.get('name')}】派任务。\n请先输入 **任务标题**：")
-            return card_resp("success", "开始填写",
+                send_text(dm_chat, f"Assigning a task to {value.get('name')}.\nPlease enter the **task title**:")
+            return card_resp("success", "Let's begin",
                              cards.picked_card(value.get("chat_name"), value.get("name")))
 
         # 任务生命周期：接受 / 完成 / 有问题 / 选择原因
         task_id = value.get("task_id")
         task = db.get_task(int(task_id)) if task_id else None
         if not task:
-            return card_resp("error", "任务不存在")
+            return card_resp("error", "Task not found")
         if operator != task["assignee_open_id"]:
-            return card_resp("error", "只有该任务的负责人能操作")
+            return card_resp("error", "Only the task's assignee can do this")
 
-        who = task.get("assignee_name") or "负责人"
+        who = task.get("assignee_name") or "Assignee"
         if action == "accept":
             db.update_task_status(task["id"], "accepted")
-            _log(task["id"], "接受了任务", "assignee", who)
-            return card_resp("success", "已接受 ✅", cards.accepted_card(task))
+            _log(task["id"], "Accepted the task", "assignee", who)
+            return card_resp("success", "Accepted ✅", cards.accepted_card(task))
 
         if action == "done":
             db.update_task_status(task["id"], "done")
-            _log(task["id"], "标记完成", "assignee", who)
-            notify_publisher(task, f"✅ {who} 完成了任务 #{task['id']}【{task['title']}】")
-            return card_resp("success", "已完成 🎉", cards.final_card(task, "done", operator))
+            _log(task["id"], "Marked complete", "assignee", who)
+            notify_publisher(task, f"✅ {who} completed task #{task['id']} '{task['title']}'")
+            return card_resp("success", "Completed 🎉", cards.final_card(task, "done", operator))
 
         if action == "raise":
-            return card_resp("info", "请选择原因", cards.reason_buttons_card(task))
+            return card_resp("info", "Select a reason", cards.reason_buttons_card(task))
 
         if action == "issue_reason":
-            reason = value.get("reason") or "未说明"
+            reason = value.get("reason") or "Not specified"
             _assignee_comment(task["id"], reason, who)   # 记留言 + 标未读（发布者看板→待沟通），状态不变
-            notify_publisher(task, f"⚠️ {who} 对任务 #{task['id']}【{task['title']}】反馈：\n"
-                                   f"「{reason}」\n"
-                                   f"请在控制台该任务里回复沟通。")
+            notify_publisher(task, f"⚠️ {who} reported an issue on task #{task['id']} '{task['title']}':\n"
+                                   f"'{reason}'\n"
+                                   f"Reply to them in the console to discuss.")
             # 状态保持不变，卡片刷回对应状态，负责人仍可接受/完成
             back = cards.new_task_card(task) if task.get("status") == "pending" else cards.accepted_card(task)
-            return card_resp("success", "已反馈给发布者 ✅", back)
+            return card_resp("success", "Reported to the sender ✅", back)
 
-        return card_resp("error", "未知操作")
+        return card_resp("error", "Unknown action")
     except Exception as e:
-        print(f"[on_card_action] 出错: {e}")
-        return card_resp("error", "处理出错，请稍后再试")
+        print(f"[on_card_action] error: {e}")
+        return card_resp("error", "Something went wrong, please try again")
 
 
 # ---------------- 启动（webhook / ws） ----------------
@@ -544,7 +547,7 @@ def panel_page():
         with open(os.path.join(here, "panel.html"), encoding="utf-8") as f:
             return f.read()
     except Exception as e:
-        return f"panel.html 未找到: {e}", 500
+        return f"panel.html not found: {e}", 500
 
 
 @app.route("/api/login", methods=["POST"])
@@ -552,7 +555,7 @@ def api_login():
     d = request.get_json(silent=True) or {}
     if PANEL_PASSWORD and d.get("password") == PANEL_PASSWORD:
         return jsonify({"ok": True})
-    return jsonify({"ok": False, "error": "密码不对，或后台未设置面板密码"}), 401
+    return jsonify({"ok": False, "error": "Incorrect password, or the console password isn't set on the server"}), 401
 
 
 @app.route("/api/groups")
@@ -625,9 +628,9 @@ def api_tasks_create():
     d = request.get_json(silent=True) or {}
     title = (d.get("title") or "").strip()
     if not title:
-        return jsonify({"error": "任务标题必填"}), 400
+        return jsonify({"error": "Title is required"}), 400
     pr = (d.get("priority") or "").strip()
-    priority = pr if pr in ("高", "中", "低") else "中"
+    priority = pr if pr in ("High", "Medium", "Low") else "Medium"
     deadline = extract_deadline(d.get("deadline") or "")
     detail = (d.get("detail") or "").strip() or None
     note = (d.get("note") or "").strip() or None
@@ -636,7 +639,7 @@ def api_tasks_create():
     if eg_id:      # 外部群：走 webhook 推送
         eg = db.get_external_group(int(eg_id))
         if not eg:
-            return jsonify({"error": "外部群不存在"}), 400
+            return jsonify({"error": "External group not found"}), 400
         token = secrets.token_urlsafe(9)
         task_id = db.create_task(title, None, None, deadline=deadline,
                                  created_by_open_id=(ADMIN_NOTIFY_OPEN_ID or None),
@@ -644,7 +647,7 @@ def api_tasks_create():
                                  detail=detail, note=note, priority=priority,
                                  token=token, is_external=True, external_group_id=int(eg_id))
         task = db.get_task(task_id)
-        _log(task_id, f"任务已派发到外部群，负责人：{task.get('assignee_name') or '（见群内）'}", "system")
+        _log(task_id, f"Task assigned to the external group — assignee: {task.get('assignee_name') or '(see group)'}", "system")
         ok = push_to_webhook(eg["webhook_url"], cards.external_task_card(task, f"{_base_url()}/t/{token}"))
         return jsonify({"ok": True, "task_id": task_id, "pushed": ok})
 
@@ -652,12 +655,12 @@ def api_tasks_create():
     chat_id = d.get("chat_id")
     assignee = d.get("assignee_open_id")
     if not chat_id or not assignee:
-        return jsonify({"error": "请选择群和负责人"}), 400
+        return jsonify({"error": "Please select a group and an assignee"}), 400
     task_id = db.create_task(title, assignee, chat_id, deadline=deadline,
                              created_by_open_id=(ADMIN_NOTIFY_OPEN_ID or None),
                              assignee_name=d.get("assignee_name"), detail=detail, note=note, priority=priority)
     task = db.get_task(task_id)
-    _log(task_id, f"任务已派发给 {task.get('assignee_name') or '负责人'}", "system")
+    _log(task_id, f"Task assigned to {task.get('assignee_name') or '负责人'}", "system")
     mid = send_card(chat_id, cards.new_task_card(task))
     if mid:
         db.set_task_card(task_id, mid)
@@ -679,9 +682,9 @@ def api_ext_add():
     name = (d.get("name") or "").strip()
     url = (d.get("webhook_url") or "").strip()
     if not name or not url:
-        return jsonify({"error": "名字和 webhook 网址都要填"}), 400
+        return jsonify({"error": "Both a name and a webhook URL are required"}), 400
     if not url.startswith("http"):
-        return jsonify({"error": "webhook 网址格式不对"}), 400
+        return jsonify({"error": "Invalid webhook URL"}), 400
     return jsonify({"ok": True, "id": db.add_external_group(name, url)})
 
 
@@ -707,12 +710,12 @@ def api_task_patch(task_id):
         return jsonify({"error": "unauthorized"}), 401
     task = db.get_task(task_id)
     if not task:
-        return jsonify({"error": "任务不存在"}), 404
+        return jsonify({"error": "Task not found"}), 404
     d = request.get_json(silent=True) or {}
     fields = {}
     if "deadline" in d:
         fields["deadline"] = extract_deadline(d.get("deadline") or "")
-    if "priority" in d and (d.get("priority") or "").strip() in ("高", "中", "低"):
+    if "priority" in d and (d.get("priority") or "").strip() in ("High", "Medium", "Low"):
         fields["priority"] = d["priority"].strip()
     if d.get("status") in ("pending", "accepted", "done"):     # 真实状态只有这三个
         fields["status"] = d["status"]
@@ -725,11 +728,11 @@ def api_task_patch(task_id):
         db.update_task_fields(task_id, **fields)
         # 记录到时间线（发布者在控制台的改动）
         if reassigned:
-            _log(task_id, f"发布者改派给 {d.get('assignee_name') or '新负责人'}", "system")
+            _log(task_id, f"Sender reassigned to {d.get('assignee_name') or 'the new assignee'}", "system")
         elif "status" in fields:
-            _log(task_id, f"发布者把状态改为「{_ST_LABEL.get(fields['status'], fields['status'])}」", "system")
+            _log(task_id, f"Sender changed status to '{_ST_LABEL.get(fields['status'], fields['status'])}」", "system")
         if "deadline" in fields and not reassigned:
-            _log(task_id, f"发布者把截止日期改为 {fields['deadline'] or '未设置'}", "system")
+            _log(task_id, f"Sender changed the due date to {fields['deadline'] or 'Not set'}", "system")
     task = db.get_task(task_id)
     if reassigned:                        # 换人后向群里重发一张新卡片
         mid = send_card(task["group_chat_id"], cards.new_task_card(task))
@@ -744,9 +747,9 @@ def api_task_nudge(task_id):
         return jsonify({"error": "unauthorized"}), 401
     task = db.get_task(task_id)
     if not task:
-        return jsonify({"error": "任务不存在"}), 404
+        return jsonify({"error": "Task not found"}), 404
     send_card(task["group_chat_id"], cards.nudge_card(task))
-    _log(task_id, "发布者在群里催办了一次", "system")
+    _log(task_id, "Sender nudged the assignee in the group", "system")
     return jsonify({"ok": True})
 
 
@@ -770,17 +773,17 @@ def api_comments_add(task_id):
         return jsonify({"error": "unauthorized"}), 401
     task = db.get_task(task_id)
     if not task:
-        return jsonify({"error": "任务不存在"}), 404
+        return jsonify({"error": "Task not found"}), 404
     d = request.get_json(silent=True) or {}
     body = (d.get("body") or "").strip()
     if not body:
-        return jsonify({"error": "留言不能为空"}), 400
-    db.add_comment(task_id, body, author_side="publisher", author_name="发布者")
+        return jsonify({"error": "Message can't be empty"}), 400
+    db.add_comment(task_id, body, author_side="publisher", author_name="Sender")
     _mark_read(task_id)      # 发布者回复了 → 清“待沟通”（读了并回复才算处理完）
     # 内部任务：私聊通知负责人；外部任务：负责人下次打开链接就能看到
     if not task.get("is_external") and task.get("assignee_open_id"):
         send_dm_to_user(task["assignee_open_id"],
-                        f"💬 发布者在任务 #{task_id}【{task['title']}】留言：\n「{body}」")
+                        f"💬 The sender messaged on task #{task_id} '{task['title']}':\n'{body}'")
     return jsonify({"ok": True})
 
 
@@ -794,7 +797,7 @@ def calendar_ics():
     if not _panel_auth():          # 用 ?pw=面板密码 订阅
         return Response("unauthorized", status=401)
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//LarkTaskBot//CN//",
-             "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:任务截止", "X-WR-TIMEZONE:UTC"]
+             "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:Task due dates", "X-WR-TIMEZONE:UTC"]
     for t in db.list_tasks():
         d = t.get("deadline")
         if not d or t.get("status") == "done":
@@ -803,7 +806,7 @@ def calendar_ics():
         nxt = d + __import__("datetime").timedelta(days=1) if hasattr(d, "strftime") else d
         ymd2 = nxt.strftime("%Y%m%d") if hasattr(nxt, "strftime") else ymd
         summ = f"[{_ST_LABEL.get(t.get('status'), '')}] {t.get('title', '')}"
-        desc = f"负责人：{t.get('assignee_name') or ''}　优先级：{t.get('priority') or ''}"
+        desc = f"Assignee: {t.get('assignee_name') or ''}   Priority: {t.get('priority') or ''}"
         lines += ["BEGIN:VEVENT", f"UID:task-{t['id']}@larktaskbot",
                   f"DTSTART;VALUE=DATE:{ymd}", f"DTEND;VALUE=DATE:{ymd2}",
                   f"SUMMARY:{_ics_esc(summ)}", f"DESCRIPTION:{_ics_esc(desc)}", "END:VEVENT"]
@@ -855,28 +858,28 @@ def _h(s):
     return (str(s) if s is not None else "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-_ST_LABEL = {"pending": "🆕 待接受", "accepted": "⏳ 进行中", "done": "✅ 已完成", "issue": "🙋 待沟通"}
+_ST_LABEL = {"pending": "🆕 To Do", "accepted": "⏳ In Progress", "done": "✅ Completed", "issue": "🙋 Needs Reply"}
 
 
 def _msg_box(hint):
     """一个输入框 + 一个清晰的“发送给发布者”按钮（不再有两个模糊按钮）。"""
     h = f'<div class="hint">{hint}</div>' if hint else ""
-    return ('<div class="or">有问题、想延期、或想说明进度？直接发给发布者：</div>'
-            '<textarea name="msg" placeholder="写下你想对发布者说的话…"></textarea>'
-            '<button class="b talk" name="action" value="message">💬 发送给发布者</button>' + h)
+    return ('<div class="or">Have a question, need an extension, or want to share an update? Message the sender directly:</div>'
+            '<textarea name="msg" placeholder="Write your message to the sender…"></textarea>'
+            '<button class="b talk" name="action" value="message">💬 Send to sender</button>' + h)
 
 
 def _status_actions(task):
     """按当前状态给一个主按钮 + 一个发送留言按钮，作用一目了然。
     真实状态只有 待接受/进行中/已完成；发留言只是通知发布者，不改变状态。"""
     st = task.get("status", "pending")
-    tip = "发送后，发布者会在他的控制台看到你的留言并回复你。"
+    tip = "Once sent, the sender will see your message in their console and reply."
     if st == "pending":
-        return '<button class="b done" name="action" value="accept">✅ 接受任务</button>' + _msg_box(tip)
+        return '<button class="b done" name="action" value="accept">✅ Accept Task</button>' + _msg_box(tip)
     if st == "done":
-        return '<div class="okmsg">🎉 已标记完成，谢谢！</div>' + _msg_box("发布者会收到你的补充留言。")
+        return '<div class="okmsg">🎉 Marked complete. Thank you!</div>' + _msg_box("The sender will receive your additional note.")
     # accepted（含历史 issue 数据）——进行中
-    return '<button class="b done" name="action" value="done">✅ 标记完成</button>' + _msg_box(tip)
+    return '<button class="b done" name="action" value="done">✅ Mark Complete</button>' + _msg_box(tip)
 
 
 def _fmt_time(ts):
@@ -896,7 +899,7 @@ def _iso_utc(ts):
     return s
 
 
-_SIDE_LABEL = {"publisher": "发布者", "assignee": "负责人", "system": ""}
+_SIDE_LABEL = {"publisher": "Sender", "assignee": "Assignee", "system": ""}
 
 
 def _thread_html(comments):
@@ -911,17 +914,17 @@ def _thread_html(comments):
         timespan = f'<span class="ct" data-t="{_h(_iso_utc(ts))}">{_h(_fmt_time(ts))}</span>'
         head = f"{_h(name)} · {timespan}" if side != "system" else timespan
         rows.append(f'<div class="cmt {cls}"><div class="cw">{head}</div><div>{_h(c.get("body",""))}</div></div>')
-    return '<div class="sec">💬 沟通记录</div><div class="thread">' + "".join(rows) + "</div>"
+    return '<div class="sec">💬 Conversation</div><div class="thread">' + "".join(rows) + "</div>"
 
 
 def _status_html(task, flash=None, comments=None):
     st = task.get("status", "pending")
     bits = []
     if task.get("priority"):
-        bits.append(f"优先级 {_h(task['priority'])}")
+        bits.append(f"Priority {_h(task['priority'])}")
     tz_script = ""
     if task.get("deadline"):
-        bits.append(f"截止 {_h(cards.fmt_deadline(task['deadline']))}<span id='dlLocal' class='dllocal'></span>")
+        bits.append(f"Due {_h(cards.fmt_deadline(task['deadline']))}<span id='dlLocal' class='dllocal'></span>")
         tz_script = (
             "<script>(function(){var O=" + str(COMPANY_TZ_OFFSET) + ",WE=" + str(WORK_END) +
             ",el=document.getElementById('dlLocal');if(!el)return;"
@@ -929,25 +932,25 @@ def _status_html(task, flash=None, comments=None):
             "var inst=Date.UTC(p[0],p[1]-1,p[2],WE,0,0)-O*3600000,dt=new Date(inst);"
             "var vo=-new Date().getTimezoneOffset()/60;if(vo===O)return;"
             "var loc=dt.toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});"
-            "el.textContent=' · 你当地约 '+loc;})();</script>"
+            "el.textContent=' · your local ~'+loc;})();</script>"
         )
     if task.get("assignee_name"):
-        bits.append(f"负责人 {_h(task['assignee_name'])}")
-    detail = f"<p><b>📝 详情 / 安排：</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
-    note = f"<p><b>⚠️ 注意事项：</b>{_h(task['note'])}</p>" if task.get("note") else ""
-    who = _h(task.get("assignee_name") or "负责人")
-    badge = f'<span class="badge b-{st}">当前状态：{_ST_LABEL.get(st, st)}</span>'
+        bits.append(f"Assignee {_h(task['assignee_name'])}")
+    detail = f"<p><b>📝 Details:</b>{_h(task['detail'])}</p>" if task.get("detail") else ""
+    note = f"<p><b>⚠️ Notes:</b>{_h(task['note'])}</p>" if task.get("note") else ""
+    who = _h(task.get("assignee_name") or "Assignee")
+    badge = f'<span class="badge b-{st}">Status: {_ST_LABEL.get(st, st)}</span>'
     flash_html = f'<div class="flash">{_h(flash)}</div>' if flash else ""
     thread = _thread_html(comments or [])
-    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>任务汇报</title>
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Task</title>
 <style>{_STATUS_CSS}</style></head><body><div class="card">
-<div class="h">📋 任务汇报</div>
+<div class="h">📋 Task</div>
 <div class="t">{_h(task.get('title',''))}</div>
 <div class="meta">{'　·　'.join(bits)}</div>
 {badge}
 {detail}{note}
-<div class="warn">⚠️ 请仅由负责人 <b>{who}</b> 操作，其他群成员请勿点击，以免弄乱状态。</div>
+<div class="warn">⚠️ Only the assignee <b>{who}</b> should act here. Other group members, please don't tap — it may disrupt the status.</div>
 {thread}
 {flash_html}
 <form method="post">{_status_actions(task)}</form>
@@ -960,7 +963,7 @@ def _status_html(task, flash=None, comments=None):
 def status_page(token):
     task = db.get_task_by_token(token)
     if not task:
-        return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效或任务已删除</h3>", 404
+        return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>Invalid link, or the task was deleted</h3>", 404
     return _status_html(task, comments=db.list_comments(task["id"]))
 
 
@@ -968,45 +971,45 @@ def status_page(token):
 def status_submit(token):
     task = db.get_task_by_token(token)
     if not task:
-        return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>链接无效</h3>", 404
+        return "<h3 style='font-family:sans-serif;text-align:center;margin-top:40px'>Invalid link</h3>", 404
     action = request.form.get("action")
     msg = (request.form.get("msg") or "").strip()
-    who = task.get("assignee_name") or "负责人"
+    who = task.get("assignee_name") or "Assignee"
     tid = task["id"]
     flash = None
     if action == "accept":
         db.update_task_status(tid, "accepted")
-        _log(tid, "接受了任务", "assignee", who)
-        flash = "已接受 ✅ 请在截止前完成，快到期时我们会在群里提醒你。"
+        _log(tid, "Accepted the task", "assignee", who)
+        flash = "Accepted ✅ Please complete it before the due date — we'll remind the group as it approaches."
     elif action == "done":
         db.update_task_status(tid, "done")
-        _log(tid, "标记完成" + (f"：{msg}" if msg else ""), "assignee", who)
-        notify_publisher(task, f"✅ {who} 完成了任务 #{tid}【{task['title']}】")
-        flash = "已记录：完成，谢谢！🎉"
+        _log(tid, "Marked complete" + (f": {msg}" if msg else ""), "assignee", who)
+        notify_publisher(task, f"✅ {who} completed task #{tid} '{task['title']}'")
+        flash = "Recorded: completed. Thank you! 🎉"
     elif action == "message":
         if not msg:
-            flash = "请先写点内容再发送哦。"
+            flash = "Please write something before sending."
         else:
             _assignee_comment(tid, msg, who)     # 标未读（发布者看板会进“待沟通”），不改状态
-            notify_publisher(task, f"💬 {who} 对任务 #{tid}【{task['title']}】留言：\n「{msg}」")
-            flash = "已发送给发布者 ✅ 他看到并回复后会跟你联系。"
+            notify_publisher(task, f"💬 {who} messaged on task #{tid} '{task['title']}':\n'{msg}'")
+            flash = "Sent to the sender ✅ They'll get back to you after reading and replying."
     task = db.get_task_by_token(token)      # 重新读取，拿到最新状态再渲染
     return _status_html(task, flash=flash, comments=db.list_comments(tid))
 
 
 def main():
     if not APP_ID or not APP_SECRET:
-        raise RuntimeError("缺少 APP_ID / APP_SECRET 环境变量")
+        raise RuntimeError("Missing APP_ID / APP_SECRET environment variables")
     db.init_db()
     if MODE == "ws":
-        print("[bot] 长连接(ws)模式启动 ...")
+        print("[bot] starting in long-connection (ws) mode ...")
         cli = lark.ws.Client(APP_ID, APP_SECRET, event_handler=build_handler(),
                              domain=LARK_DOMAIN, log_level=lark.LogLevel.INFO)
         cli.start()
     else:
         threading.Thread(target=_reminder_scheduler, daemon=True).start()   # 内置每日提醒
         from waitress import serve
-        print(f"[bot] webhook 模式启动，监听端口 {PORT}，等待 Lark 事件推送 ...")
+        print(f"[bot] starting in webhook mode, listening on port {PORT} ...")
         serve(app, host="0.0.0.0", port=PORT)
 
 

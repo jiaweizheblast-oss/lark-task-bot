@@ -1,26 +1,27 @@
 """
-飞书交互卡片的 JSON 组装。
-一张任务卡片 = 标题 + @负责人 + 任务信息 + 三个按钮（完成/无法完成/跳过）。
-点完按钮后我们会把卡片换成"已处理"的样子（见 done_card）。
+Lark interactive card assembly (JSON).
+A task card = title + @assignee + task info + action buttons.
+After a button is tapped, the card is swapped for its updated state.
 """
 import os
 
-# 时区标注（国际团队用）：在后台环境变量 TZ_LABEL 里填，如 "GMT+7" / "北京时间"，会显示在截止时间后面。
+# Timezone label (for international teams): set env var TZ_LABEL, e.g. "IST" / "GMT+5:30".
+# It is shown after the due date.
 TZ_LABEL = os.environ.get("TZ_LABEL", "").strip()
 
 
-def fmt_deadline(d, empty="未设置"):
-    """把截止日期格式化，带上时区标注（若配置了）。"""
+def fmt_deadline(d, empty="Not set"):
+    """Format the due date, with the timezone label appended when configured."""
     if not d:
         return empty
-    return f"{d}（{TZ_LABEL}）" if TZ_LABEL else f"{d}"
+    return f"{d} ({TZ_LABEL})" if TZ_LABEL else f"{d}"
 
 
 STATUS_LABEL = {
-    "pending": "🆕 待接受",
-    "accepted": "⏳ 进行中",
-    "done": "✅ 已完成",
-    "issue": "🙋 待沟通",
+    "pending": "🆕 To Do",
+    "accepted": "⏳ In Progress",
+    "done": "✅ Completed",
+    "issue": "🙋 Needs Reply",
 }
 HEADER_COLOR = {
     "new": "blue", "accepted": "turquoise", "done": "green", "issue": "orange",
@@ -32,7 +33,9 @@ def _at(open_id):
     return f"<at id={open_id}></at>"
 
 
-PRIORITY_TAG = {"高": "🔴 高", "中": "🟡 中", "低": "🟢 低"}
+# English values are canonical; Chinese kept as a fallback for legacy data.
+PRIORITY_TAG = {"High": "🔴 High", "Medium": "🟡 Medium", "Low": "🟢 Low",
+                "高": "🔴 High", "中": "🟡 Medium", "低": "🟢 Low"}
 
 
 def _pri(p):
@@ -40,25 +43,25 @@ def _pri(p):
 
 
 def _task_body_lines(task, assignee_display, at_all=False):
-    """统一的任务信息正文（内部群 / 外部群 / 网页共用同一套排版，保证长得一样）。
-    第一行大标题；第二行优先级·截止；第三行负责人；再往下是详情 / 注意事项。"""
-    head = f"**{task.get('title', '(无标题)')}**"
+    """Shared task body (internal group / external group / web all use the same layout).
+    Line 1 title; line 2 priority · due; line 3 assignee; then Details / Notes."""
+    head = f"**{task.get('title', '(Untitled)')}**"
     if at_all:
         head = "<at id=all></at>\n" + head
     meta = []
     if task.get("priority"):
-        meta.append(f"优先级 {_pri(task['priority'])}")
-    meta.append(f"截止 {fmt_deadline(task.get('deadline'))}")
-    lines = [head, "　·　".join(meta), f"负责人 {assignee_display}"]
+        meta.append(f"Priority {_pri(task['priority'])}")
+    meta.append(f"Due {fmt_deadline(task.get('deadline'))}")
+    lines = [head, "　·　".join(meta), f"Assignee {assignee_display}"]
     if task.get("detail"):
-        lines += ["", f"**📝 详情 / 安排**\n{task['detail']}"]
+        lines += ["", f"**📝 Details**\n{task['detail']}"]
     if task.get("note"):
-        lines += ["", f"**⚠️ 注意事项**\n{task['note']}"]
+        lines += ["", f"**⚠️ Notes**\n{task['note']}"]
     return "\n".join(lines)
 
 
 def _task_detail_block(task):
-    """内部群卡片用：负责人以 @ 提及呈现。"""
+    """Internal-group card: the assignee is shown as an @-mention."""
     return {"tag": "div", "text": {"tag": "lark_md",
             "content": _task_body_lines(task, _at(task["assignee_open_id"]))}}
 
@@ -71,126 +74,129 @@ def _input(name, label, placeholder, max_length=200):
 
 
 def create_form_card(chat_id, chat_name, assignee_open_id, assignee_name):
-    """选完负责人后弹出的派发表单：一次填全任务信息。"""
+    """Assignment form shown after picking an assignee (fill everything at once)."""
     v = {"action": "create_task", "chat_id": chat_id, "chat_name": chat_name,
          "open_id": assignee_open_id, "name": assignee_name}
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 新建任务 · 填写详情"}},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 New Task · Details"}},
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md",
-                    "content": f"群：**{chat_name}** · 负责人：**{assignee_name}**"}},
+                    "content": f"Group: **{chat_name}** · Assignee: **{assignee_name}**"}},
                 {"tag": "form", "name": "task_form", "elements": [
-                    _input("title", "任务标题 *", "一句话说清要做什么", 100),
-                    _input("detail", "详情 / 安排", "具体怎么做、分几步、交付什么", 500),
-                    _input("note", "注意事项", "要注意的点、验收标准、易踩的坑", 300),
-                    _input("priority", "优先级（高/中/低）", "默认 中", 4),
-                    _input("deadline", "截止日期", "如 2026-07-25", 20),
+                    _input("title", "Title *", "One line: what needs to be done", 100),
+                    _input("detail", "Details", "How to do it, steps, deliverables", 500),
+                    _input("note", "Notes", "Things to watch, acceptance criteria", 300),
+                    _input("priority", "Priority (High/Medium/Low)", "Default: Medium", 8),
+                    _input("deadline", "Due date", "e.g. 2026-07-25", 20),
                     {"tag": "action", "actions": [
                         {"tag": "button", "action_type": "form_submit", "name": "submit",
-                         "text": {"tag": "plain_text", "content": "✅ 提交派发"}, "type": "primary", "value": v}]},
+                         "text": {"tag": "plain_text", "content": "✅ Assign"}, "type": "primary", "value": v}]},
                 ]},
             ]}
 
 
 def picked_card(chat_name, assignee_name):
-    """选好群+人后，私聊里显示的引导卡片（逐步问答开始）。"""
+    """Shown in the DM after group + assignee are chosen (start of the guided flow)."""
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "✍️ 新建任务"}},
+            "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "✍️ New Task"}},
             "elements": [{"tag": "div", "text": {"tag": "lark_md",
-                "content": f"群：**{chat_name}** · 负责人：**{assignee_name}**\n\n"
-                           f"请在下方对话框**逐条回答**我的提问（标题 → 详情 → 注意事项 → 优先级和截止）。"}}]}
+                "content": f"Group: **{chat_name}** · Assignee: **{assignee_name}**\n\n"
+                           f"Please **answer my questions one by one** below "
+                           f"(title → details → notes → priority & due date)."}}]}
 
 
 def new_task_card(task):
-    """刚派发：负责人可【接受任务】或【无法完成/有问题】。task 为任务字典。"""
+    """Just assigned: the assignee can Accept Task or Report an Issue."""
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": HEADER_COLOR["new"], "title": {"tag": "plain_text", "content": "📋 新任务"}},
+            "header": {"template": HEADER_COLOR["new"], "title": {"tag": "plain_text", "content": "📋 New Task"}},
             "elements": [
                 _task_detail_block(task),
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md",
-                    "content": "👉 请负责人处理：点【接受任务】开始；如无法完成或有疑问，点【无法完成 / 有问题】和发布者沟通。"}},
+                    "content": "👉 Assignee: tap **Accept Task** to start. If you can't complete it "
+                               "or have a question, tap **Report an Issue** to reach the sender."}},
                 {"tag": "action", "actions": [
-                    _btn("✅ 接受任务", {"action": "accept", "task_id": str(task["id"])}, "primary"),
-                    _btn("✋ 无法完成 / 有问题", {"action": "raise", "task_id": str(task["id"])}, "default"),
+                    _btn("✅ Accept Task", {"action": "accept", "task_id": str(task["id"])}, "primary"),
+                    _btn("✋ Report an Issue", {"action": "raise", "task_id": str(task["id"])}, "default"),
                 ]},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 任务终端"}]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Task #{task['id']} · Task Console"}]},
             ]}
 
 
 def accepted_card(task):
-    """已接受、进行中：可【完成】或【有问题】。"""
+    """Accepted / in progress: Mark Complete or Report an Issue."""
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": HEADER_COLOR["accepted"], "title": {"tag": "plain_text", "content": "⏳ 进行中"}},
+            "header": {"template": HEADER_COLOR["accepted"], "title": {"tag": "plain_text", "content": "⏳ In Progress"}},
             "elements": [
                 _task_detail_block(task),
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md",
-                    "content": "👉 完成后点【完成】；如遇到问题，点【有问题】和发布者沟通。"}},
+                    "content": "👉 Tap **Mark Complete** when done. If something comes up, "
+                               "tap **Report an Issue** to reach the sender."}},
                 {"tag": "action", "actions": [
-                    _btn("🎉 完成", {"action": "done", "task_id": str(task["id"])}, "primary"),
-                    _btn("✋ 有问题", {"action": "raise", "task_id": str(task["id"])}, "default"),
+                    _btn("🎉 Mark Complete", {"action": "done", "task_id": str(task["id"])}, "primary"),
+                    _btn("✋ Report an Issue", {"action": "raise", "task_id": str(task["id"])}, "default"),
                 ]},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 负责人已接受"}]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Task #{task['id']} · Accepted"}]},
             ]}
 
 
 REASON_OPTIONS = [
-    ("⏰ 时间来不及，想延期", "时间来不及，想延期"),
-    ("❓ 需要更多信息 / 说明", "需要更多信息或说明"),
-    ("🙅 可能不太适合我", "可能不太适合我，建议换人"),
-    ("💬 其他，想当面沟通", "其他，想当面沟通"),
+    ("⏰ Need more time – request an extension", "Needs more time – requests an extension"),
+    ("❓ Need more information", "Needs more information"),
+    ("🙅 May not be the right fit for me", "May not be the right fit – suggests reassigning"),
+    ("💬 Other – would like to discuss", "Other – would like to discuss"),
 ]
 
 
 def reason_buttons_card(task):
-    """负责人点“有问题”后，展示预设原因按钮（点一个即通知发布者）。"""
+    """Shown after the assignee taps 'Report an Issue': preset reasons (one tap notifies the sender)."""
     actions = [{"tag": "action", "actions": [
         _btn(label, {"action": "issue_reason", "task_id": str(task["id"]), "reason": reason}, "default")]}
         for label, reason in REASON_OPTIONS]
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "✋ 选择原因"}},
+            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "✋ Select a reason"}},
             "elements": [
                 _task_detail_block(task),
-                {"tag": "div", "text": {"tag": "lark_md", "content": "**请选择原因（会通知发布者一起商量）：**"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**Select a reason (the sender will be notified):**"}},
             ] + actions}
 
 
 def final_card(task, status, operator_open_id=None, reason=None):
-    """终态卡片（已完成 / 待沟通），无按钮。"""
+    """Terminal card (Completed / Needs Reply), no buttons."""
     block = _task_detail_block(task)
     if operator_open_id:
-        block["text"]["content"] += f"\n**✍️ 处理人：**{_at(operator_open_id)}"
+        block["text"]["content"] += f"\n**✍️ Handled by:** {_at(operator_open_id)}"
     if reason:
-        block["text"]["content"] += f"\n**💬 说明：**{reason}"
+        block["text"]["content"] += f"\n**💬 Note:** {reason}"
     return {"config": {"wide_screen_mode": True},
             "header": {"template": HEADER_COLOR.get(status, "grey"),
-                       "title": {"tag": "plain_text", "content": f"任务 #{task['id']} · {STATUS_LABEL.get(status, status)}"}},
+                       "title": {"tag": "plain_text", "content": f"Task #{task['id']} · {STATUS_LABEL.get(status, status)}"}},
             "elements": [
                 block,
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"状态：{STATUS_LABEL.get(status, status)}"}]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Status: {STATUS_LABEL.get(status, status)}"}]},
             ]}
 
 
 def reminder_card(kind, task_id, title, assignee_open_id, deadline, owner_open_id=None):
-    """超期提醒卡片。kind = due_tomorrow / due_today / escalated。"""
+    """Due-date reminder card. kind = due_tomorrow / due_today / escalated."""
     at = _at(assignee_open_id)
     if kind == "due_tomorrow":
-        header, color = "⏰ 明天到期", HEADER_COLOR["due_tomorrow"]
-        line = f"{at} 任务「{title}」将于 **明天（{deadline}）** 到期。"
+        header, color = "⏰ Due tomorrow", HEADER_COLOR["due_tomorrow"]
+        line = f"{at} Task '{title}' is due **tomorrow ({deadline})**."
     elif kind == "due_today":
-        header, color = "⏰ 今天到期", HEADER_COLOR["due_today"]
-        line = f"{at} 任务「{title}」**今天（{deadline}）到期**，请尽快处理。"
+        header, color = "⏰ Due today", HEADER_COLOR["due_today"]
+        line = f"{at} Task '{title}' is **due today ({deadline})**. Please action it soon."
     else:  # escalated
-        header, color = "🚨 任务超期（升级）", HEADER_COLOR["escalated"]
-        owner_at = f"\n升级提醒：{_at(owner_open_id)} 请关注" if owner_open_id else ""
-        line = f"{at} 的任务「{title}」已超期（截止 {deadline}）。{owner_at}"
+        header, color = "🚨 Overdue (escalated)", HEADER_COLOR["escalated"]
+        owner_at = f"\nEscalation: {_at(owner_open_id)} please take note" if owner_open_id else ""
+        line = f"{at}'s task '{title}' is overdue (was due {deadline}).{owner_at}"
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": color, "title": {"tag": "plain_text", "content": header}},
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": line}},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task_id}"}]},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Task #{task_id}"}]},
         ],
     }
 
@@ -200,121 +206,123 @@ def _btn(text, value, typ="default"):
 
 
 def group_select_card(groups):
-    """第 1 步：私聊里让管理员点选要派任务的群。groups: [{chat_id,name,external}]。"""
-    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "**请选择要派任务的群：**"}}, {"tag": "hr"}]
+    """Step 1: in the DM, let the admin pick a group. groups: [{chat_id,name,external}]."""
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "**Select a group to assign the task to:**"}}, {"tag": "hr"}]
     shown = groups[:20]
     for g in shown:
-        tag = "🌐 外部群" if g.get("external") else "🏠 内部群"
+        tag = "🌐 External" if g.get("external") else "🏠 Internal"
         elements.append({"tag": "action", "actions": [
             _btn(f"{tag} · {g['name']}", {"action": "pick_group", "chat_id": g["chat_id"], "chat_name": g["name"]})]})
     if not shown:
         elements.append({"tag": "div", "text": {"tag": "lark_md",
-            "content": "（机器人还没被拉进任何群。请先把它加进相关的群，再回来派任务。）"}})
+            "content": "(The bot hasn't been added to any group yet. Add it to the relevant group first, then come back.)"}})
     elif len(groups) > len(shown):
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"仅显示前 {len(shown)} 个群"}]})
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"Showing first {len(shown)} groups"}]})
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 新建任务 · 第 1 步：选群"}},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 New Task · Step 1: Select group"}},
             "elements": elements}
 
 
 def person_select_card(chat_id, chat_name, members):
-    """第 2 步：选负责人。members: [{open_id,name}]。"""
-    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": f"群：**{chat_name}**\n**请选择负责人：**"}}, {"tag": "hr"}]
+    """Step 2: pick the assignee. members: [{open_id,name}]."""
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": f"Group: **{chat_name}**\n**Select an assignee:**"}}, {"tag": "hr"}]
     shown = members[:30]
     for m in shown:
         elements.append({"tag": "action", "actions": [
             _btn(f"👤 {m['name']}", {"action": "pick_person", "chat_id": chat_id, "chat_name": chat_name,
                                      "open_id": m["open_id"], "name": m["name"]})]})
     if not shown:
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "（这个群里除了机器人没有别人。）"}})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "(There's no one in this group besides the bot.)"}})
     elif len(members) > len(shown):
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"仅显示前 {len(shown)} 人"}]})
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"Showing first {len(shown)} people"}]})
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 新建任务 · 第 2 步：选负责人"}},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🆕 New Task · Step 2: Select assignee"}},
             "elements": elements}
 
 
 def draft_ready_card(chat_name, assignee_name):
-    """第 3 步：提示管理员输入任务内容。"""
+    """Step 3: prompt the admin to enter the task content."""
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "✍️ 第 3 步：输入任务内容"}},
+            "header": {"template": "turquoise", "title": {"tag": "plain_text", "content": "✍️ Step 3: Enter task details"}},
             "elements": [{"tag": "div", "text": {"tag": "lark_md",
-                "content": f"**目标群：**{chat_name}\n**负责人：**{assignee_name}\n\n"
-                           f"现在直接把**任务内容和截止日期**发给我，例如：\n`写合同初稿 截止:2026-07-25`"}}]}
+                "content": f"**Group:** {chat_name}\n**Assignee:** {assignee_name}\n\n"
+                           f"Now send me the **task content and due date**, e.g.:\n`Draft the contract due:2026-07-25`"}}]}
 
 
 def dispatched_card(chat_name, task):
-    """派发成功后，把私聊里的表单卡片更新成这个确认卡片。"""
+    """After a successful assignment, replace the DM form card with this confirmation."""
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "green", "title": {"tag": "plain_text", "content": "✅ 已派发"}},
+            "header": {"template": "green", "title": {"tag": "plain_text", "content": "✅ Assigned"}},
             "elements": [
                 _task_detail_block(task),
                 {"tag": "note", "elements": [{"tag": "plain_text",
-                    "content": f"已发到群：{chat_name} · 负责人会收到 @ 和反馈按钮"}]}]}
+                    "content": f"Sent to {chat_name} · the assignee will be @-mentioned with action buttons"}]}]}
 
 
 def external_task_card(task, status_url):
-    """推给外部群的任务卡片：和内部群卡片同一套排版（统一）。
-    差别只在：外部群 @全体（拿不到个人 id，飞书限制），且只有一个按钮——
-    点开网页后再依次【接受任务】→【标记完成 / 有问题】，与内部群流程一致。"""
+    """Task card pushed to an external group: same layout as the internal card.
+    Differences: external groups @all (individual ids aren't available — a Lark limit),
+    and there is a single button that opens the web page (Accept → Complete / Issue there)."""
     name = task.get("assignee_name") or ""
-    tip = (f"👉 请负责人 **{name or '（见群内）'}** 点下面按钮：先【接受任务】，之后在同一页面汇报完成或问题。\n"
-           f"⚠️ 其他群成员请勿点击，以免弄乱状态。")
+    tip = (f"👉 **{name or '(see group)'}**, please tap the button below: first **Accept Task**, "
+           f"then report progress or issues on the same page.\n"
+           f"⚠️ Other group members, please don't tap this — it may disrupt the status.")
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": HEADER_COLOR["new"], "title": {"tag": "plain_text", "content": "📋 新任务"}},
+            "header": {"template": HEADER_COLOR["new"], "title": {"tag": "plain_text", "content": "📋 New Task"}},
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md",
-                    "content": _task_body_lines(task, name or "（见群内）", at_all=True)}},
+                    "content": _task_body_lines(task, name or "(see group)", at_all=True)}},
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md", "content": tip}},
                 {"tag": "action", "actions": [
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "✅ 接受任务 / 汇报进度"},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "✅ Accept / Report Progress"},
                      "type": "primary", "url": status_url}]},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"任务 #{task['id']} · 外部群（webhook）"}]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Task #{task['id']} · External group (webhook)"}]},
             ]}
 
 
 def external_reminder_card(kind, task, status_url=None):
-    """外部群提醒卡片（通过 webhook 推送）：@全体 + 提醒 + 打开汇报页按钮。"""
-    name = task.get("assignee_name") or "负责人"
+    """External-group reminder card (pushed via webhook): @all + reminder + button to the report page."""
+    name = task.get("assignee_name") or "Assignee"
     title = task.get("title", "")
     dl = task.get("deadline")
     if kind == "due_tomorrow":
-        header, color = "⏰ 明天到期", HEADER_COLOR["due_tomorrow"]
-        line = f"任务「{title}」将于 **明天（{dl}）** 到期，请尽快处理。"
+        header, color = "⏰ Due tomorrow", HEADER_COLOR["due_tomorrow"]
+        line = f"Task '{title}' is due **tomorrow ({dl})**. Please action it soon."
     elif kind == "due_today":
-        header, color = "⏰ 今天到期", HEADER_COLOR["due_today"]
-        line = f"任务「{title}」**今天（{dl}）到期**，请尽快处理。"
+        header, color = "⏰ Due today", HEADER_COLOR["due_today"]
+        line = f"Task '{title}' is **due today ({dl})**. Please action it soon."
     else:  # escalated
-        header, color = "🚨 任务超期", HEADER_COLOR["escalated"]
-        line = f"任务「{title}」已超期（截止 {dl}），请尽快跟进。"
-    body = f"<at id=all></at>\n**负责人：{name}**\n{line}"
+        header, color = "🚨 Overdue", HEADER_COLOR["escalated"]
+        line = f"Task '{title}' is overdue (was due {dl}). Please follow up."
+    body = f"<at id=all></at>\n**Assignee: {name}**\n{line}"
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": body}}]
     if status_url:
         elements.append({"tag": "action", "actions": [
-            {"tag": "button", "text": {"tag": "plain_text", "content": "📝 去接受 / 汇报"},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "📝 Accept / Report"},
              "type": "primary", "url": status_url}]})
     elements.append({"tag": "note", "elements": [
-        {"tag": "plain_text", "content": f"任务 #{task['id']} · 仅负责人操作"}]})
+        {"tag": "plain_text", "content": f"Task #{task['id']} · Assignee only"}]})
     return {"config": {"wide_screen_mode": True},
             "header": {"template": color, "title": {"tag": "plain_text", "content": header}},
             "elements": elements}
 
 
 def nudge_card(task):
-    """催办提醒卡片（网页/看板点催办时发到群里）。"""
-    dl = f"，截止 {task['deadline']}" if task.get("deadline") else ""
+    """Nudge card (sent to the group when 'Nudge' is tapped in the console/board)."""
+    dl = f" (due {task['deadline']})" if task.get("deadline") else ""
     return {"config": {"wide_screen_mode": True},
-            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "⏰ 催办提醒"}},
+            "header": {"template": "orange", "title": {"tag": "plain_text", "content": "⏰ Reminder"}},
             "elements": [{"tag": "div", "text": {"tag": "lark_md",
-                "content": f"{_at(task['assignee_open_id'])} 任务 #{task['id']}【{task['title']}】请尽快处理{dl}。"}}]}
+                "content": f"{_at(task['assignee_open_id'])} Task #{task['id']} '{task['title']}' — please action it soon{dl}."}}]}
 
 
 def help_text():
     return (
-        "**🤖 任务终端用法（私聊我操作）**\n"
-        "• 发送 `新建任务` —— 我一步步带你：选群 → 选负责人 → 输入内容，然后我到群里 @ 他派任务\n"
-        "• `/claimadmin 口令` —— 首次把自己设为管理员\n"
-        "• `/whoami` —— 查看你的身份\n\n"
-        "只有管理员能派任务；负责人在群里点卡片按钮反馈：完成 / 无法完成 / 跳过。"
+        "**🤖 Task Console — how to use (message me directly)**\n"
+        "• Send `new task` — I'll guide you: pick group → pick assignee → enter details, "
+        "then I'll @-mention them in the group\n"
+        "• `/claimadmin <code>` — set yourself as admin the first time\n"
+        "• `/whoami` — check your role\n\n"
+        "Only admins can assign tasks. Assignees respond via the card buttons: Accept / Report an Issue / Complete."
     )

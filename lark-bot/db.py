@@ -13,7 +13,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 def get_conn():
     """开一个新的数据库连接。用完即关，简单稳妥。"""
     if not DATABASE_URL:
-        raise RuntimeError("缺少 DATABASE_URL 环境变量，请在 Railway 里把数据库连上")
+        raise RuntimeError("Missing DATABASE_URL environment variable — connect the database in Railway")
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
     return conn
@@ -26,7 +26,7 @@ def init_db():
         sql = f.read()
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql)
-    print("[db] 建表完成 / 已存在")
+    print("[db] tables ready")
 
 
 # ---------------- 用户 ----------------

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>任务控制台</title>
+<title>Task Console</title>
 <style>
   :root{
     --bg:#f6f7f9;--panel:#fff;--panel2:#fbfbfd;--ink:#1c2024;--soft:#5b636b;--line:#e7e9ec;--lineS:#d7dade;
@@ -63,7 +63,7 @@
   .tcard .tt{font-weight:650;font-size:13.5px;margin-bottom:6px}
   .tcard .meta{font-size:12px;color:var(--soft);display:flex;flex-wrap:wrap;gap:8px;align-items:center} .tcard .who{color:var(--ink);font-weight:600}
   .pri{font-size:11px;font-weight:750;border-radius:5px;padding:1px 6px}
-  .pri.高{color:#fff;background:var(--p-hi)} .pri.中{color:#fff;background:var(--p-mid)} .pri.低{color:#fff;background:var(--p-lo)}
+  .pri.High{color:#fff;background:var(--p-hi)} .pri.Medium{color:#fff;background:var(--p-mid)} .pri.Low{color:#fff;background:var(--p-lo)}
   .tcard .grp{font-size:11px;color:var(--soft)} .badge-ext{font-size:10px;background:var(--accentS);color:var(--accent);border-radius:5px;padding:1px 5px;font-weight:700}
   .tcard .rsn{font-size:12px;color:var(--warn);background:var(--warnB);border-radius:7px;padding:5px 8px;margin-top:6px}
   .muted{color:var(--soft);font-size:13px;text-align:center;padding:20px}
@@ -106,76 +106,76 @@
 <body>
 <div id="login">
   <div class="login-card">
-    <h1>🤖 任务控制台</h1><p>输入密码进入。</p>
-    <div class="field"><label>密码</label><input id="pw" type="password" placeholder="面板密码" onkeydown="if(event.key==='Enter')doLogin()"></div>
-    <button class="btn wide" onclick="doLogin()">登录</button>
+    <h1>🤖 Task Console</h1><p>Enter your password to continue.</p>
+    <div class="field"><label>Password</label><input id="pw" type="password" placeholder="Console password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <button class="btn wide" onclick="doLogin()">Log in</button>
     <div class="err" id="loginErr"></div>
   </div>
 </div>
 
 <div id="app" class="hide">
   <header>
-    <div class="logo">🤖 任务<span>控制台</span></div>
+    <div class="logo">🤖 Task <span>Console</span></div>
     <div class="tabs">
-      <button id="tab-create" class="on" onclick="showTab('create')">派任务</button>
-      <button id="tab-board" onclick="showTab('board')">看板</button>
-      <button id="tab-cal" onclick="showTab('cal')">日历</button>
-      <button id="tab-report" onclick="showTab('report')">报表</button>
+      <button id="tab-create" class="on" onclick="showTab('create')">New Task</button>
+      <button id="tab-board" onclick="showTab('board')">Board</button>
+      <button id="tab-cal" onclick="showTab('cal')">Calendar</button>
+      <button id="tab-report" onclick="showTab('report')">Reports</button>
     </div>
     <div class="sp"></div>
-    <button class="btn ghost sm" onclick="openReminderSettings()">🔔 提醒</button>
-    <button class="btn ghost sm" onclick="openExtSettings()">⚙️ 外部群</button>
-    <button class="btn ghost sm" onclick="logout()">退出</button>
+    <button class="btn ghost sm" onclick="openReminderSettings()">🔔 Reminders</button>
+    <button class="btn ghost sm" onclick="openExtSettings()">⚙️ External Groups</button>
+    <button class="btn ghost sm" onclick="logout()">Log out</button>
   </header>
   <div class="wrap">
     <section id="view-create">
       <div class="form-card">
-        <h2>派一个任务</h2>
-        <p class="sub">选群 → 选负责人 → 填详情 → 派发。内部群走机器人；外部群走 webhook 推送。</p>
+        <h2>Assign a task</h2>
+        <p class="sub">Pick a group → pick an assignee → add the details → assign. Internal groups use the bot; external groups use a webhook.</p>
         <div class="row2">
-          <div class="field"><label>群 *</label><select id="fGroup" onchange="onGroup()"><option value="">加载中…</option></select></div>
-          <div class="field"><label>负责人 *</label>
-            <select id="fAssignee"><option value="">先选群</option></select>
-            <input id="fAssigneeName" class="hide" placeholder="填负责人名字（外部群直接打字）"></div>
+          <div class="field"><label>Group *</label><select id="fGroup" onchange="onGroup()"><option value="">Loading…</option></select></div>
+          <div class="field"><label>Assignee *</label>
+            <select id="fAssignee"><option value="">Pick a group first</option></select>
+            <input id="fAssigneeName" class="hide" placeholder="Assignee name (type it for external groups)"></div>
         </div>
-        <div class="field"><label>任务标题 *</label><input id="fTitle" placeholder="一句话说清要做什么"></div>
-        <div class="field"><label>详情 / 安排</label><textarea id="fDetail" placeholder="具体怎么做、分几步、交付什么"></textarea></div>
-        <div class="field"><label>注意事项</label><textarea id="fNote" placeholder="要注意的点、验收标准、易踩的坑"></textarea></div>
+        <div class="field"><label>Title *</label><input id="fTitle" placeholder="One line: what needs to be done"></div>
+        <div class="field"><label>Details</label><textarea id="fDetail" placeholder="How to do it, the steps, deliverables"></textarea></div>
+        <div class="field"><label>Notes</label><textarea id="fNote" placeholder="Things to watch, acceptance criteria"></textarea></div>
         <div class="row2">
-          <div class="field"><label>优先级</label><select id="fPriority"><option>中</option><option>高</option><option>低</option></select></div>
-          <div class="field"><label>截止日期</label><input id="fDeadline" type="date"></div>
+          <div class="field"><label>Priority</label><select id="fPriority"><option>Medium</option><option>High</option><option>Low</option></select></div>
+          <div class="field"><label>Due date</label><input id="fDeadline" type="date"></div>
         </div>
-        <button class="btn wide" id="submitBtn" onclick="submitTask()">🚀 派发任务</button>
+        <button class="btn wide" id="submitBtn" onclick="submitTask()">🚀 Assign Task</button>
         <div class="err" id="createErr"></div>
       </div>
     </section>
     <section id="view-board" class="hide">
       <div class="stats" id="stats"></div>
       <div class="toolbar">
-        <select id="flGroup" onchange="renderBoard()"><option value="">全部群</option></select>
-        <select id="flAssignee" onchange="renderBoard()"><option value="">全部负责人</option></select>
-        <select id="flStatus" onchange="renderBoard()"><option value="">全部状态</option><option value="pending">待接受</option><option value="accepted">进行中</option><option value="done">已完成</option><option value="overdue">已到期</option><option value="comm">待沟通</option></select>
-        <input class="search" id="flSearch" placeholder="🔍 搜索任务…" oninput="renderBoard()">
+        <select id="flGroup" onchange="renderBoard()"><option value="">All groups</option></select>
+        <select id="flAssignee" onchange="renderBoard()"><option value="">All assignees</option></select>
+        <select id="flStatus" onchange="renderBoard()"><option value="">All statuses</option><option value="pending">To Do</option><option value="accepted">In Progress</option><option value="done">Completed</option><option value="overdue">Overdue</option><option value="comm">Needs Reply</option></select>
+        <input class="search" id="flSearch" placeholder="🔍 Search tasks…" oninput="renderBoard()">
         <div class="sp"></div>
-        <button class="btn ghost sm" onclick="exportCSV()">⬇ 导出</button>
-        <button class="btn ghost sm" onclick="loadTasks()">🔄 刷新</button>
+        <button class="btn ghost sm" onclick="exportCSV()">⬇ Export</button>
+        <button class="btn ghost sm" onclick="loadTasks()">🔄 Refresh</button>
       </div>
       <div class="board" id="board"></div>
     </section>
     <section id="view-cal" class="hide">
       <div class="cal-head">
         <button class="btn ghost sm" onclick="calMove(-1)">←</button><h2 id="calTitle"></h2>
-        <button class="btn ghost sm" onclick="calMove(1)">→</button><button class="btn ghost sm" onclick="calMove(0)">今天</button>
-        <div class="sp"></div><button class="btn ghost sm" onclick="calSubscribe()">📅 订阅到我的日历</button>
+        <button class="btn ghost sm" onclick="calMove(1)">→</button><button class="btn ghost sm" onclick="calMove(0)">Today</button>
+        <div class="sp"></div><button class="btn ghost sm" onclick="calSubscribe()">📅 Subscribe to my calendar</button>
       </div>
       <div class="cal" id="cal"></div>
     </section>
     <section id="view-report" class="hide">
       <div class="toolbar">
-        <div style="font-weight:750;font-size:16px">📊 团队报表</div>
+        <div style="font-weight:750;font-size:16px">📊 Team Report</div>
         <div class="sp"></div>
-        <button class="btn ghost sm" onclick="calSubscribe()">📅 日历订阅</button>
-        <button class="btn ghost sm" onclick="exportReport()">⬇ 导出周报(CSV)</button>
+        <button class="btn ghost sm" onclick="calSubscribe()">📅 Calendar feed</button>
+        <button class="btn ghost sm" onclick="exportReport()">⬇ Export weekly report (CSV)</button>
       </div>
       <div class="stats" id="reportTiles"></div>
       <div id="reportBody"></div>
@@ -189,11 +189,11 @@
 <script>
 let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
-function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return '你当地约 '+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
+function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
-const STATUS=[{k:"pending",n:"待接受",c:"var(--s-pending)"},{k:"accepted",n:"进行中",c:"var(--s-accepted)"},{k:"done",n:"已完成",c:"var(--s-done)"}];
+const STATUS=[{k:"pending",n:"To Do",c:"var(--s-pending)"},{k:"accepted",n:"In Progress",c:"var(--s-accepted)"},{k:"done",n:"Completed",c:"var(--s-done)"}];
 // 看板列 = 三个状态 + 已到期(超期) + 待沟通(有未读留言)，待沟通排最后
-const BOARDCOLS=STATUS.concat([{k:"overdue",n:"🔴 已到期",c:"var(--danger)"},{k:"comm",n:"💬 待沟通",c:"var(--s-issue)"}]);
+const BOARDCOLS=STATUS.concat([{k:"overdue",n:"🔴 Overdue",c:"var(--danger)"},{k:"comm",n:"💬 Needs Reply",c:"var(--s-issue)"}]);
 // 一个任务归到哪一列：有未读留言→待沟通；否则超期→已到期；否则按真实状态
 function taskCol(t){return t.unread?'comm':(overdue(t)?'overdue':t.status);}
 const SC={pending:"var(--s-pending)",accepted:"var(--s-accepted)",done:"var(--s-done)",issue:"var(--s-issue)"};
@@ -205,8 +205,8 @@ async function api(path,opts={}){opts.headers=Object.assign({'X-Auth':PW,'Conten
 
 async function doLogin(){const pw=document.getElementById('pw').value;document.getElementById('loginErr').textContent='';
   try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
-    if(!r.ok){document.getElementById('loginErr').textContent='密码不对，或后台还没设置面板密码';return;}
-    PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='连接失败';}}
+    if(!r.ok){document.getElementById('loginErr').textContent='Incorrect password, or the console password is not set yet.';return;}
+    PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='Connection failed';}}
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
   const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();loadTasks();}
@@ -217,113 +217,113 @@ async function loadExternalGroups(){try{const gs=await(await api('/api/external-
 async function loadGroups(){
   try{const gs=await(await api('/api/groups')).json();GROUPS=Array.isArray(gs)?gs:[];GMAP={};GROUPS.forEach(g=>GMAP[g.chat_id]=g);}catch(e){GROUPS=[];}
   const intOpts=GROUPS.map(g=>`<option value="${g.chat_id}" data-name="${esc(g.name)}">${g.external?'🌐':'🏠'} ${esc(g.name)}</option>`).join('');
-  const extOpts=EGROUPS.map(g=>`<option value="ext:${g.id}" data-name="${esc(g.name)}">🌐 ${esc(g.name)}（外部·webhook）</option>`).join('');
+  const extOpts=EGROUPS.map(g=>`<option value="ext:${g.id}" data-name="${esc(g.name)}">🌐 ${esc(g.name)} (external · webhook)</option>`).join('');
   const sel=document.getElementById('fGroup');
-  sel.innerHTML=(GROUPS.length||EGROUPS.length)?'<option value="">请选择群</option>'+intOpts+extOpts:'<option value="">（还没有群，先把机器人拉进内部群，或在“外部群”里加）</option>';
-  document.getElementById('flGroup').innerHTML='<option value="">全部群</option>'+GROUPS.map(g=>`<option value="${g.chat_id}">${esc(g.name)}</option>`).join('')+EGROUPS.map(g=>`<option value="ext:${g.id}">${esc(g.name)}（外部）</option>`).join('');
+  sel.innerHTML=(GROUPS.length||EGROUPS.length)?'<option value="">Select a group</option>'+intOpts+extOpts:'<option value="">(No groups yet — add the bot to an internal group, or add one under "External Groups".)</option>';
+  document.getElementById('flGroup').innerHTML='<option value="">All groups</option>'+GROUPS.map(g=>`<option value="${g.chat_id}">${esc(g.name)}</option>`).join('')+EGROUPS.map(g=>`<option value="ext:${g.id}">${esc(g.name)} (external)</option>`).join('');
 }
 async function membersOf(chatId){if(MEMCACHE[chatId])return MEMCACHE[chatId];try{const ms=await(await api('/api/members?chat_id='+encodeURIComponent(chatId))).json();MEMCACHE[chatId]=Array.isArray(ms)?ms:[];return MEMCACHE[chatId];}catch(e){return[];}}
 async function onGroup(){
   const v=document.getElementById('fGroup').value,sel=document.getElementById('fAssignee'),inp=document.getElementById('fAssigneeName');
   if(v.startsWith('ext:')){sel.classList.add('hide');inp.classList.remove('hide');return;}
   inp.classList.add('hide');sel.classList.remove('hide');
-  if(!v){sel.innerHTML='<option value="">先选群</option>';return;}
-  sel.innerHTML='<option value="">加载中…</option>';const ms=await membersOf(v);
-  sel.innerHTML=ms.length?'<option value="">请选择负责人</option>'+ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}">${esc(m.name)}</option>`).join(''):'<option value="">（群里没有其他人）</option>';
+  if(!v){sel.innerHTML='<option value="">Pick a group first</option>';return;}
+  sel.innerHTML='<option value="">Loading…</option>';const ms=await membersOf(v);
+  sel.innerHTML=ms.length?'<option value="">Select an assignee</option>'+ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}">${esc(m.name)}</option>`).join(''):'<option value="">(No one else in this group)</option>';
 }
 async function submitTask(){
   const g=document.getElementById('fGroup'),gv=g.value,err=document.getElementById('createErr');err.textContent='';
-  if(!gv){err.textContent='请选择群';return;}
-  const title=val('fTitle');if(!title){err.textContent='请填写任务标题';return;}
+  if(!gv){err.textContent='Please select a group';return;}
+  const title=val('fTitle');if(!title){err.textContent='Please enter a title';return;}
   const base={title,detail:val('fDetail'),note:val('fNote'),priority:document.getElementById('fPriority').value,deadline:document.getElementById('fDeadline').value};
   let payload,isExt=gv.startsWith('ext:');
   if(isExt){payload=Object.assign({external_group_id:parseInt(gv.slice(4)),assignee_name:document.getElementById('fAssigneeName').value.trim()},base);}
-  else{const a=document.getElementById('fAssignee');if(!a.value){err.textContent='请选择负责人';return;}
+  else{const a=document.getElementById('fAssignee');if(!a.value){err.textContent='Please select an assignee';return;}
     payload=Object.assign({chat_id:gv,chat_name:g.selectedOptions[0]?.dataset.name||'',assignee_open_id:a.value,assignee_name:a.selectedOptions[0]?.dataset.name||''},base);}
-  const b=document.getElementById('submitBtn');b.disabled=true;b.textContent='派发中…';
+  const b=document.getElementById('submitBtn');b.disabled=true;b.textContent='Assigning…';
   try{const j=await(await api('/api/tasks',{method:'POST',body:JSON.stringify(payload)})).json();
-    if(j.ok){toast(isExt?(j.pushed?'✅ 已推送到外部群':'⚠️ 已建，但推送失败（检查 webhook 网址）'):'✅ 已派发，机器人已 @ 负责人');
+    if(j.ok){toast(isExt?(j.pushed?'✅ Pushed to the external group':'⚠️ Created, but the push failed (check the webhook URL)'):'✅ Assigned — the bot @-mentioned the assignee');
       ['fTitle','fDetail','fNote'].forEach(id=>document.getElementById(id).value='');document.getElementById('fDeadline').value='';document.getElementById('fAssigneeName').value='';}
-    else err.textContent=j.error||'派发失败';
-  }catch(e){err.textContent='派发失败，请重试';}
-  b.disabled=false;b.textContent='🚀 派发任务';
+    else err.textContent=j.error||'Failed to assign';
+  }catch(e){err.textContent='Failed to assign, please try again';}
+  b.disabled=false;b.textContent='🚀 Assign Task';
 }
 
 async function loadTasks(){
   try{TASKS=await(await api('/api/tasks')).json();if(!Array.isArray(TASKS))TASKS=[];}catch(e){TASKS=[];}
   const names=[...new Set(TASKS.map(t=>t.assignee_name).filter(Boolean))];const fa=document.getElementById('flAssignee'),cur=fa.value;
-  fa.innerHTML='<option value="">全部负责人</option>'+names.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
+  fa.innerHTML='<option value="">All assignees</option>'+names.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
   renderStats();renderBoard();renderCalendar();renderReport();
 }
 function groupKey(t){return t.is_external?('ext:'+t.external_group_id):t.group_chat_id;}
-function groupName(t){return t.is_external?(EGMAP[t.external_group_id]||'外部群'):(GMAP[t.group_chat_id]?.name||'');}
+function groupName(t){return t.is_external?(EGMAP[t.external_group_id]||'External group'):(GMAP[t.group_chat_id]?.name||'');}
 function overdue(t){return t.deadline&&(t.status==='pending'||t.status==='accepted')&&t.deadline<todayStr();}
 function renderStats(){const c=k=>TASKS.filter(t=>taskCol(t)===k).length;
-  const tiles=[['总数',TASKS.length,''],['待接受',c('pending'),''],['进行中',c('accepted'),''],['已完成',c('done'),''],['已到期',c('overdue'),'over'],['待沟通',c('comm'),'']];
+  const tiles=[['Total',TASKS.length,''],['To Do',c('pending'),''],['In Progress',c('accepted'),''],['Completed',c('done'),''],['Overdue',c('overdue'),'over'],['Needs Reply',c('comm'),'']];
   document.getElementById('stats').innerHTML=tiles.map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');}
 function filtered(){const g=document.getElementById('flGroup').value,a=document.getElementById('flAssignee').value,s=document.getElementById('flStatus').value,q=document.getElementById('flSearch').value.trim().toLowerCase();
   return TASKS.filter(t=>(!g||groupKey(t)===g)&&(!a||t.assignee_name===a)&&(!s||taskCol(t)===s)&&(!q||(t.title||'').toLowerCase().includes(q)||(t.detail||'').toLowerCase().includes(q)));}
 function sortInCol(a,b){const da=a.deadline||'9999-99-99',db2=b.deadline||'9999-99-99';return da<db2?-1:(da>db2?1:0);}  // 截止早的在前
 function colItems(list,k){return list.filter(t=>taskCol(t)===k);}  // 按 taskCol 归列，每条只进一列
 function renderBoard(){const list=filtered();document.getElementById('board').innerHTML=BOARDCOLS.map(s=>{const items=colItems(list,s.k).sort(sortInCol);
-  return `<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${items.length}</span></h3><div>${items.map(tcard).join('')||'<div class="muted">暂无</div>'}</div></div>`;}).join('');}
+  return `<div class="col"><h3><span class="dot" style="background:${s.c}"></span>${s.n}<span class="cnt">${items.length}</span></h3><div>${items.map(tcard).join('')||'<div class="muted">None</div>'}</div></div>`;}).join('');}
 function tcard(t){const pri=t.priority?`<span class="pri ${t.priority}">${t.priority}</span>`:'';const who=t.assignee_name?`<span class="who">👤 ${esc(t.assignee_name)}</span>`:'';
   const dl=t.deadline?`<span>📅 ${dlText(t.deadline)}${overdue(t)?' ⚠️':''}</span>`:'';const gn=groupName(t);
-  const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">外部</span>':''}</div>`:'';
+  const grp=gn?`<div class="grp">📍 ${esc(gn)} ${t.is_external?'<span class="badge-ext">External</span>':''}</div>`:'';
   const rsn=(t.unread&&t.result)?`<div class="rsn">💬 ${esc(t.result)}</div>`:'';
-  const unread=t.unread?'<span class="unread" title="负责人有新留言，回复后消除"></span>':'';
+  const unread=t.unread?'<span class="unread" title="New message from the assignee — clears once you reply"></span>':'';
   return `<div class="tcard ${overdue(t)?'over':''} ${t.unread?'unreadcard':''}" onclick="openTask(${t.id})">${unread}<div class="tt">#${t.id} ${esc(t.title||'')}</div><div class="meta">${pri}${who}${dl}</div>${grp}${rsn}</div>`;}
 
 async function openTask(id){const t=TASKS.find(x=>x.id===id);if(!t)return;
   let reassign='';
   if(!t.is_external){const ms=await membersOf(t.group_chat_id);
-    reassign=`<div class="field"><label>负责人（改这里=换人，会给新负责人重发卡片）</label><select id="mAssignee">${ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}" ${m.open_id===t.assignee_open_id?'selected':''}>${esc(m.name)}</option>`).join('')||'<option value="">（无成员）</option>'}</select></div>`;}
-  const info=[t.detail?'详情 / 安排：'+t.detail:'',t.note?'注意事项：'+t.note:'',t.result?'最新反馈：'+t.result:''].filter(Boolean).map(esc).join('\n')||'（无更多详情）';
+    reassign=`<div class="field"><label>Assignee (change this to reassign — a new card is sent)</label><select id="mAssignee">${ms.map(m=>`<option value="${m.open_id}" data-name="${esc(m.name)}" ${m.open_id===t.assignee_open_id?'selected':''}>${esc(m.name)}</option>`).join('')||'<option value="">(no members)</option>'}</select></div>`;}
+  const info=[t.detail?'Details: '+t.detail:'',t.note?'Notes: '+t.note:'',t.result?'Latest message: '+t.result:''].filter(Boolean).map(esc).join('\n')||'(no further details)';
   const link=(t.is_external&&t.token)?(location.origin+'/t/'+t.token):'';
-  const linkRow=link?`<div class="field"><label>单独发给负责人的链接（可选）</label><div style="font-size:11.5px;color:var(--soft);margin:-2px 0 5px;line-height:1.5">不想在群里 @所有人打扰大家时，可以把这个链接私发给负责人本人；他打开就能接受任务、汇报进度，效果和群里那张卡片一样。</div><div style="display:flex;gap:6px"><input id="mLink" readonly value="${esc(link)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyLink()">复制</button></div></div>`:'';
-  const tzHint=(t.deadline&&localOf(t.deadline))?`<div style="font-size:12px;color:var(--accent);background:var(--accentS);border-radius:8px;padding:7px 10px;margin-bottom:12px">🌐 截止 ${esc(dlText(t.deadline))}　·　${esc(localOf(t.deadline))}</div>`:'';
+  const linkRow=link?`<div class="field"><label>Direct link for the assignee (optional)</label><div style="font-size:11.5px;color:var(--soft);margin:-2px 0 5px;line-height:1.5">Don't want to @everyone in the group? Send this link privately to the assignee — they can accept the task and report progress, exactly like the group card.</div><div style="display:flex;gap:6px"><input id="mLink" readonly value="${esc(link)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyLink()">Copy</button></div></div>`:'';
+  const tzHint=(t.deadline&&localOf(t.deadline))?`<div style="font-size:12px;color:var(--accent);background:var(--accentS);border-radius:8px;padding:7px 10px;margin-bottom:12px">🌐 Due ${esc(dlText(t.deadline))} · ${esc(localOf(t.deadline))}</div>`:'';
   const stb=STATUS.map(s=>`<button class="${t.status===s.k?'on':''}" style="${t.status===s.k?'background:'+s.c:''}" onclick="setStatus(${t.id},'${s.k}')">${s.n}</button>`).join('');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
     <h3>#${t.id} ${esc(t.title||'')}</h3>
-    <div class="mid">${esc(groupName(t))} ${t.is_external?'· 外部群':''} · 状态：${STATUS.find(s=>s.k===t.status)?.n||t.status}${t.unread?' · <span style="color:var(--warn);font-weight:600">💬 待沟通（有未读留言，回复后消除）</span>':''}</div>
+    <div class="mid">${esc(groupName(t))} ${t.is_external?'· External':''} · Status: ${STATUS.find(s=>s.k===t.status)?.n||t.status}${t.unread?' · <span style="color:var(--warn);font-weight:600">💬 Needs Reply (unread message — clears once you reply)</span>':''}</div>
     <div class="info">${info}</div>
     ${tzHint}
     ${linkRow}
-    <label style="font-size:12.5px;color:var(--soft);font-weight:600">💬 沟通记录（和负责人商量，都会留痕）</label>
-    <div class="thread" id="mThread"><div class="muted" style="padding:6px">加载中…</div></div>
-    <div class="replybar"><input id="mReply" placeholder="回复负责人…" onkeydown="if(event.key==='Enter')postComment(${t.id})"><button class="btn sm" onclick="postComment(${t.id})">发送</button></div>
-    <label style="font-size:12.5px;color:var(--soft);font-weight:600">手动设置状态</label><div class="stbtns">${stb}</div>
-    <div class="row2"><div class="field"><label>截止日期${TZLABEL?'（'+esc(TZLABEL)+'）':''}</label><input id="mDeadline" type="date" value="${t.deadline||''}"></div>
-    <div class="field"><label>优先级</label><select id="mPriority">${['高','中','低'].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}</select></div></div>
+    <label style="font-size:12.5px;color:var(--soft);font-weight:600">💬 Conversation (with the assignee — all logged)</label>
+    <div class="thread" id="mThread"><div class="muted" style="padding:6px">Loading…</div></div>
+    <div class="replybar"><input id="mReply" placeholder="Reply to the assignee…" onkeydown="if(event.key==='Enter')postComment(${t.id})"><button class="btn sm" onclick="postComment(${t.id})">Send</button></div>
+    <label style="font-size:12.5px;color:var(--soft);font-weight:600">Set status manually</label><div class="stbtns">${stb}</div>
+    <div class="row2"><div class="field"><label>Due date${TZLABEL?' ('+esc(TZLABEL)+')':''}</label><input id="mDeadline" type="date" value="${t.deadline||''}"></div>
+    <div class="field"><label>Priority</label><select id="mPriority">${['High','Medium','Low'].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}</select></div></div>
     ${reassign}
-    <div class="acts"><button class="btn sm" onclick="saveTask(${t.id})">💾 保存修改</button>
-    ${t.is_external?'':`<button class="btn ghost sm" onclick="nudgeTask(${t.id})">⏰ 催办</button>`}
-    <div style="flex:1"></div><button class="btn danger sm" onclick="delTask(${t.id})">🗑 删除</button>
-    <button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
+    <div class="acts"><button class="btn sm" onclick="saveTask(${t.id})">💾 Save</button>
+    ${t.is_external?'':`<button class="btn ghost sm" onclick="nudgeTask(${t.id})">⏰ Nudge</button>`}
+    <div style="flex:1"></div><button class="btn danger sm" onclick="delTask(${t.id})">🗑 Delete</button>
+    <button class="btn ghost sm" onclick="closeModal()">Close</button></div>
   </div></div>`;loadComments(id);}
 function closeModal(){document.getElementById('modalRoot').innerHTML='';}
-function copyLink(){const el=document.getElementById('mLink');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ 链接已复制，可直接发给负责人本人');}
+function copyLink(){const el=document.getElementById('mLink');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ Link copied — send it to the assignee');}
 function fmtTime(s){if(!s)return'';const d=new Date(s);if(isNaN(d))return esc(s);return (d.getMonth()+1)+'-'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
-const SIDE_CLS={publisher:'pub',assignee:'asg',system:'sys'},SIDE_NM={publisher:'发布者',assignee:'负责人',system:''};
+const SIDE_CLS={publisher:'pub',assignee:'asg',system:'sys'},SIDE_NM={publisher:'Sender',assignee:'Assignee',system:''};
 function renderThread(cs){const el=document.getElementById('mThread');if(!el)return;
-  if(!cs.length){el.innerHTML='<div class="muted" style="padding:6px">还没有沟通记录。派发、接受、完成、反馈都会自动记在这里。</div>';return;}
+  if(!cs.length){el.innerHTML='<div class="muted" style="padding:6px">No messages yet. Assigning, accepting, completing and feedback are all logged here.</div>';return;}
   el.innerHTML=cs.map(c=>{const cls=SIDE_CLS[c.author_side]||'sys';const nm=c.author_name||SIDE_NM[c.author_side]||'';const head=(c.author_side==='system')?fmtTime(c.created_at):(esc(nm)+' · '+fmtTime(c.created_at));return `<div class="cmt ${cls}"><div class="cw">${head}</div><div>${esc(c.body)}</div></div>`;}).join('');
   el.scrollTop=el.scrollHeight;}
 async function loadComments(id){try{const cs=await(await api('/api/tasks/'+id+'/comments')).json();renderThread(Array.isArray(cs)?cs:[]);}catch(e){renderThread([]);}}
 async function postComment(id){const inp=document.getElementById('mReply');const v=(inp.value||'').trim();if(!v)return;inp.value='';
   try{await api('/api/tasks/'+id+'/comments',{method:'POST',body:JSON.stringify({body:v})});
-    const t=TASKS.find(x=>x.id===id);if(t&&t.unread){t.unread=false;renderBoard();}   // 回复后清“待沟通”
-    loadComments(id);toast('✅ 已回复，待沟通已消除');}catch(e){toast('发送失败',true);inp.value=v;}}
-async function setStatus(id,st){try{await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify({status:st})});toast('✅ 状态已更新');closeModal();loadTasks();}catch(e){toast('更新失败',true);}}
+    const t=TASKS.find(x=>x.id===id);if(t&&t.unread){t.unread=false;renderBoard();}   // clear Needs Reply after replying
+    loadComments(id);toast('✅ Reply sent — Needs Reply cleared');}catch(e){toast('Failed to send',true);inp.value=v;}}
+async function setStatus(id,st){try{await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify({status:st})});toast('✅ Status updated');closeModal();loadTasks();}catch(e){toast('Update failed',true);}}
 async function saveTask(id){const t=TASKS.find(x=>x.id===id);const body={deadline:document.getElementById('mDeadline').value,priority:document.getElementById('mPriority').value};
   const a=document.getElementById('mAssignee');if(a&&a.value&&a.value!==t.assignee_open_id){body.assignee_open_id=a.value;body.assignee_name=a.selectedOptions[0]?.dataset.name||'';}
-  try{await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify(body)});toast('✅ 已保存');closeModal();loadTasks();}catch(e){toast('保存失败',true);}}
-async function nudgeTask(id){try{await api('/api/tasks/'+id+'/nudge',{method:'POST'});toast('⏰ 已在群里催办');}catch(e){toast('催办失败',true);}}
-async function delTask(id){if(!confirm('确定删除任务 #'+id+'？'))return;try{await api('/api/tasks/'+id,{method:'DELETE'});toast('🗑 已删除');closeModal();loadTasks();}catch(e){toast('删除失败',true);}}
+  try{await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify(body)});toast('✅ Saved');closeModal();loadTasks();}catch(e){toast('Save failed',true);}}
+async function nudgeTask(id){try{await api('/api/tasks/'+id+'/nudge',{method:'POST'});toast('⏰ Nudge sent to the group');}catch(e){toast('Nudge failed',true);}}
+async function delTask(id){if(!confirm('Delete task #'+id+'?'))return;try{await api('/api/tasks/'+id,{method:'DELETE'});toast('🗑 Deleted');closeModal();loadTasks();}catch(e){toast('Remove failed',true);}}
 
 function calMove(dir){if(dir===0){const d=new Date();calY=d.getFullYear();calM=d.getMonth();}else{calM+=dir;if(calM<0){calM=11;calY--;}if(calM>11){calM=0;calY++;}}renderCalendar();}
-function renderCalendar(){const cal=document.getElementById('cal');if(!cal)return;document.getElementById('calTitle').textContent=calY+' 年 '+(calM+1)+' 月';
-  const start=new Date(calY,calM,1).getDay(),days=new Date(calY,calM+1,0).getDate(),dows=['日','一','二','三','四','五','六'];
+function renderCalendar(){const cal=document.getElementById('cal');if(!cal)return;document.getElementById('calTitle').textContent=['January','February','March','April','May','June','July','August','September','October','November','December'][calM]+' '+calY;
+  const start=new Date(calY,calM,1).getDay(),days=new Date(calY,calM+1,0).getDate(),dows=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   let html=dows.map(d=>`<div class="dow">${d}</div>`).join('');const byDay={};TASKS.forEach(t=>{if(t.deadline){(byDay[t.deadline]=byDay[t.deadline]||[]).push(t);}});
   for(let i=0;i<start;i++)html+=`<div class="cell out"></div>`;
   for(let d=1;d<=days;d++){const ds=calY+'-'+String(calM+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');const list=byDay[ds]||[];
@@ -331,14 +331,14 @@ function renderCalendar(){const cal=document.getElementById('cal');if(!cal)retur
     html+=`<div class="cell ${ds===todayStr()?'today':''}"><div class="d">${d}</div>${chips}</div>`;}
   cal.innerHTML=html;}
 
-function exportCSV(){const rows=[['ID','标题','状态','优先级','负责人','截止','群','内/外','详情','注意','反馈']];const sn={pending:'待接受',accepted:'进行中',done:'已完成',issue:'待沟通'};
-  filtered().forEach(t=>rows.push([t.id,t.title||'',sn[t.status]||t.status,t.priority||'',t.assignee_name||'',t.deadline||'',groupName(t),t.is_external?'外部':'内部',t.detail||'',t.note||'',t.result||'']));
+function exportCSV(){const rows=[['ID','Title','Status','Priority','Assignee','Due','Group','Int/Ext','Details','Notes','Feedback']];const sn={pending:'To Do',accepted:'In Progress',done:'Completed',issue:'Needs Reply'};
+  filtered().forEach(t=>rows.push([t.id,t.title||'',sn[t.status]||t.status,t.priority||'',t.assignee_name||'',t.deadline||'',groupName(t),t.is_external?'External':'Internal',t.detail||'',t.note||'',t.result||'']));
   const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='任务导出.csv';a.click();}
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='tasks.csv';a.click();}
 
 // ---- 报表 / 日历订阅 ----
 function daysBetween(a,b){const x=new Date(a),y=new Date(b);if(isNaN(x)||isNaN(y))return null;return Math.max(0,Math.round((y-x)/86400000));}
-function reportRows(){const byP={};TASKS.forEach(t=>{const n=t.assignee_name||'(未指定)';(byP[n]=byP[n]||[]).push(t);});
+function reportRows(){const byP={};TASKS.forEach(t=>{const n=t.assignee_name||'(Unassigned)';(byP[n]=byP[n]||[]).push(t);});
   return Object.entries(byP).map(([name,ts])=>{const done=ts.filter(t=>t.status==='done');
     const onTime=done.filter(t=>!t.deadline||(t.updated_at&&t.updated_at.slice(0,10)<=t.deadline)).length;
     const rate=done.length?Math.round(onTime/done.length*100):null;
@@ -350,61 +350,61 @@ function renderReport(){const body=document.getElementById('reportBody');if(!bod
   const tot=TASKS.length,done=TASKS.filter(t=>t.status==='done').length,over=TASKS.filter(overdue).length;
   const allOn=TASKS.filter(t=>t.status==='done'&&(!t.deadline||(t.updated_at&&t.updated_at.slice(0,10)<=t.deadline))).length;
   const orate=done?Math.round(allOn/done*100)+'%':'—';
-  document.getElementById('reportTiles').innerHTML=[['总任务',tot,''],['已完成',done,''],['按时率',orate,''],['超期',over,'over']].map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  document.getElementById('reportTiles').innerHTML=[['Total',tot,''],['Completed',done,''],['On-time',orate,''],['Overdue',over,'over']].map(([l,n,c])=>`<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
   const rows=reportRows();
-  body.innerHTML=rows.length?`<table class="rtable"><thead><tr><th>负责人</th><th>总数</th><th>已完成</th><th>按时完成</th><th>按时率</th><th>超期</th><th>平均用时(天)</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="name">${esc(r.name)}</td><td>${r.total}</td><td>${r.done}</td><td>${r.onTime}</td><td>${r.rate==null?'—':`<span class="rate ${rateCls(r.rate)}">${r.rate}%</span>`}</td><td>${r.overdueN}</td><td>${r.avg==null?'—':r.avg.toFixed(1)}</td></tr>`).join('')}</tbody></table>`:'<div class="muted">还没有任务数据</div>';}
-function exportReport(){const rows=reportRows();const head=['负责人','总数','已完成','按时完成','按时率','超期','平均用时(天)'];
+  body.innerHTML=rows.length?`<table class="rtable"><thead><tr><th>Assignee</th><th>Total</th><th>Completed</th><th>On time</th><th>On-time %</th><th>Overdue</th><th>Avg days</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="name">${esc(r.name)}</td><td>${r.total}</td><td>${r.done}</td><td>${r.onTime}</td><td>${r.rate==null?'—':`<span class="rate ${rateCls(r.rate)}">${r.rate}%</span>`}</td><td>${r.overdueN}</td><td>${r.avg==null?'—':r.avg.toFixed(1)}</td></tr>`).join('')}</tbody></table>`:'<div class="muted">No task data yet</div>';}
+function exportReport(){const rows=reportRows();const head=['Assignee','Total','Completed','On time','On-time %','Overdue','Avg days'];
   const data=rows.map(r=>[r.name,r.total,r.done,r.onTime,r.rate==null?'':r.rate+'%',r.overdueN,r.avg==null?'':r.avg.toFixed(1)]);
   const csv='﻿'+[head,...data].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='团队周报.csv';a.click();}
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='team-report.csv';a.click();}
 function calSubscribe(){const url=location.origin+'/calendar.ics?pw='+encodeURIComponent(PW);
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
-    <h3>📅 订阅任务日历</h3><div class="mid">把所有任务的截止日期同步进你的日历（Google / Apple / 飞书日历），到点自动提醒。</div>
-    <div class="tip">用法：复制下面链接 → 打开日历 App → “添加日历 / 从网址订阅” → 粘贴。以后新派的任务会自动出现，无需重复添加。</div>
-    <div class="field"><label>订阅链接（含你的密码，请勿外发）</label><div style="display:flex;gap:6px"><input id="icsUrl" readonly value="${esc(url)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyIcs()">复制</button></div></div>
-    <div class="acts" style="margin-top:12px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
+    <h3>📅 Subscribe to task calendar</h3><div class="mid">Sync every task's due date into your calendar (Google / Apple / Lark), with automatic reminders.</div>
+    <div class="tip">How to: copy the link below → open your calendar app → "Add calendar / Subscribe from URL" → paste. New tasks appear automatically.</div>
+    <div class="field"><label>Subscription link (contains your password — keep it private)</label><div style="display:flex;gap:6px"><input id="icsUrl" readonly value="${esc(url)}" onclick="this.select()" style="flex:1;padding:8px 10px;border:1px solid var(--lineS);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:12px"><button class="btn sm" onclick="copyIcs()">Copy</button></div></div>
+    <div class="acts" style="margin-top:12px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">Close</button></div>
   </div></div>`;}
-function copyIcs(){const el=document.getElementById('icsUrl');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ 链接已复制');}
+function copyIcs(){const el=document.getElementById('icsUrl');if(!el)return;el.select();try{navigator.clipboard.writeText(el.value);}catch(e){try{document.execCommand('copy');}catch(_){}}toast('✅ Link copied');}
 
 // ---- 提醒设置 ----
 async function openReminderSettings(){let s={};try{s=await(await api('/api/settings')).json();}catch(e){s={};}
   const chk=(k,label,desc)=>`<label style="display:flex;align-items:flex-start;gap:9px;padding:9px 2px;border-bottom:1px solid var(--line);cursor:pointer"><input type="checkbox" id="rs_${k}" ${s[k]?'checked':''} style="margin-top:2px;width:16px;height:16px;flex:none"><span><div style="font-weight:600;font-size:13.5px">${label}</div><div style="font-size:11.5px;color:var(--soft);line-height:1.5">${desc}</div></span></label>`;
   const hol=(s.holidays||[]).join('\n');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
-    <h3>🔔 提醒设置</h3><div class="mid">控制系统什么时候自动发到期提醒。提醒统一在每天早上 ${WORKSTART} 点（${esc(TZLABEL||'公司时区')}）发，不会半夜打扰。</div>
-    ${chk('enabled','自动提醒总开关','关掉后，系统不再自动发任何到期提醒（你仍可在看板里手动催办）')}
-    <div style="font-size:12px;color:var(--soft);margin:12px 0 2px;font-weight:600">发送哪几档提醒</div>
-    ${chk('tier_before','截止前一天','到期前一天提醒负责人')}
-    ${chk('tier_today','当天到期','截止当天提醒')}
-    ${chk('tier_over','已超期','过了截止日还没完成时提醒（含升级给内部负责人）')}
-    <div style="font-size:12px;color:var(--soft);margin:12px 0 2px;font-weight:600">什么时候不发</div>
-    ${chk('skip_weekends','周末不发（周六、周日）','放假不打扰')}
-    <div class="field" style="margin-top:10px"><label>节假日不发（每行填一个日期，格式 2026-08-15）</label><textarea id="rs_holidays" placeholder="2026-08-15&#10;2026-10-02" style="min-height:60px">${esc(hol)}</textarea></div>
-    <button class="btn wide" onclick="saveReminderSettings()">保存设置</button><div class="err" id="rsErr"></div>
-    <div class="acts" style="margin-top:10px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
+    <h3>🔔 Reminder Settings</h3><div class="mid">Control when automatic due-date reminders are sent. Reminders go out at ${WORKSTART}:00 each day (${esc(TZLABEL||'company time')}), never at night.</div>
+    ${chk('enabled','Automatic reminders','When off, no automatic reminders are sent (you can still nudge manually from the board).')}
+    <div style="font-size:12px;color:var(--soft);margin:12px 0 2px;font-weight:600">Which reminders to send</div>
+    ${chk('tier_before','One day before','Remind the assignee the day before the due date')}
+    ${chk('tier_today','On the due date','Remind on the due date')}
+    ${chk('tier_over','Overdue','Remind when past due and still not done (escalates to the internal owner)')}
+    <div style="font-size:12px;color:var(--soft);margin:12px 0 2px;font-weight:600">When not to send</div>
+    ${chk('skip_weekends','Skip weekends (Sat & Sun)','No reminders on days off')}
+    <div class="field" style="margin-top:10px"><label>Skip holidays (one date per line, e.g. 2026-08-15)</label><textarea id="rs_holidays" placeholder="2026-08-15&#10;2026-10-02" style="min-height:60px">${esc(hol)}</textarea></div>
+    <button class="btn wide" onclick="saveReminderSettings()">Save</button><div class="err" id="rsErr"></div>
+    <div class="acts" style="margin-top:10px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">Close</button></div>
   </div></div>`;}
 async function saveReminderSettings(){const g=k=>document.getElementById('rs_'+k).checked;
   const body={enabled:g('enabled'),tier_before:g('tier_before'),tier_today:g('tier_today'),tier_over:g('tier_over'),skip_weekends:g('skip_weekends'),holidays:document.getElementById('rs_holidays').value};
-  try{await api('/api/settings',{method:'POST',body:JSON.stringify(body)});toast('✅ 提醒设置已保存');closeModal();}catch(e){document.getElementById('rsErr').textContent='保存失败，请重试';}}
+  try{await api('/api/settings',{method:'POST',body:JSON.stringify(body)});toast('✅ Reminder settings saved');closeModal();}catch(e){document.getElementById('rsErr').textContent='Save failed, please try again';}}
 
 // ---- 外部群设置 ----
 async function openExtSettings(){
-  const list=EGROUPS.map(g=>`<div class="eg-item"><span class="egn">🌐 ${esc(g.name)}</span><button class="btn danger sm" onclick="delExtGroup(${g.id})">删除</button></div>`).join('')||'<div class="muted">还没有外部群</div>';
+  const list=EGROUPS.map(g=>`<div class="eg-item"><span class="egn">🌐 ${esc(g.name)}</span><button class="btn danger sm" onclick="delExtGroup(${g.id})">Remove</button></div>`).join('')||'<div class="muted">No external groups yet</div>';
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">
-    <h3>⚙️ 外部群设置</h3><div class="mid">外部群加不了应用机器人，只能用 webhook 推送。</div>
-    <div class="tip">怎么拿 webhook：在外部群里 → 设置 → 添加机器人 → 选 <b>Custom Bot</b> → 创建后复制它的 <b>Webhook 网址</b>，粘到下面。</div>
+    <h3>⚙️ External Groups</h3><div class="mid">External groups can't add the app bot — they use a webhook instead.</div>
+    <div class="tip">How to get a webhook: in the external group → Settings → Add Bot → choose <b>Custom Bot</b> → copy its <b>Webhook URL</b> and paste it below.</div>
     <div id="egList">${list}</div>
-    <div style="margin-top:14px"><div class="field"><label>外部群名字（自己起，方便识别）</label><input id="egName" placeholder="如：供应商 21win 群"></div>
-    <div class="field"><label>Webhook 网址</label><input id="egUrl" placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/..."></div>
-    <button class="btn wide" onclick="addExtGroup()">＋ 添加外部群</button><div class="err" id="egErr"></div></div>
-    <div class="acts" style="margin-top:12px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">关闭</button></div>
+    <div style="margin-top:14px"><div class="field"><label>External group name (your own label)</label><input id="egName" placeholder="e.g. Supplier 21win group"></div>
+    <div class="field"><label>Webhook URL</label><input id="egUrl" placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/..."></div>
+    <button class="btn wide" onclick="addExtGroup()">＋ Add external group</button><div class="err" id="egErr"></div></div>
+    <div class="acts" style="margin-top:12px"><div style="flex:1"></div><button class="btn ghost sm" onclick="closeModal()">Close</button></div>
   </div></div>`;}
 async function addExtGroup(){const name=val('egName'),url=val('egUrl'),err=document.getElementById('egErr');err.textContent='';
-  if(!name||!url){err.textContent='名字和 webhook 网址都要填';return;}
+  if(!name||!url){err.textContent='Both a name and a webhook URL are required';return;}
   try{const j=await(await api('/api/external-groups',{method:'POST',body:JSON.stringify({name,webhook_url:url})})).json();
-    if(j.ok){await loadExternalGroups();await loadGroups();openExtSettings();toast('✅ 已添加外部群');}else err.textContent=j.error||'添加失败';
-  }catch(e){err.textContent='添加失败';}}
-async function delExtGroup(id){if(!confirm('删除这个外部群配置？'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('已删除');}catch(e){toast('删除失败',true);}}
+    if(j.ok){await loadExternalGroups();await loadGroups();openExtSettings();toast('✅ External group added');}else err.textContent=j.error||'Failed to add';
+  }catch(e){err.textContent='Failed to add';}}
+async function delExtGroup(id){if(!confirm('Remove this external group?'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('Removed');}catch(e){toast('Remove failed',true);}}
 
 // 每 20 秒自动刷新看板（让负责人的新留言红点及时出现），弹窗打开时不打扰
 setInterval(()=>{const app=document.getElementById('app');const modalOpen=document.getElementById('modalRoot').innerHTML.trim();
