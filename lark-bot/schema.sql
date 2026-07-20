@@ -137,21 +137,38 @@ CREATE TABLE IF NOT EXISTS job_requests (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 人工渠道汇总表（manual_unidentified 空间）：只放未逐人建档的渠道人工汇总。
+-- 单一 owner 键：同职位 + 同报告日 + 同渠道 只允许一行；填报人是受控 roster 选择、
+-- 不进唯一键（自由文本换名不能再造重复行）。逐人建档的派生渠道指标由 AI-TD 核心
+-- 按 attribution_source + 去重人头产出，不在本表、也不与本表相加。
 CREATE TABLE IF NOT EXISTS channel_daily (
     id               SERIAL PRIMARY KEY,
-    record_date      DATE NOT NULL,
-    channel          TEXT NOT NULL,                    -- 招聘渠道（限预设项）
+    record_date      DATE NOT NULL,                    -- report_date
+    channel          TEXT NOT NULL,                    -- 人工渠道标签（运营侧受控命名空间）
     job_request_id   INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
-    filled_by        TEXT NOT NULL DEFAULT '',         -- 填写人（多 HR 区分）
-    new_resumes      INTEGER NOT NULL DEFAULT 0,       -- 今日新增简历数
-    passed_screening INTEGER NOT NULL DEFAULT 0,       -- 初筛通过数
-    recommended      INTEGER NOT NULL DEFAULT 0,       -- 已推荐面试数
-    rejected         INTEGER NOT NULL DEFAULT 0,       -- 已拒绝数
+    filled_by        TEXT NOT NULL DEFAULT '',         -- 填报人（受控 roster 选择；仅声明/展示，非唯一键）
+    new_resumes      INTEGER NOT NULL DEFAULT 0,
+    passed_screening INTEGER NOT NULL DEFAULT 0,
+    recommended      INTEGER NOT NULL DEFAULT 0,
+    rejected         INTEGER NOT NULL DEFAULT 0,
     note             TEXT NOT NULL DEFAULT '',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- 多 HR 键：同一天+同渠道+同职位+同一填写人 只能一行（防重复提交，不同 HR 各一行）
-    UNIQUE (record_date, channel, job_request_id, filled_by)
+    CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, job_request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_channel_daily_date ON channel_daily (record_date);
 CREATE INDEX IF NOT EXISTS idx_channel_daily_ch ON channel_daily (channel, record_date);
+
+-- 迁移（幂等）：从"含填写人的旧键"改成"单一 owner 键"。
+-- 先按新键去重（每组保留一条），再删旧约束、加新约束，避免上新键失败。
+DELETE FROM channel_daily a USING channel_daily b
+  WHERE a.ctid < b.ctid
+    AND a.record_date = b.record_date
+    AND a.channel = b.channel
+    AND a.job_request_id = b.job_request_id;
+ALTER TABLE channel_daily DROP CONSTRAINT IF EXISTS channel_daily_record_date_channel_job_request_id_filled_by_key;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_channel_manual') THEN
+    ALTER TABLE channel_daily ADD CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, job_request_id);
+  END IF;
+END $$;

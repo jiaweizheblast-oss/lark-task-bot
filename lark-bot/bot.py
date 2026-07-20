@@ -790,7 +790,33 @@ def api_comments_add(task_id):
     return jsonify({"ok": True})
 
 
-# ---------------- 招聘渠道日报模块（新增，纯增量） ----------------
+# ---------------- 招聘渠道日报模块（人工渠道汇总 manual_unidentified 空间） ----------------
+# 权威业务时区 = Asia/Kolkata（UTC+05:30，无 DST）；report_date / 日周边界按它算。
+_KOLKATA_OFFSET = datetime.timedelta(hours=5, minutes=30)
+
+
+def _kolkata_today():
+    return (datetime.datetime.utcnow() + _KOLKATA_OFFSET).date()
+
+
+def _channel_roster():
+    """受控填报人名单（settings 存，逗号/换行分隔）。自由文本姓名不作 owner/授权依据。"""
+    try:
+        s = db.get_settings()
+    except Exception:
+        s = {}
+    raw = (s.get("channel_roster", "") or "").replace("，", ",").replace("\n", ",")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _valid_date(s):
+    try:
+        datetime.date.fromisoformat((s or "")[:10])
+        return True
+    except ValueError:
+        return False
+
+
 def _chan_json(r):
     r = dict(r)
     for k in ("record_date", "created_at", "updated_at"):
@@ -807,8 +833,31 @@ def api_channel_meta():
     return jsonify({
         "channels": channel_report.CHANNELS,
         "jobs": [{"id": j["id"], "title": j["title"], "target_headcount": j["target_headcount"]} for j in jobs],
-        "today": _company_now().date().isoformat(),
+        "roster": _channel_roster(),
+        "today": _kolkata_today().isoformat(),
+        "timezone": "Asia/Kolkata",
     })
+
+
+@app.route("/api/channel/roster", methods=["GET"])
+def api_channel_roster_get():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(_channel_roster())
+
+
+@app.route("/api/channel/roster", methods=["POST"])
+def api_channel_roster_set():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    names = d.get("names")
+    if isinstance(names, list):
+        val = "\n".join(str(x).strip() for x in names if str(x).strip())
+    else:
+        val = (d.get("value") or "").strip()
+    db.set_setting("channel_roster", val)
+    return jsonify({"ok": True, "roster": _channel_roster()})
 
 
 @app.route("/api/channel/records", methods=["GET"])
@@ -826,17 +875,18 @@ def api_channel_create():
     errors, warnings = channel_report.validate(d)
     if errors:
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
-    rd = d.get("record_date") or _company_now().date().isoformat()
-    try:
-        rid = db.create_channel_record(
-            rd, d["channel"], int(d["job_request_id"]), (d.get("filled_by") or "").strip(),
-            int(d.get("new_resumes") or 0), int(d.get("passed_screening") or 0),
-            int(d.get("recommended") or 0), int(d.get("rejected") or 0),
-            (d.get("note") or "").strip())
-    except psycopg2.IntegrityError:
-        return jsonify({"error": "同一天+同渠道+同职位+同一填写人 已有记录（防重复提交），请改为编辑。",
-                        "errors": ["重复记录"]}), 409
-    return jsonify({"ok": True, "id": rid, "warnings": warnings})
+    if not db.get_job_request(int(d["job_request_id"])):
+        return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
+    rd = (d.get("record_date") or _kolkata_today().isoformat())[:10]
+    if not _valid_date(rd):
+        return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
+    # 单一 owner：同职位+同报告日+同渠道 upsert（填报人受控、非唯一键）
+    db.upsert_channel_record(
+        rd, d["channel"], int(d["job_request_id"]), (d.get("filled_by") or "").strip(),
+        int(d.get("new_resumes") or 0), int(d.get("passed_screening") or 0),
+        int(d.get("recommended") or 0), int(d.get("rejected") or 0),
+        (d.get("note") or "").strip())
+    return jsonify({"ok": True, "warnings": warnings})
 
 
 @app.route("/api/channel/records/<int:rid>", methods=["PATCH", "PUT"])
@@ -849,6 +899,8 @@ def api_channel_update(rid):
     errors, warnings = channel_report.validate(d)
     if errors:
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
+    if not db.get_job_request(int(d["job_request_id"])):
+        return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
     fields = dict(
         channel=d["channel"], job_request_id=int(d["job_request_id"]),
         filled_by=(d.get("filled_by") or "").strip(),
@@ -858,11 +910,13 @@ def api_channel_update(rid):
         rejected=int(d.get("rejected") or 0),
         note=(d.get("note") or "").strip())
     if d.get("record_date"):
-        fields["record_date"] = d["record_date"]
+        if not _valid_date(d["record_date"]):
+            return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
+        fields["record_date"] = d["record_date"][:10]
     try:
         db.update_channel_record(rid, **fields)
     except psycopg2.IntegrityError:
-        return jsonify({"error": "改动后与已有记录冲突（日期/渠道/职位/填写人重复）。", "errors": ["冲突"]}), 409
+        return jsonify({"error": "改动后与已有记录冲突（同职位+同报告日+同渠道已存在）。", "errors": ["冲突"]}), 409
     return jsonify({"ok": True, "warnings": warnings})
 
 
@@ -887,18 +941,24 @@ def api_channel_add_job():
     return jsonify({"ok": True, "id": jid})
 
 
-def _build_channel_report(day=None):
-    target = datetime.date.fromisoformat(day) if day else _company_now().date()
+def _build_channel_report(day=None, wfrom=None, wto=None):
+    target = datetime.date.fromisoformat(day[:10]) if day else _kolkata_today()
+    wf = datetime.date.fromisoformat(wfrom[:10]) if wfrom else None
+    wt = datetime.date.fromisoformat(wto[:10]) if wto else None
     rows = db.channel_rows_upto(target)
     jobs = db.list_job_requests(only_open=False)
-    return channel_report.build_report(rows, target, jobs)
+    return channel_report.build_report(rows, target, jobs, window_from=wf, window_to=wt)
 
 
 @app.route("/api/channel/report")
 def api_channel_report():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify(_build_channel_report(request.args.get("d")))
+    try:
+        rep = _build_channel_report(request.args.get("d"), request.args.get("from"), request.args.get("to"))
+    except ValueError:
+        return jsonify({"error": "日期参数格式非法（应为 YYYY-MM-DD）"}), 400
+    return jsonify(rep)
 
 
 @app.route("/api/channel/report/push", methods=["POST"])
@@ -906,7 +966,10 @@ def api_channel_report_push():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     d = request.get_json(silent=True) or {}
-    rep = _build_channel_report(d.get("d"))
+    try:
+        rep = _build_channel_report(d.get("d"), d.get("from"), d.get("to"))
+    except ValueError:
+        return jsonify({"error": "日期参数格式非法（应为 YYYY-MM-DD）"}), 400
     pushed = False
     if d.get("external_group_id"):
         eg = db.get_external_group(int(d["external_group_id"]))
@@ -922,10 +985,10 @@ def api_channel_report_push():
 
 @app.route("/api/channel/template")
 def api_channel_template():
-    """下载当天空表（.xlsx，渠道/职位下拉、日期+填写人预填）发给 HR 填。"""
+    """下载当天空表（.xlsx，渠道/职位下拉、日期+填报人预填）发给 HR 填。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    day = request.args.get("d") or _company_now().date().isoformat()
+    day = (request.args.get("d") or _kolkata_today().isoformat())[:10]
     by = request.args.get("by", "")
     jobs = db.list_job_requests(only_open=True)
     data = sheet_io.build_template_xlsx(jobs, day, by)
@@ -938,23 +1001,25 @@ def api_channel_template():
 
 @app.route("/api/channel/upload", methods=["POST"])
 def api_channel_upload():
-    """HR 填好的表（.xlsx/.csv）上传 -> 解析 -> 按 (日期,渠道,职位,填写人) upsert 入库。"""
+    """HR 填好的表（.xlsx/.csv）上传 -> 解析 -> 按 (报告日,渠道,职位) 单一 owner upsert。
+    填报人以上传时选定的受控 owner 为准（表内声明仅作展示）。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "没有收到文件"}), 400
-    default_by = (request.form.get("by") or "").strip()
-    default_date = (request.form.get("d") or "").strip() or _company_now().date().isoformat()
+    owner = (request.form.get("by") or "").strip()      # 受控填报人（roster 选择），权威 owner
+    default_date = (request.form.get("d") or "").strip() or _kolkata_today().isoformat()
     jobs = db.list_job_requests(only_open=False)
     try:
-        parsed = sheet_io.parse_sheet(f.read(), f.filename or "", jobs, default_by, default_date)
+        parsed = sheet_io.parse_sheet(f.read(), f.filename or "", jobs, owner, default_date)
     except Exception as e:
         return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx 或 .csv）：%s" % e}), 400
     imported = 0
     for r in parsed["rows"]:
         try:
-            db.upsert_channel_record(r["record_date"], r["channel"], r["job_request_id"], r["filled_by"],
+            db.upsert_channel_record(r["record_date"], r["channel"], r["job_request_id"],
+                                     owner or r.get("filled_by", ""),
                                      r["new_resumes"], r["passed_screening"], r["recommended"],
                                      r["rejected"], r["note"])
             imported += 1

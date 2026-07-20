@@ -392,16 +392,24 @@ def delete_channel_record(rid):
         return cur.rowcount > 0
 
 
+def get_job_request(jid):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM job_requests WHERE id=%s", (jid,))
+        return cur.fetchone()
+
+
 def upsert_channel_record(record_date, channel, job_request_id, filled_by,
                           new_resumes=0, passed_screening=0, recommended=0, rejected=0, note=""):
-    """按 (日期,渠道,职位,填写人) 覆盖写：表格重传会更新而不是报重复。上传解析用。"""
+    """单一 owner 键 (报告日,渠道,职位) 覆盖写：同组重传/更正会更新同一条，不新增第二份数字。
+    填报人(filled_by)是受控 roster 选择、非唯一键，随更新一起写。"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""INSERT INTO channel_daily
             (record_date, channel, job_request_id, filled_by,
              new_resumes, passed_screening, recommended, rejected, note)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (record_date, channel, job_request_id, filled_by)
-            DO UPDATE SET new_resumes=EXCLUDED.new_resumes,
+            ON CONFLICT (record_date, channel, job_request_id)
+            DO UPDATE SET filled_by=EXCLUDED.filled_by,
+                          new_resumes=EXCLUDED.new_resumes,
                           passed_screening=EXCLUDED.passed_screening,
                           recommended=EXCLUDED.recommended,
                           rejected=EXCLUDED.rejected,

@@ -187,7 +187,12 @@
         <p class="sub">HR 每天每个渠道填一行；多个 HR 各填各的，系统按「日期+渠道+职位」自动汇总，跟谁先填后填无关。</p>
         <div class="row2">
           <div class="field"><label>日期</label><input id="cDate" type="date"></div>
-          <div class="field"><label>填写人（你的名字）*</label><input id="cBy" placeholder="多 HR 靠这个区分"></div>
+          <div class="field"><label>填报人（受控名单）</label>
+            <div style="display:flex;gap:6px">
+              <select id="cBy" style="flex:1"></select>
+              <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增填报人">＋</button>
+            </div>
+          </div>
         </div>
         <div class="row2">
           <div class="field"><label>招聘渠道 *</label><select id="cChannel"></select></div>
@@ -213,6 +218,9 @@
         <button class="btn ghost sm" onclick="pickChannelUpload()">⬆ 上传填好的表</button>
         <input id="cUpFile" type="file" accept=".xlsx,.csv" style="display:none" onchange="onChannelUpload(event)">
         <div class="sp"></div>
+        <span style="font-size:12px;color:var(--soft)">窗口</span>
+        <input id="cFrom" type="date" title="窗口开始（留空=近30天）" style="width:140px">
+        <input id="cTo" type="date" title="窗口结束（留空=当日）" style="width:140px">
         <select id="cPushGroup"></select>
         <button class="btn ghost sm" onclick="genChannelReport()">📊 生成日报</button>
         <button class="btn ghost sm" onclick="pushChannelReport()">📤 推送到群</button>
@@ -463,7 +471,18 @@ async function loadChannelTab(){
   if(!document.getElementById('cViewDate').value)document.getElementById('cViewDate').value=CMETA.today;
   const pg=document.getElementById('cPushGroup');
   pg.innerHTML='<option value="">推送到…（选群）</option>'+(GROUPS||[]).map(g=>`<option value="${g.chat_id}">${esc(g.name)}</option>`).join('')+(EGROUPS||[]).map(g=>`<option value="ext:${g.id}">${esc(g.name)} (external)</option>`).join('');
+  renderRoster();
   loadChannelRecords();
+}
+function renderRoster(){
+  const cur=document.getElementById('cBy').value;
+  document.getElementById('cBy').innerHTML='<option value="">（选填报人）</option>'+(CMETA.roster||[]).map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
+}
+async function addRoster(){
+  const n=(prompt('新增填报人（受控名单；不用自由文本当身份主键）：')||'').trim();
+  if(!n)return;
+  const names=(CMETA.roster||[]).concat([n]);
+  try{const r=await(await api('/api/channel/roster',{method:'POST',body:JSON.stringify({names})})).json();CMETA.roster=r.roster||names;renderRoster();document.getElementById('cBy').value=n;toast('✅ 已加入名单');}catch(e){toast('添加失败',true);}
 }
 async function loadChannelRecords(){
   const d=document.getElementById('cViewDate').value||CMETA.today;
@@ -491,17 +510,21 @@ function cancelChannelEdit(keep){cEditId=null;['cNew','cPassed','cRec','cRej'].f
 async function delChannelRecord(id){if(!confirm('删除这条渠道记录？'))return;try{await api('/api/channel/records/'+id,{method:'DELETE'});loadChannelRecords();}catch(e){toast('删除失败',true);}}
 async function genChannelReport(){
   const d=document.getElementById('cViewDate').value||CMETA.today;
-  let rep;try{rep=await(await api('/api/channel/report?d='+d)).json();}catch(e){toast('生成失败',true);return;}
+  const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value;
+  const qs='/api/channel/report?d='+encodeURIComponent(d)+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'');
+  let rep;try{rep=await(await api(qs)).json();}catch(e){toast('生成失败',true);return;}
   document.getElementById('cReportCard').classList.remove('hide');
   document.getElementById('cReportText').textContent=rep.text;
   document.getElementById('cBreakdown').innerHTML=`<table class="rtable"><thead><tr><th>渠道</th><th>今日新增</th><th>环比</th><th>近7日转化率</th><th>近7日推荐率</th><th>连续0天</th></tr></thead><tbody>${(rep.breakdown||[]).map(b=>`<tr><td class="name">${esc(b.channel)}</td><td>${b.day.new}</td><td>${cwow(b.wow_new)}</td><td>${cpct(b.roll7_conversion)}</td><td>${cpct(b.roll7_recommend_rate)}</td><td>${b.zero_streak>0?('<span style="color:var(--danger)">'+b.zero_streak+'</span>'):0}</td></tr>`).join('')}</tbody></table>`;
-  document.getElementById('cAlerts').innerHTML=(rep.alerts||[]).map(a=>`<li style="background:var(--warnB);color:var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:8px">⚠️ ${esc(a)}</li>`).join('');
+  const derived=(rep.identity_derived&&!rep.identity_derived.available)?`<li style="background:var(--accentS);color:var(--accent);padding:8px 12px;border-radius:8px;margin-bottom:8px">ℹ️ 以上为人工录入（未逐人建档）。${esc(rep.identity_derived.note||'')}</li>`:'';
+  document.getElementById('cAlerts').innerHTML=derived+(rep.alerts||[]).map(a=>`<li style="background:var(--warnB);color:var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:8px">⚠️ ${esc(a)}</li>`).join('');
 }
 async function pushChannelReport(){
   const d=document.getElementById('cViewDate').value||CMETA.today;
   const g=document.getElementById('cPushGroup').value;
   if(!g){toast('先选一个推送目标群',true);return;}
-  const body={d};if(g.indexOf('ext:')===0)body.external_group_id=parseInt(g.slice(4),10);else body.chat_id=g;
+  const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value;
+  const body={d};if(f)body.from=f;if(t)body.to=t;if(g.indexOf('ext:')===0)body.external_group_id=parseInt(g.slice(4),10);else body.chat_id=g;
   try{const j=await(await api('/api/channel/report/push',{method:'POST',body:JSON.stringify(body)})).json();toast(j.pushed?'✅ 已推送到群':'⚠️ 已生成，但推送失败（检查群/webhook）',!j.pushed);}catch(e){toast('推送失败',true);}
 }
 async function downloadChannelTemplate(){

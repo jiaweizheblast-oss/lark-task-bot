@@ -23,8 +23,7 @@ def validate(payload):
         errors.append(f"招聘渠道 “{payload.get('channel')}” 不在预设项内")
     if not payload.get("job_request_id"):
         errors.append("请选择关联职位")
-    if not (payload.get("filled_by") or "").strip():
-        errors.append("请填写“填写人”（多 HR 汇总要靠它区分）")
+    # 填报人不再是唯一键，改为受控 roster 选择、可空；不在此处强制。
 
     vals = {}
     for label, key in (("今日新增简历数", "new_resumes"), ("初筛通过数", "passed_screening"),
@@ -131,22 +130,27 @@ def anomalies(rows, target, bd):
     return al
 
 
-def overall(rows, target, jobs):
-    upto = [r for r in rows if _d(r["record_date"]) <= target]
-    today = [r for r in upto if _d(r["record_date"]) == target]
+def overall(rows, target, jobs, window_from=None, window_to=None):
+    """累计/进度按活跃时间窗口算（默认近 30 天），不再 all-time、不混已关闭历史职位。
+    未来 recruiting_cycle_id 由核心签发后，改用该 cycle 的窗口。"""
+    wt = window_to or target
+    wf = window_from or (target - timedelta(days=29))
+    in_win = [r for r in rows if wf <= _d(r["record_date"]) <= wt]
+    today = [r for r in rows if _d(r["record_date"]) == target]
     open_jobs = [j for j in jobs if (j.get("status") or "open") == "open"]
-    cum_new = sum(r["new_resumes"] for r in upto)
-    cum_rec = sum(r["recommended"] for r in upto)
+    win_new = sum(r["new_resumes"] for r in in_win)
+    win_rec = sum(r["recommended"] for r in in_win)
     t_head = sum(j["target_headcount"] for j in open_jobs)
     t_res = sum(j["target_resume_count"] for j in open_jobs)
     return {
         "date": target.isoformat(),
+        "window": {"from": wf.isoformat(), "to": wt.isoformat()},
         "total_new_today": sum(r["new_resumes"] for r in today),
-        "cumulative_new": cum_new,
-        "cumulative_recommended": cum_rec,
+        "window_new": win_new,
+        "window_recommended": win_rec,
         "target_headcount": t_head,
         "target_resumes": t_res,
-        "resume_progress": _ratio(cum_new, t_res) if t_res else None,
+        "resume_progress": _ratio(win_new, t_res) if t_res else None,
     }
 
 
@@ -154,18 +158,21 @@ def _pct(x):
     return "—" if x is None else f"{x:.0%}"
 
 
-def build_report(rows, target, jobs):
+def build_report(rows, target, jobs, window_from=None, window_to=None):
     bd = breakdown(rows, target)
-    ov = overall(rows, target, jobs)
+    ov = overall(rows, target, jobs, window_from, window_to)
     al = anomalies(rows, target, bd)
     cand = [b for b in bd if b["enough_volume"] and b["roll7_conversion"] is not None]
     best = max(cand, key=lambda b: b["roll7_conversion"], default=None)
 
-    lines = [f"📊 {target.month}月{target.day}日招聘渠道日报",
-             f"总新增简历：{ov['total_new_today']} 份，累计 {ov['cumulative_new']} 份"]
+    win = ov["window"]
+    lines = [f"📊 {target.month}月{target.day}日 招聘渠道日报"
+             f"（人工录入·未逐人建档 / 时区 Asia/Kolkata）",
+             f"当日新增简历：{ov['total_new_today']} 份",
+             f"窗口累计（{win['from']}~{win['to']}）：{ov['window_new']} 份"]
     if ov["resume_progress"] is not None:
-        lines.append(f"简历量进度：累计 {ov['cumulative_new']} / 目标 {ov['target_resumes']} 份 = {_pct(ov['resume_progress'])}")
-    lines.append(f"累计已推荐面试：{ov['cumulative_recommended']} 人次（目标录用 {ov['target_headcount']} 人；真实入职进度需接 ATS 入职数）")
+        lines.append(f"简历量进度：窗口累计 {ov['window_new']} / 目标 {ov['target_resumes']} 份 = {_pct(ov['resume_progress'])}")
+    lines.append(f"窗口累计已推荐：{ov['window_recommended']} 人次（目标录用 {ov['target_headcount']} 人；真实入职进度需 ATS）")
     if best:
         lines.append(f"表现最好渠道：{best['channel']}（近7日转化率 {_pct(best['roll7_conversion'])}）")
     if al:
@@ -174,5 +181,16 @@ def build_report(rows, target, jobs):
     else:
         lines.append("需要关注：暂无异常。")
 
-    return {"text": "\n".join(lines), "overall": ov, "breakdown": bd,
-            "alerts": al, "best_channel": (best["channel"] if best else None)}
+    return {
+        "space": "manual_unidentified",
+        "timezone": "Asia/Kolkata",
+        "text": "\n".join(lines),
+        "overall": ov,
+        "breakdown": bd,
+        "alerts": al,
+        "best_channel": (best["channel"] if best else None),
+        "identity_derived": {
+            "available": False,
+            "note": "逐人建档的渠道指标由 AI-TD 核心按 attribution_source + 去重人头派生，待接入；不与人工数相加。",
+        },
+    }
