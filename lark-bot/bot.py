@@ -33,6 +33,7 @@ from lark_oapi.adapter.flask import parse_req, parse_resp
 import db
 import cards
 import channel_report
+import sheet_io
 from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
@@ -917,6 +918,50 @@ def api_channel_report_push():
         resp = send_text(d["chat_id"], rep["text"])
         pushed = bool(resp and resp.success())
     return jsonify({"ok": True, "pushed": pushed, "report": rep})
+
+
+@app.route("/api/channel/template")
+def api_channel_template():
+    """下载当天空表（.xlsx，渠道/职位下拉、日期+填写人预填）发给 HR 填。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    day = request.args.get("d") or _company_now().date().isoformat()
+    by = request.args.get("by", "")
+    jobs = db.list_job_requests(only_open=True)
+    data = sheet_io.build_template_xlsx(jobs, day, by)
+    return Response(
+        data,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="channel_%s.xlsx"' % day},
+    )
+
+
+@app.route("/api/channel/upload", methods=["POST"])
+def api_channel_upload():
+    """HR 填好的表（.xlsx/.csv）上传 -> 解析 -> 按 (日期,渠道,职位,填写人) upsert 入库。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "没有收到文件"}), 400
+    default_by = (request.form.get("by") or "").strip()
+    default_date = (request.form.get("d") or "").strip() or _company_now().date().isoformat()
+    jobs = db.list_job_requests(only_open=False)
+    try:
+        parsed = sheet_io.parse_sheet(f.read(), f.filename or "", jobs, default_by, default_date)
+    except Exception as e:
+        return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx 或 .csv）：%s" % e}), 400
+    imported = 0
+    for r in parsed["rows"]:
+        try:
+            db.upsert_channel_record(r["record_date"], r["channel"], r["job_request_id"], r["filled_by"],
+                                     r["new_resumes"], r["passed_screening"], r["recommended"],
+                                     r["rejected"], r["note"])
+            imported += 1
+        except Exception as e:
+            parsed["errors"].append("入库失败（%s/%s）：%s" % (r["channel"], r["record_date"], e))
+    return jsonify({"ok": True, "imported": imported,
+                    "skipped": parsed["skipped"], "errors": parsed["errors"]})
 
 
 # ---------------- 日历订阅（iCal）：把任务截止日期同步进个人日历 ----------------

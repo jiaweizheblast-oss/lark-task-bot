@@ -390,3 +390,22 @@ def delete_channel_record(rid):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM channel_daily WHERE id=%s", (rid,))
         return cur.rowcount > 0
+
+
+def upsert_channel_record(record_date, channel, job_request_id, filled_by,
+                          new_resumes=0, passed_screening=0, recommended=0, rejected=0, note=""):
+    """按 (日期,渠道,职位,填写人) 覆盖写：表格重传会更新而不是报重复。上传解析用。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO channel_daily
+            (record_date, channel, job_request_id, filled_by,
+             new_resumes, passed_screening, recommended, rejected, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (record_date, channel, job_request_id, filled_by)
+            DO UPDATE SET new_resumes=EXCLUDED.new_resumes,
+                          passed_screening=EXCLUDED.passed_screening,
+                          recommended=EXCLUDED.recommended,
+                          rejected=EXCLUDED.rejected,
+                          note=EXCLUDED.note,
+                          updated_at=now()""",
+            (record_date, channel, job_request_id, filled_by,
+             new_resumes, passed_screening, recommended, rejected, note))

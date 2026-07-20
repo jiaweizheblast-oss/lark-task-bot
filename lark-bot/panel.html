@@ -209,11 +209,15 @@
       <div class="toolbar" style="margin-top:18px">
         <div style="font-weight:750;font-size:16px">📅 当日记录</div>
         <input id="cViewDate" type="date" onchange="loadChannelRecords()">
+        <button class="btn ghost sm" onclick="downloadChannelTemplate()">⬇ 下载空表</button>
+        <button class="btn ghost sm" onclick="pickChannelUpload()">⬆ 上传填好的表</button>
+        <input id="cUpFile" type="file" accept=".xlsx,.csv" style="display:none" onchange="onChannelUpload(event)">
         <div class="sp"></div>
         <select id="cPushGroup"></select>
         <button class="btn ghost sm" onclick="genChannelReport()">📊 生成日报</button>
         <button class="btn ghost sm" onclick="pushChannelReport()">📤 推送到群</button>
       </div>
+      <div id="cUpResult" class="hide" style="margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);font-size:13px"></div>
       <div id="cRecords"></div>
       <div id="cReportCard" class="hide" style="margin-top:16px">
         <pre id="cReportText" style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px;white-space:pre-wrap;font-family:inherit;line-height:1.65;margin:0 0 12px"></pre>
@@ -499,6 +503,34 @@ async function pushChannelReport(){
   if(!g){toast('先选一个推送目标群',true);return;}
   const body={d};if(g.indexOf('ext:')===0)body.external_group_id=parseInt(g.slice(4),10);else body.chat_id=g;
   try{const j=await(await api('/api/channel/report/push',{method:'POST',body:JSON.stringify(body)})).json();toast(j.pushed?'✅ 已推送到群':'⚠️ 已生成，但推送失败（检查群/webhook）',!j.pushed);}catch(e){toast('推送失败',true);}
+}
+async function downloadChannelTemplate(){
+  const d=document.getElementById('cDate').value||CMETA.today;
+  const by=val('cBy');
+  try{
+    const r=await api('/api/channel/template?d='+encodeURIComponent(d)+'&by='+encodeURIComponent(by));
+    if(!r.ok){toast('生成空表失败',true);return;}
+    const blob=await r.blob();
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='招聘渠道_'+d+'.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    toast('✅ 空表已下载，发给 HR 填');
+  }catch(e){toast('下载失败',true);}
+}
+function pickChannelUpload(){document.getElementById('cUpFile').click();}
+async function onChannelUpload(ev){
+  const f=ev.target.files[0];if(!f)return;
+  const fd=new FormData();fd.append('file',f);fd.append('by',val('cBy'));fd.append('d',document.getElementById('cViewDate').value||CMETA.today);
+  let j;
+  try{const r=await fetch('/api/channel/upload',{method:'POST',headers:{'X-Auth':PW},body:fd});j=await r.json().catch(()=>({}));
+    if(!r.ok){toast('上传失败：'+(j.error||''),true);ev.target.value='';return;}
+  }catch(e){toast('上传失败',true);ev.target.value='';return;}
+  ev.target.value='';
+  const box=document.getElementById('cUpResult');box.classList.remove('hide');
+  const errs=j.errors||[];
+  box.innerHTML='<b>✅ 已入库 '+j.imported+' 行</b>'+(j.skipped?('　跳过 '+j.skipped+' 空行'):'')+(errs.length?('　<span style="color:var(--danger)">'+errs.length+' 行有问题</span>'):'')+(errs.length?('<ul style="margin:8px 0 0;padding-left:18px;color:var(--danger)">'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>'):'');
+  toast(j.imported?('✅ 已入库 '+j.imported+' 行'):'没有可入库的行',!j.imported);
+  loadChannelRecords();
+  if(!document.getElementById('cReportCard').classList.contains('hide'))genChannelReport();
 }
 
 // 每 20 秒自动刷新看板（让负责人的新留言红点及时出现），弹窗打开时不打扰
