@@ -269,6 +269,18 @@ def _field_update(path, token, body):
     return response
 
 
+def _field_create(path, token, body):
+    """Create a field, retrying only Lark's transient consistency failures."""
+    transient_codes = {1254291, 1254607, 1254608, 1255001, 1255040}
+    response = {}
+    for attempt in range(4):
+        response = _req("POST", path, token=token, body=body)
+        if response.get("code") not in transient_codes or attempt == 3:
+            return response
+        time.sleep(0.5 * (attempt + 1))
+    return response
+
+
 def _delete_retry(path, token):
     """Serialise schema cleanup through Lark's transient consistency window."""
     transient_codes = {1254291, 1254607, 1254608, 1255001, 1255040}
@@ -378,46 +390,125 @@ def _verify_system_date_fields(app_token, pipeline_table_id):
 
 
 def configure_system_entry_date_field(app_token, pipeline_table_id):
-    """Make Entry Date a Lark-owned Created Time field."""
+    """Replace a legacy editable Entry Date with Lark Created Time safely.
+
+    Lark rejects changing an existing text field directly to Created Time with
+    ``WrongRequestBody``. The migration therefore renames the disposable old
+    field, creates and verifies a new system field, and only then removes the
+    old field. Every intermediate state is resumable after a failed deploy.
+    """
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
+    legacy_name = "Entry Date (legacy migration)"
+    fields_path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields" % (
+        app_token, pipeline_table_id)
+
     listed = _list_fields(app_token, pipeline_table_id)
     if not listed.get("ok"):
         return listed
-    spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS if item["key"] == "record_date")
-    date_field = _find_field(listed["fields"], spec)
-    if not date_field:
-        return {"ok": False, "error": "Candidate Pipeline 缺少 Entry Date 字段"}
-    if (int(date_field.get("type") or 0) == FT_CREATED_TIME
-            and date_field.get("field_name") == pipeline_schema.ENTRY_DATE):
-        return {"ok": True, "updated": False, "field_id": date_field.get("field_id")}
-    sanitised = _clear_invalid_legacy_date_values(
-        app_token, pipeline_table_id, date_field.get("field_name")
-    )
-    if not sanitised.get("ok"):
-        return sanitised
-    path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" % (
-        app_token, pipeline_table_id, date_field.get("field_id")
-    )
-    body = {
+    spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                if item["key"] == "record_date")
+    exact = next((item for item in listed["fields"]
+                  if item.get("field_name") == pipeline_schema.ENTRY_DATE), None)
+    legacy = next((item for item in listed["fields"]
+                   if item.get("field_name") == legacy_name), None)
+
+    # A previous attempt may have created the correct field and failed only
+    # while deleting the renamed legacy field. Finish that cleanup safely.
+    if exact and int(exact.get("type") or 0) == FT_CREATED_TIME:
+        if legacy:
+            deleted = _delete_retry(
+                "%s/%s" % (fields_path, legacy.get("field_id")), tok)
+            if deleted.get("code") != 0:
+                return {
+                    "ok": False,
+                    "error": "Unable to remove migrated legacy Entry Date: %s" %
+                             (deleted.get("msg") or deleted),
+                    "raw": deleted,
+                }
+        return {"ok": True, "updated": bool(legacy),
+                "field_id": exact.get("field_id"), "verified": True}
+
+    if exact and legacy:
+        return {
+            "ok": False,
+            "error": "Entry Date migration is ambiguous: editable and legacy fields both exist",
+        }
+
+    # Preserve the old column until a replacement exists. Renaming a text
+    # field is supported; converting it to Created Time is not.
+    old_field = exact or (_find_field(listed["fields"], spec) if not legacy else None)
+    if old_field:
+        old_type = int(old_field.get("type") or FT_TEXT)
+        rename_body = {"field_name": legacy_name, "type": old_type}
+        if old_field.get("property"):
+            rename_body["property"] = old_field.get("property")
+        renamed = _field_update(
+            "%s/%s" % (fields_path, old_field.get("field_id")),
+            tok,
+            rename_body,
+        )
+        if renamed.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Unable to preserve legacy Entry Date before replacement: %s" %
+                         (renamed.get("msg") or renamed),
+                "raw": renamed,
+            }
+        legacy = dict(old_field, field_name=legacy_name)
+
+    create_body = {
         "field_name": pipeline_schema.ENTRY_DATE,
         "type": FT_CREATED_TIME,
         "property": {"date_formatter": "yyyy/MM/dd"},
-        "description": "System-owned date when the candidate first enters the pipeline.",
     }
-    update = _field_update(path, tok, body)
-    if update.get("code") != 0:
-        return {"ok": False, "error": "配置 Entry Date 系统字段失败：%s" %
-                (update.get("msg") or update), "raw": update}
+    created = _field_create(fields_path, tok, create_body)
+    if created.get("code") != 0:
+        return {
+            "ok": False,
+            "error": "Unable to create read-only system Entry Date: %s" %
+                     (created.get("msg") or created),
+            "raw": created,
+        }
+
     verified = _list_fields(app_token, pipeline_table_id)
     if not verified.get("ok"):
         return verified
-    actual = _find_field(verified["fields"], spec)
+    actual = next((item for item in verified["fields"]
+                   if item.get("field_name") == pipeline_schema.ENTRY_DATE), None)
     if not actual or int(actual.get("type") or 0) != FT_CREATED_TIME:
-        return {"ok": False, "error": "Entry Date migration returned success but did not become read-only"}
-    return {"ok": True, "updated": True, "field_id": actual.get("field_id"),
-            "cleared_invalid_values": sanitised.get("cleared", 0), "verified": True}
+        return {
+            "ok": False,
+            "error": "Created Entry Date could not be verified as a read-only system field",
+        }
+
+    legacy = next((item for item in verified["fields"]
+                   if item.get("field_name") == legacy_name), legacy)
+    if legacy:
+        deleted = _delete_retry(
+            "%s/%s" % (fields_path, legacy.get("field_id")), tok)
+        if deleted.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "System Entry Date is ready, but legacy cleanup failed: %s" %
+                         (deleted.get("msg") or deleted),
+                "raw": deleted,
+            }
+
+    final = _list_fields(app_token, pipeline_table_id)
+    if not final.get("ok"):
+        return final
+    final_exact = next((item for item in final["fields"]
+                        if item.get("field_name") == pipeline_schema.ENTRY_DATE), None)
+    final_legacy = next((item for item in final["fields"]
+                         if item.get("field_name") == legacy_name), None)
+    if (not final_exact or int(final_exact.get("type") or 0) != FT_CREATED_TIME
+            or final_legacy):
+        return {"ok": False,
+                "error": "Entry Date replacement did not reach a clean verified state"}
+    return {"ok": True, "updated": True,
+            "field_id": final_exact.get("field_id"), "verified": True}
 
 
 def remove_legacy_lark_stage_date_field(app_token, pipeline_table_id):
