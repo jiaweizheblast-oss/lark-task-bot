@@ -29,6 +29,7 @@ from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
 from channel_report import CHANNELS, PIPELINE_STATUS
+import channel_pipeline_schema as pipeline_schema
 
 # 候选人联系表用到的下拉
 CANDIDATE_STATUS = ["未联系", "已联系", "无法联系", "不合适"]
@@ -36,26 +37,23 @@ CANDIDATE_SOURCES = ["RecruitEm", "领英公开", "GitHub", "StackOverflow"] + C
 
 
 # ---------------- 列定义 ----------------
-def _col(key, header, kind="text", choices=None, aliases=None, minv=None, sys=False):
+def _col(key, header, kind="text", choices=None, aliases=None, minv=None, sys=False,
+         hidden=False, lock_existing=False):
     """kind: text / int / date / choice。choices 给 choice 列的下拉项；minv 给 int 列下限。sys=系统列（表头灰+勿填批注）。"""
     return {"key": key, "header": header, "kind": kind,
-            "choices": choices, "aliases": aliases or [], "minv": minv, "sys": sys}
+            "choices": choices, "aliases": aliases or [], "minv": minv,
+            "sys": sys, "hidden": hidden, "lock_existing": lock_existing}
 
 
 def channel_columns(job_titles):
-    return [
-        _col("record_date", "日期", "date"),
-        _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道"]),
-        _col("source_detail", "其他来源说明（选择 Other 时填写）", "text",
-             aliases=["Source Detail", "其他来源", "来源详情", "其他来源说明"]),
-        _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
-        _col("new_resumes", "今日新增简历数", "int", aliases=["新增", "新增简历数"], minv=0),
-        _col("passed_screening", "初筛通过数", "int", aliases=["初筛通过", "初筛"], minv=0),
-        _col("recommended", "已推荐面试数", "int", aliases=["已推荐", "推荐"], minv=0),
-        _col("rejected", "已拒绝数", "int", aliases=["已拒绝", "拒绝"], minv=0),
-        _col("note", "备注", "text"),
-        _col("filled_by", "填写人", "text"),
-    ]
+    columns = []
+    for spec in pipeline_schema.MANUAL_COLUMNS:
+        choices = CHANNELS if spec["key"] == "channel" else job_titles if spec["key"] == "job" else None
+        columns.append(_col(
+            spec["key"], spec["header"], spec["kind"], choices=choices,
+            aliases=list(spec.get("aliases", ())), minv=0 if spec["kind"] == "int" else None,
+        ))
+    return columns
 
 
 def candidate_columns(job_titles, sources=None):
@@ -87,9 +85,12 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
         cell = ws.cell(row=1, column=i + 1)
         cell.font = Font(bold=True, color=("8A94A0" if c.get("sys") else "000000"))
         cell.fill = sys_fill if c.get("sys") else head_fill
-        cell.alignment = Alignment(horizontal="center")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         if c.get("sys"):
-            cell.comment = Comment("系统列，请勿填写或修改（系统用来自动认人）", "Nexus")
+            cell.comment = Comment(
+                "System-owned field. HR cannot edit it; the service updates it when required.",
+                "Nexus",
+            )
 
     # 所有 choice 列的下拉项放隐藏引用表，避免内联列表 255 字符限制
     refs = wb.create_sheet("_refs")
@@ -109,11 +110,22 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
             ref_col += 1
 
     r = 2
+    existing_rows = set()
     for row in (prefill_rows or []):
+        if row.get("cand_id"):
+            existing_rows.add(r)
         for ci, c in enumerate(columns):
             v = row.get(c["key"])
             if v is not None and v != "":
-                ws.cell(row=r, column=ci + 1, value=v)
+                cell = ws.cell(row=r, column=ci + 1)
+                if c["kind"] == "date" and isinstance(v, str):
+                    try:
+                        v = date.fromisoformat(v[:10])
+                    except ValueError:
+                        pass
+                cell.value = v
+                if c["kind"] == "date":
+                    cell.number_format = "yyyy-mm-dd"
         r += 1
     for _ in range(extra_blank):
         for ci, c in enumerate(columns):
@@ -127,18 +139,40 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
         letter = get_column_letter(ci + 1)
         dv.add("%s2:%s%d" % (letter, letter, last))
 
-    # System columns are visible for audit but not editable by HR. All normal
-    # input cells remain unlocked, so protection does not hinder daily work.
+    # System-owned fields are locked for HR but remain writable by the service.
+    # Candidate identity is also locked for existing records while blank rows
+    # remain available for HR to enter external candidates.
     for row_index in range(2, last + 1):
         for column_index, column in enumerate(columns, 1):
             ws.cell(row=row_index, column=column_index).protection = Protection(
-                locked=bool(column.get("sys"))
+                locked=bool(
+                    column.get("sys")
+                    or (column.get("lock_existing") and row_index in existing_rows)
+                )
             )
     ws.protection.sheet = True
 
+    preferred_widths = {
+        "Candidate": 24,
+        "Entry Date": 14,
+        "Source Channel": 22,
+        pipeline_schema.OTHER_SOURCE_DETAIL: 38,
+        "Job": 24,
+        "Current Stage": 24,
+        pipeline_schema.STAGE_STARTED_ON: 20,
+        "HR Owner": 18,
+        "Rejection Reason": 28,
+        "Note": 34,
+    }
     for i, c in enumerate(columns, 1):
-        ws.column_dimensions[get_column_letter(i)].width = 20 if c["kind"] == "text" else 15
+        ws.column_dimensions[get_column_letter(i)].width = preferred_widths.get(
+            c["header"], 20 if c["kind"] == "text" else 15
+        )
+        if c.get("hidden"):
+            ws.column_dimensions[get_column_letter(i)].hidden = True
+    ws.row_dimensions[1].height = 32
     ws.freeze_panes = "A2"
+    ws.auto_filter.ref = "A1:%s%d" % (get_column_letter(len(columns)), last)
 
     bio = BytesIO()
     wb.save(bio)
@@ -300,22 +334,20 @@ def parse_candidate_sheet(data, filename, jobs, sources=None):
 
 # ---------------- 招聘流水线候选人表（运营口径：每行一个候选人，状态走漏斗） ----------------
 def pipeline_columns(job_titles):
-    return [
-        _col("record_date", "日期", "date"),
-        _col("name", "候选人", "text"),
-        _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道", "来源渠道"]),
-        _col("source_detail", "其他来源说明（选择 Other 时填写）", "text",
-             aliases=["Source Detail", "其他来源", "来源详情", "其他来源说明"]),
-        _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
-        _col("status", "Current Stage", "choice", choices=PIPELINE_STATUS, aliases=["状态", "招聘状态", "阶段"]),
-        _col("stage_date", "Stage Date（系统自动）", "date",
-             aliases=["Stage Date", "阶段日期"], sys=True),
-        _col("rejection_reason", "Rejection Reason", "text", aliases=["拒绝原因"]),
-        _col("note", "备注", "text"),
-        _col("filled_by", "填写人", "text"),
-        _col("cand_id", "记录ID", "text", aliases=["系统ID"], sys=True),   # 系统列：已有候选人预填，HR 勿改；新候选人留空
-        _col("row_ref", "Row Ref", "text", sys=True),
-    ]
+    columns = []
+    for spec in pipeline_schema.columns_for("xlsx"):
+        choices = (
+            CHANNELS if spec["key"] == "channel"
+            else job_titles if spec["key"] == "job"
+            else PIPELINE_STATUS if spec["key"] == "status"
+            else None
+        )
+        columns.append(_col(
+            spec["key"], spec["header"], spec["kind"], choices=choices,
+            aliases=list(spec.get("aliases", ())), sys=bool(spec.get("system")),
+            hidden=bool(spec.get("hidden")), lock_existing=bool(spec.get("lock_existing")),
+        ))
+    return columns
 
 
 def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
@@ -327,23 +359,26 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
     for c in (candidates or []):
         prefill.append({
             "cand_id": str(c.get("id") or ""),
-            "record_date": (str(c.get("apply_date") or "")[:10]) or day,
+            "record_date": str(c.get("apply_date") or "")[:10],
             "name": c.get("name") or "",
             "channel": c.get("channel") or "",
             "source_detail": c.get("source_detail") or "",
             "job": c.get("job_title") or id2title.get(c.get("job_request_id"), ""),
             "status": c.get("status") or "New Lead",
-            "stage_date": (str(c.get("stage_date") or "")[:10]) or day,
+            "stage_date": str(c.get("stage_date") or "")[:10],
             "rejection_reason": c.get("rejection_reason") or "",
             "note": c.get("note") or "",
             "filled_by": c.get("filled_by") or "",
             "row_ref": c.get("ext_ref") or ("candidate-%s" % c.get("id")),
         })
     blank_count = 30 if prefill else 60
-    prefill.extend({"row_ref": "manual-" + str(uuid.uuid4()), "record_date": day,
-                    "stage_date": day, "filled_by": by, "status": "New Lead"}
+    # Blank input rows intentionally contain no dates or stage. Entry Date is
+    # assigned when the row is first imported; Stage Started On is assigned by
+    # the first immutable stage event. This prevents stale template dates.
+    prefill.extend({"row_ref": "manual-" + str(uuid.uuid4()), "filled_by": by}
                    for _ in range(blank_count))
-    return build_xlsx(cols, prefill_rows=prefill, sheet_title="Candidate Pipeline",
+    return build_xlsx(cols, prefill_rows=prefill,
+                      sheet_title=pipeline_schema.PIPELINE_TABLE_NAME,
                       extra_blank=0, blank_defaults={})
 
 
@@ -359,7 +394,9 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None)
     out, errors = [], list(res["errors"])
     for r in res["rows"]:
         jid = title2id.get(r.get("job"))  # 职位可空 -> None
-        rd = (r.get("record_date") or (default_date or "")).strip()[:10]
+        # Entry Date is system-owned. A workbook value is display-only and is
+        # never trusted for a new or existing candidate.
+        rd = (default_date or "").strip()[:10]
         if not rd:
             errors.append("第%d行：缺日期" % r.get("__line__", 0))
             continue

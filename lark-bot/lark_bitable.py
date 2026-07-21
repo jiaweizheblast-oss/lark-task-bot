@@ -17,6 +17,8 @@ import urllib.request
 import urllib.error
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import channel_pipeline_schema as pipeline_schema
+
 DOMAIN = os.environ.get("LARK_DOMAIN", "https://open.larksuite.com").rstrip("/")
 
 # Channel Analytics belongs to the outward-facing Recruitment Bot. Keep these
@@ -29,6 +31,7 @@ APP_SECRET = os.environ.get("RECRUITMENT_LARK_APP_SECRET", "")
 # 字段类型（Bitable）：1=多行文本 3=单选
 FT_TEXT = 1
 FT_SINGLE = 3
+FT_CREATED_TIME = 1001
 FT_MODIFIED_TIME = 1002
 
 _token_cache = {"v": "", "exp": 0.0}
@@ -143,45 +146,43 @@ def create_base(name, job_titles, channels, statuses, folder_token=""):
 
 def _channel_fields_spec(job_titles, channels):
     """Channel Analytics manual-unidentified schema (one channel/job/day)."""
-    return [
-        {"field_name": "日期", "type": FT_TEXT},
-        {"field_name": "招聘渠道", "type": FT_SINGLE,
-         "property": {"options": [{"name": c} for c in channels]}},
-        {"field_name": "其他来源说明（选择 Other 时填写）", "type": FT_TEXT},
-        {"field_name": "关联职位", "type": FT_SINGLE,
-         "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
-        {"field_name": "关联职位", "type": FT_TEXT},
-        {"field_name": "今日新增简历数", "type": 2},
-        {"field_name": "初筛通过数", "type": 2},
-        {"field_name": "已推荐面试数", "type": 2},
-        {"field_name": "已拒绝数", "type": 2},
-        {"field_name": "备注", "type": FT_TEXT},
-        {"field_name": "填写人", "type": FT_TEXT},
-    ]
+    fields = []
+    for spec in pipeline_schema.MANUAL_COLUMNS:
+        field = {"field_name": spec["header"], "type": FT_TEXT}
+        if spec["kind"] == "choice":
+            options = channels if spec["key"] == "channel" else job_titles
+            if options:
+                field["type"] = FT_SINGLE
+                field["property"] = {"options": [{"name": value} for value in options]}
+        elif spec["kind"] == "int":
+            field["type"] = 2
+        fields.append(field)
+    return fields
 
 
 def _pipeline_fields_spec(job_titles, channels, stages):
-    return [
-        {"field_name": "Candidate", "type": FT_TEXT},
-        {"field_name": "Entry Date", "type": FT_TEXT},
-        {"field_name": "Source Channel", "type": FT_SINGLE,
-         "property": {"options": [{"name": c} for c in channels]}},
-        {"field_name": "其他来源说明（选择 Other 时填写）", "type": FT_TEXT,
-         "description": "仅当 Source Channel 选择 Other 时填写真实渠道名称；其他渠道请留空。"},
-        {"field_name": "Job", "type": FT_SINGLE,
-         "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
-        {"field_name": "Job", "type": FT_TEXT},
-        {"field_name": "Current Stage", "type": FT_SINGLE,
-         "property": {"options": [{"name": s} for s in stages]}},
-        # This placeholder is converted immediately after table creation into
-        # Lark's read-only Modified Time field scoped to Current Stage.
-        {"field_name": "Stage Date", "type": FT_TEXT,
-         "description": "系统字段：自动记录 Current Stage 的变更日期，HR 无需填写。"},
-        {"field_name": "HR Owner", "type": FT_TEXT},
-        {"field_name": "Rejection Reason", "type": FT_TEXT},
-        {"field_name": "Note", "type": FT_TEXT},
-        {"field_name": "System ID", "type": FT_TEXT},
-    ]
+    fields = []
+    for spec in pipeline_schema.columns_for("lark"):
+        field = {"field_name": spec["header"], "type": FT_TEXT}
+        if spec["kind"] == "choice":
+            options = (
+                channels if spec["key"] == "channel"
+                else job_titles if spec["key"] == "job"
+                else stages
+            )
+            if options:
+                field["type"] = FT_SINGLE
+                field["property"] = {"options": [{"name": value} for value in options]}
+        if spec["key"] == "source_detail":
+            field["description"] = (
+                "Fill only when Source Channel is Other; otherwise leave blank."
+            )
+        elif spec["key"] == "record_date":
+            field["description"] = "System-owned date when the candidate first enters the pipeline."
+        elif spec["key"] == "stage_date":
+            field["description"] = "System-owned date when Current Stage last changed."
+        fields.append(field)
+    return fields
 
 
 def create_channel_base(name, job_titles, channels, stages, folder_token=""):
@@ -204,7 +205,8 @@ def create_channel_base(name, job_titles, channels, stages, folder_token=""):
         "POST",
         "/open-apis/bitable/v1/apps/%s/tables" % app_token,
         token=tok,
-        body={"table": {"name": "Candidate Pipeline", "default_view_name": "Pipeline",
+        body={"table": {"name": pipeline_schema.PIPELINE_TABLE_NAME,
+                         "default_view_name": pipeline_schema.PIPELINE_VIEW_NAME,
                          "fields": _pipeline_fields_spec(job_titles, channels, stages)}},
     )
     if pipeline_response.get("code") != 0:
@@ -212,7 +214,8 @@ def create_channel_base(name, job_titles, channels, stages, folder_token=""):
                 "app_token": app_token, "url": url, "raw": pipeline_response}
     manual_response = _req(
         "POST", "/open-apis/bitable/v1/apps/%s/tables" % app_token, token=tok,
-        body={"table": {"name": "未建档批量统计（特殊情况）", "default_view_name": "补充统计",
+        body={"table": {"name": pipeline_schema.MANUAL_TABLE_NAME,
+                         "default_view_name": pipeline_schema.MANUAL_VIEW_NAME,
                          "fields": _channel_fields_spec(job_titles, channels)}},
     )
     if manual_response.get("code") != 0:
@@ -232,56 +235,159 @@ def create_channel_base(name, job_titles, channels, stages, folder_token=""):
             "schema": schema}
 
 
-def configure_system_stage_date_field(app_token, pipeline_table_id):
-    """Make Stage Date a read-only Lark field tracking Current Stage changes."""
+def _list_fields(app_token, table_id):
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
     response = _req(
         "GET",
         "/open-apis/bitable/v1/apps/%s/tables/%s/fields?page_size=100" %
-        (app_token, pipeline_table_id),
+        (app_token, table_id),
         token=tok,
     )
     if response.get("code") != 0:
-        return {"ok": False, "error": "列出 Pipeline 字段失败：%s" %
+        return {"ok": False, "error": "列出字段失败：%s" %
                 (response.get("msg") or response), "raw": response}
-    fields = (response.get("data") or {}).get("items") or []
-    by_name = {str(item.get("field_name") or ""): item for item in fields}
-    stage_field = by_name.get("Current Stage")
-    date_field = by_name.get("Stage Date")
-    if not stage_field or not date_field:
-        return {"ok": False, "error": "Candidate Pipeline 缺少 Current Stage 或 Stage Date 字段"}
-    if int(date_field.get("type") or 0) == FT_MODIFIED_TIME:
+    return {"ok": True, "fields": (response.get("data") or {}).get("items") or []}
+
+
+def _field_update(path, token, body):
+    """Retry only Lark's documented transient consistency failures."""
+    transient_codes = {1254607, 1254608, 1255001, 1255040}
+    response = {}
+    for attempt in range(3):
+        response = _req("PUT", path, token=token, body=body)
+        if response.get("code") not in transient_codes or attempt == 2:
+            return response
+        time.sleep(0.5 * (attempt + 1))
+    return response
+
+
+def _find_field(fields, spec):
+    names = (spec["header"], *spec.get("aliases", ()))
+    return next(
+        (item for item in fields if str(item.get("field_name") or "") in names),
+        None,
+    )
+
+
+def configure_system_entry_date_field(app_token, pipeline_table_id):
+    """Make Entry Date a Lark-owned Created Time field."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, pipeline_table_id)
+    if not listed.get("ok"):
+        return listed
+    spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS if item["key"] == "record_date")
+    date_field = _find_field(listed["fields"], spec)
+    if not date_field:
+        return {"ok": False, "error": "Candidate Pipeline 缺少 Entry Date 字段"}
+    if (int(date_field.get("type") or 0) == FT_CREATED_TIME
+            and date_field.get("field_name") == pipeline_schema.ENTRY_DATE):
         return {"ok": True, "updated": False, "field_id": date_field.get("field_id")}
     path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" % (
         app_token, pipeline_table_id, date_field.get("field_id")
     )
-    base_body = {
-        "field_name": "Stage Date",
+    body = {
+        "field_name": pipeline_schema.ENTRY_DATE,
+        "type": FT_CREATED_TIME,
+        "property": {"date_formatter": "yyyy/MM/dd"},
+        "description": "System-owned date when the candidate first enters the pipeline.",
+    }
+    update = _field_update(path, tok, body)
+    if update.get("code") != 0:
+        return {"ok": False, "error": "配置 Entry Date 系统字段失败：%s" %
+                (update.get("msg") or update), "raw": update}
+    return {"ok": True, "updated": True, "field_id": date_field.get("field_id")}
+
+
+def configure_system_stage_date_field(app_token, pipeline_table_id):
+    """Make Stage Started On track only Current Stage changes."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, pipeline_table_id)
+    if not listed.get("ok"):
+        return listed
+    fields = listed["fields"]
+    stage_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS if item["key"] == "status")
+    date_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS if item["key"] == "stage_date")
+    stage_field = _find_field(fields, stage_spec)
+    date_field = _find_field(fields, date_spec)
+    if not stage_field or not date_field:
+        return {"ok": False, "error": "Candidate Pipeline 缺少 Current Stage 或 Stage Started On 字段"}
+    existing_property = date_field.get("property") or {}
+    if (int(date_field.get("type") or 0) == FT_MODIFIED_TIME
+            and date_field.get("field_name") == pipeline_schema.STAGE_STARTED_ON
+            and stage_field.get("field_id") in (existing_property.get("fields") or [])):
+        return {"ok": True, "updated": False, "field_id": date_field.get("field_id"),
+                "tracking_mode": "current_stage"}
+    path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" % (
+        app_token, pipeline_table_id, date_field.get("field_id")
+    )
+    scoped_body = {
+        "field_name": pipeline_schema.STAGE_STARTED_ON,
         "type": FT_MODIFIED_TIME,
-        "description": "系统字段：自动记录日期，HR 无需填写。",
+        "description": "System-owned date when Current Stage last changed.",
+        "property": {
+            "date_formatter": "yyyy/MM/dd",
+            "fields": [stage_field.get("field_id")],
+        },
     }
-    scoped_body = dict(base_body)
-    scoped_body["property"] = {
-        "date_formatter": "yyyy/MM/dd",
-        "fields": [stage_field.get("field_id")],
-    }
-    update = _req("PUT", path, token=tok, body=scoped_body)
-    tracking_mode = "current_stage"
+    update = _field_update(path, tok, scoped_body)
     if update.get("code") != 0:
-        # Some Lark tenants expose Modified Time but not field-scoped Modified
-        # Time through the public API. Retain the important safety property
-        # (system-owned/read-only) and keep the canonical stage date in the DB.
-        fallback_body = dict(base_body)
-        fallback_body["property"] = {"date_formatter": "yyyy/MM/dd"}
-        update = _req("PUT", path, token=tok, body=fallback_body)
-        tracking_mode = "record_modified"
-    if update.get("code") != 0:
-        return {"ok": False, "error": "锁定 Stage Date 失败：%s" %
+        # Ordinary record Modified Time is not a safe fallback: editing Note or
+        # HR Owner would create a false stage date. Fail closed instead.
+        return {"ok": False, "error": "配置 Stage Started On 失败：%s" %
                 (update.get("msg") or update), "raw": update}
     return {"ok": True, "updated": True, "field_id": date_field.get("field_id"),
-            "tracking_mode": tracking_mode}
+            "tracking_mode": "current_stage"}
+
+
+def normalize_table_field_names(app_token, table_id, specs, skip_keys=()):
+    """Rename legacy labels to the canonical English contract without data loss."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, table_id)
+    if not listed.get("ok"):
+        return listed
+    fields = listed["fields"]
+    updated, missing = [], []
+    for spec in specs:
+        if spec["key"] in set(skip_keys):
+            continue
+        field = _find_field(fields, spec)
+        if not field:
+            missing.append(spec["header"])
+            continue
+        if str(field.get("field_name") or "") == spec["header"]:
+            continue
+        body = {
+            "field_name": spec["header"],
+            "type": int(field.get("type") or FT_TEXT),
+        }
+        if field.get("property") is not None:
+            body["property"] = field.get("property")
+        if field.get("ui_type"):
+            body["ui_type"] = field.get("ui_type")
+        if spec["key"] == "source_detail":
+            body["description"] = "Fill only when Source Channel is Other; otherwise leave blank."
+        response = _field_update(
+            "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" %
+            (app_token, table_id, field.get("field_id")),
+            tok,
+            body,
+        )
+        if response.get("code") != 0:
+            return {"ok": False, "error": "统一字段名称失败（%s）：%s" %
+                    (spec["header"], response.get("msg") or response), "raw": response}
+        updated.append({"from": field.get("field_name"), "to": spec["header"]})
+    if missing:
+        return {"ok": False, "error": "缺少字段：%s" % ", ".join(missing),
+                "updated": updated}
+    return {"ok": True, "updated": updated}
 
 
 def normalize_other_source_field(app_token, table_id):
@@ -299,11 +405,11 @@ def normalize_other_source_field(app_token, table_id):
         return {"ok": False, "error": "列出字段失败：%s" %
                 (response.get("msg") or response), "raw": response}
     items = (response.get("data") or {}).get("items") or []
-    target = "其他来源说明（选择 Other 时填写）"
+    target = pipeline_schema.OTHER_SOURCE_DETAIL
     if any(str(item.get("field_name") or "") == target for item in items):
         return {"ok": True, "updated": False}
     aliases = {
-        "Other Source (if Other)",
+        "Other Source (if Other)", "其他来源说明（选择 Other 时填写）",
         "其他来源说明（选 Other 时必填）",
         "Source Detail",
     }
@@ -315,7 +421,7 @@ def normalize_other_source_field(app_token, table_id):
     body = {
         "field_name": target,
         "type": int(legacy.get("type") or FT_TEXT),
-        "description": "仅当 Source Channel 选择 Other 时填写真实渠道名称；其他渠道请留空。",
+        "description": "Fill only when Source Channel is Other; otherwise leave blank.",
     }
     if legacy.get("property") is not None:
         body["property"] = legacy.get("property")
@@ -338,19 +444,27 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     """Enforce business-table invariants without exposing repair controls to HR."""
     if not app_token or not pipeline_table_id or not manual_table_id:
         return {"ok": False, "error": "Channel Analytics Base 配置不完整"}
+    pipeline_names = normalize_table_field_names(
+        app_token, pipeline_table_id, pipeline_schema.columns_for("lark"),
+        skip_keys=("record_date", "stage_date"),
+    )
+    manual_names = normalize_table_field_names(
+        app_token, manual_table_id, pipeline_schema.MANUAL_COLUMNS,
+    )
+    entry_date = configure_system_entry_date_field(app_token, pipeline_table_id)
     stage_date = configure_system_stage_date_field(app_token, pipeline_table_id)
-    pipeline_other = normalize_other_source_field(app_token, pipeline_table_id)
-    manual_other = normalize_other_source_field(app_token, manual_table_id)
     cleanup = cleanup_empty_default_tables(
         app_token,
         protected_table_ids=(pipeline_table_id, manual_table_id),
     )
     return {
-        "ok": bool(stage_date.get("ok") and pipeline_other.get("ok")
-                   and manual_other.get("ok") and cleanup.get("ok")),
+        "ok": bool(pipeline_names.get("ok") and manual_names.get("ok")
+                   and entry_date.get("ok") and stage_date.get("ok")
+                   and cleanup.get("ok")),
+        "pipeline_field_names": pipeline_names,
+        "manual_field_names": manual_names,
+        "entry_date": entry_date,
         "stage_date": stage_date,
-        "pipeline_other_source": pipeline_other,
-        "manual_other_source": manual_other,
         "default_table_cleanup": cleanup,
     }
 
@@ -414,15 +528,13 @@ def add_member(app_token, member_id, member_type="email", perm="full_access"):
 # ---------------- 读写记录 ----------------
 FIELD_KEYS = ("候选人", "日期", "招聘渠道", "关联职位", "状态", "备注", "填写人")
 CHANNEL_FIELD_KEYS = (
-    "日期", "招聘渠道", "其他来源说明（选择 Other 时填写）",
-    "其他来源说明（选 Other 时必填）", "Source Detail", "关联职位", "今日新增简历数",
-    "初筛通过数", "已推荐面试数", "已拒绝数", "备注", "填写人",
+    *tuple(
+        name
+        for spec in pipeline_schema.MANUAL_COLUMNS
+        for name in (spec["header"], *spec.get("aliases", ()))
+    ),
 )
-PIPELINE_FIELD_KEYS = (
-    "Candidate", "Entry Date", "Source Channel", "其他来源说明（选择 Other 时填写）",
-    "Other Source (if Other)", "其他来源说明（选 Other 时必填）", "Source Detail", "Job",
-    "Current Stage", "Stage Date", "HR Owner", "Rejection Reason", "Note", "System ID",
-)
+PIPELINE_FIELD_KEYS = pipeline_schema.field_names_with_aliases("lark")
 
 
 def _flatten(v):
@@ -554,8 +666,8 @@ def update_pipeline_record_fields(app_token, table_id, record_id, fields):
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
-    # Stage Date is a read-only Lark Modified Time field. Only identity is
-    # written back; HR input fields are never replaced here.
+    # Entry Date and Stage Started On are read-only Lark system fields. Only
+    # identity is written back; HR input fields are never replaced here.
     allowed = {"System ID"}
     safe_fields = {key: value for key, value in dict(fields or {}).items() if key in allowed}
     if not safe_fields:

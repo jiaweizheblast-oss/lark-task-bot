@@ -39,6 +39,7 @@ import sheet_io
 import attend
 import lark_bitable
 import channel_sheet_service
+import channel_pipeline_schema as pipeline_schema
 import talent_integration
 import talent_search_queue
 from parse import extract_deadline, overdue_stage
@@ -1171,17 +1172,15 @@ def api_candidate_create():
     jid = int(jid) if str(jid or "").strip().isdigit() else None
     if jid is not None and not db.get_job_request(jid):
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
-    rd = (d.get("apply_date") or _kolkata_today().isoformat())[:10]
-    if not _valid_date(rd):
-        return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
-    stage_date = _kolkata_today().isoformat()
+    rd = _kolkata_today().isoformat()
+    stage_date = rd
     cid = db.create_candidate(
         rd, (d.get("name") or "").strip(), d["channel"], jid,
         "New Lead", (d.get("note") or "").strip(),
         (d.get("filled_by") or "").strip(), d.get("source") or "手动",
         (d.get("ext_ref") or "").strip(), "", (d.get("source_detail") or "").strip())
     requested_stage = d.get("status") or "New Lead"
-    # Every candidate receives an initial immutable stage event. Stage Date is
+    # Every candidate receives an initial immutable stage event. Stage Started On is
     # system-owned and never accepted from website/Lark/Excel HR input.
     db.transition_candidate_stage(
         cid, requested_stage, stage_date, (d.get("filled_by") or "").strip(),
@@ -1205,18 +1204,17 @@ def api_candidate_update(cid):
     jid = int(jid) if str(jid or "").strip().isdigit() else None
     if jid is not None and not db.get_job_request(jid):
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
+    submitted_name = (d.get("name") or "").strip()
+    if submitted_name != (existing.get("name") or "").strip():
+        return jsonify({"error": "Candidate 是系统身份字段，已有候选人名称不可修改"}), 422
     fields = dict(
-        name=(d.get("name") or "").strip(), channel=d["channel"], job_request_id=jid,
+        channel=d["channel"], job_request_id=jid,
         source_detail=(d.get("source_detail") or "").strip(), note=(d.get("note") or "").strip(),
         filled_by=(d.get("filled_by") or "").strip())
     if d.get("source"):
         fields["source"] = d["source"]
     if d.get("ext_ref") is not None:
         fields["ext_ref"] = (d.get("ext_ref") or "").strip()
-    if d.get("apply_date"):
-        if not _valid_date(d["apply_date"]):
-            return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
-        fields["apply_date"] = d["apply_date"][:10]
     stage_date = _kolkata_today().isoformat()
     db.update_candidate(cid, **fields)
     transition = None
@@ -1690,14 +1688,15 @@ def api_channel_template():
     """下载来源中立的 Candidate Pipeline workbook。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    day = (request.args.get("d") or _kolkata_today().isoformat())[:10]
+    day = _kolkata_today().isoformat()
     by = request.args.get("by", "")
     jobs = db.list_job_requests(only_open=True)
     data = sheet_io.build_pipeline_template_xlsx(jobs, day, by, db.list_candidates_active())
     return Response(
         data,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="candidate_pipeline_%s.xlsx"' % day},
+        headers={"Content-Disposition": 'attachment; filename="%s"' %
+                 pipeline_schema.filename_for(day)},
     )
 
 
@@ -1714,7 +1713,7 @@ def api_channel_upload():
     if not (f.filename or "").casefold().endswith(".xlsx"):
         return jsonify({"error": "渠道跟进表只接受系统生成的 .xlsx；CSV 不保留受控列和记录 ID"}), 400
     owner = (request.form.get("by") or "").strip()      # 受控填报人（roster 选择），权威 owner
-    default_date = (request.form.get("d") or "").strip() or _kolkata_today().isoformat()
+    default_date = _kolkata_today().isoformat()
     jobs = db.list_job_requests(only_open=False)
     try:
         parsed = sheet_io.parse_pipeline_sheet(f.read(), f.filename or "", jobs, owner, default_date)
@@ -1743,7 +1742,7 @@ def _lark_cfg():
 def _ensure_lark_channel_schema(cfg=None):
     """Run the one-time, idempotent Base repair before any operational use."""
     cfg = cfg or _lark_cfg()
-    if db.get_settings().get("lark_channel_schema_ensured") == "candidate-pipeline-v3":
+    if db.get_settings().get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION:
         return {"ok": True, "already_ensured": True}
     if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
         return {"ok": False, "error": "在线渠道表尚未完整配置"}
@@ -1751,7 +1750,7 @@ def _ensure_lark_channel_schema(cfg=None):
         cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"]
     )
     if result.get("ok"):
-        db.set_setting("lark_channel_schema_ensured", "candidate-pipeline-v3")
+        db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
     return result
 
 
@@ -1774,7 +1773,7 @@ def api_lark_status():
                                        and c["schema_version"] == "channel-analytics-v2"),
                     "url": c["url"], "last_sync": c["last_sync"],
                     "schema_version": c["schema_version"],
-                    "schema_ensured": settings.get("lark_channel_schema_ensured") == "candidate-pipeline-v3",
+                    "schema_ensured": settings.get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION,
                     "bot_name": RECRUITMENT_BOT_NAME,
                     "app_id_tail": lark_bitable.APP_ID[-8:] if lark_bitable.APP_ID else ""})
 
@@ -1892,7 +1891,7 @@ def api_lark_create_table():
     d = request.get_json(silent=True) or {}
     jobs = db.list_job_requests(only_open=True)
     res = lark_bitable.create_channel_base(
-        "Nexus Channel Analytics", [j["title"] for j in jobs], channel_report.CHANNELS,
+        pipeline_schema.BASE_NAME, [j["title"] for j in jobs], channel_report.CHANNELS,
         channel_report.PIPELINE_STATUS,
         folder_token=(d.get("folder_token") or "").strip(),
     )
@@ -1904,7 +1903,7 @@ def api_lark_create_table():
     db.set_setting("lark_channel_url", res.get("url") or "")
     db.set_setting("lark_channel_schema_version", "channel-analytics-v2")
     if (res.get("schema") or {}).get("ok"):
-        db.set_setting("lark_channel_schema_ensured", "candidate-pipeline-v3")
+        db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
     shared = None
     share = (d.get("share_email") or "").strip()
     if share:

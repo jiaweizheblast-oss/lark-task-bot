@@ -303,11 +303,11 @@
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:14px">
           <div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel2)">
             <div style="font-weight:700;margin-bottom:5px">网站 Excel</div>
-            <div class="muted" style="padding:0;font-size:12px;margin-bottom:10px">一行一个候选人职位流程；HR 只更新 Current Stage、日期和必要备注。</div>
+            <div class="muted" style="padding:0;font-size:12px;margin-bottom:10px">一行一个候选人职位流程；HR 更新 Current Stage 和必要备注，Entry Date / Stage Started On 由系统管理。</div>
             <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
               <select id="cBy" style="min-width:130px" title="受控填报人"></select>
               <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增受控填报人">＋</button>
-              <input id="cTplDate" type="date" style="width:145px" title="表日期">
+              <input id="cTplDate" type="date" readonly style="width:145px" title="Archive date (system today)">
               <button class="btn ghost sm" onclick="downloadChannelTemplate()">⬇ 获取 Excel 表</button>
               <button class="btn sm" onclick="pickChannelUpload()">⬆ 提交 Excel 表</button>
               <input id="cUpFile" type="file" accept=".xlsx" style="display:none" onchange="onChannelUpload(event)">
@@ -874,7 +874,7 @@ async function downloadChannelTemplate(){
     const r=await api('/api/channel/template?d='+encodeURIComponent(d)+'&by='+encodeURIComponent(by));
     if(!r.ok){toast('生成空表失败',true);return;}
     const blob=await r.blob();
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Candidate_Pipeline_'+d+'.xlsx';
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ChannelAnalytics_'+d.replaceAll('-','')+'.xlsx';
     document.body.appendChild(a);a.click();a.remove();
     toast('✅ Candidate Pipeline 已下载，发给 HR 更新招聘阶段');
   }catch(e){toast('下载失败',true);}
@@ -882,7 +882,7 @@ async function downloadChannelTemplate(){
 function pickChannelUpload(){document.getElementById('cUpFile').click();}
 async function onChannelUpload(ev){
   const f=ev.target.files[0];if(!f)return;
-  const fd=new FormData();fd.append('file',f);fd.append('by',val('cBy'));fd.append('d',document.getElementById('cTplDate').value||CMETA.today);
+  const fd=new FormData();fd.append('file',f);fd.append('by',val('cBy'));
   let j;
   try{const r=await fetch('/api/channel/upload',{method:'POST',headers:{'X-Auth':PW},body:fd});j=await r.json().catch(()=>({}));
     if(!r.ok){toast('上传失败：'+(j.error||''),true);ev.target.value='';return;}
@@ -1000,22 +1000,22 @@ function candModal(c){
   const sts=(CMETA.statuses||['New Lead','Contacted / Awaiting Reply','HR Screening','Interview 1','Interview 2 / Final','Offer','Hired','On Hold','Rejected','Withdrawn']).map(s=>`<option ${c&&c.status===s?'selected':''}>${esc(s)}</option>`).join('');
   const by='<option value="">Select HR owner…</option>'+(CMETA.roster||[]).map(n=>`<option ${c&&c.filled_by===n?'selected':''}>${esc(n)}</option>`).join('');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${c?'Update Candidate Stage':'Add External Candidate'}</h3>`
-    +`<div class="row2"><div class="field"><label>Entry Date *</label><input id="mcDate" type="date" value="${c?esc((c.apply_date||'').slice(0,10)):(CMETA.today||todayStr())}"></div>`
-    +`<div class="field"><label>Candidate *</label><input id="mcName" value="${c?esc(c.name||''):''}" placeholder="Candidate name"></div></div>`
+    +`<div class="row2"><div class="field"><label>Entry Date (system-owned)</label><input type="text" disabled value="${c?esc((c.apply_date||'').slice(0,10)):'Assigned when saved'}"></div>`
+    +`<div class="field"><label>Candidate *</label><input id="mcName" ${c?'readonly':''} value="${c?esc(c.name||''):''}" placeholder="Candidate name"></div></div>`
     +`<div class="row2"><div class="field"><label>Source Channel *</label><select id="mcChannel">${chans}</select></div>`
-    +`<div class="field"><label>其他来源说明（选择 Other 时填写）</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="例如：行业活动、校园群、私域社群；非 Other 留空"></div></div>`
+    +`<div class="field"><label>Other Source Detail (required if Other)</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="Example: industry event, campus group, private community"></div></div>`
     +`<div class="field"><label>Job *</label><select id="mcJob">${jobs}</select></div>`
-    +`<div class="field"><label>Current Stage *</label><select id="mcStatus">${sts}</select><div class="muted" style="padding:5px 0 0;font-size:12px">Stage Date 由系统自动记录，HR 无需填写。</div></div>`
+    +`<div class="field"><label>Current Stage *</label><select id="mcStatus">${sts}</select><div class="muted" style="padding:5px 0 0;font-size:12px">Stage Started On is updated automatically only when Current Stage changes.</div></div>`
     +`<div class="row2"><div class="field"><label>HR Owner</label><select id="mcBy">${by}</select></div>`
     +`<div class="field"><label>Rejection Reason</label><input id="mcReject" value="${c?esc(c.rejection_reason||''):''}" placeholder="Required when stage is Rejected"></div></div>`
-    +`<div class="field"><label>备注</label><input id="mcNote" value="${c?esc(c.note||''):''}"></div>`
+    +`<div class="field"><label>Note</label><input id="mcNote" value="${c?esc(c.note||''):''}"></div>`
     +`<div class="acts"><button class="btn" onclick="saveCandidate(${c?c.id:0})">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
 }
 function newCandidate(){candModal(null);}
 function editCandidate(id){const c=CANDS.find(x=>x.id===id);if(c)candModal(c);}
 async function saveCandidate(id){
   const g=x=>document.getElementById(x).value;
-  const body={apply_date:g('mcDate'),name:(g('mcName')||'').trim(),channel:g('mcChannel'),
+  const body={name:(g('mcName')||'').trim(),channel:g('mcChannel'),
     source_detail:(g('mcSourceDetail')||'').trim(),job_request_id:g('mcJob')||null,status:g('mcStatus'),
     rejection_reason:(g('mcReject')||'').trim(),filled_by:g('mcBy'),note:(g('mcNote')||'').trim()};
   if(!body.name){toast('请填写候选人',true);return;}

@@ -757,9 +757,15 @@ def list_candidates(day=None, limit=500):
 def list_candidates_active():
     """在跟进中的候选人（状态未到终态：非 已录用/已拒绝），供下发「跟进表」预填。"""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""SELECT c.*, j.title AS job_title FROM candidate c
+        cur.execute("""SELECT c.*, j.title AS job_title,
+                               e.effective_date AS stage_date, e.rejection_reason
+                       FROM candidate c
                        LEFT JOIN job_requests j ON j.id = c.job_request_id
-                       WHERE c.status NOT IN ('已录用','已拒绝')
+                       LEFT JOIN LATERAL (
+                         SELECT effective_date,rejection_reason FROM candidate_stage_event
+                         WHERE candidate_id=c.id ORDER BY created_at DESC,id DESC LIMIT 1
+                       ) e ON true
+                       WHERE c.status NOT IN ('Hired','Rejected','Withdrawn','已录用','已拒绝')
                        ORDER BY c.apply_date DESC, c.id DESC""")
         return cur.fetchall()
 

@@ -10,6 +10,8 @@ import datetime
 import hashlib
 from typing import Any, Mapping, Sequence
 
+import channel_pipeline_schema as pipeline_schema
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -31,6 +33,17 @@ def _valid_date(value: str) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _field(fields: Mapping[str, Any], key: str, *, manual: bool = False) -> Any:
+    """Read a canonical field while accepting previous workbook/Base labels."""
+    specs = pipeline_schema.MANUAL_COLUMNS if manual else pipeline_schema.PIPELINE_COLUMNS
+    spec = next(item for item in specs if item["key"] == key)
+    for name in (spec["header"], *spec.get("aliases", ())):
+        value = fields.get(name)
+        if value is not None and _text(value) != "":
+            return value
+    return ""
 
 
 def import_channel_rows(database, parsed: Mapping[str, Any], *, owner: str = "") -> dict[str, Any]:
@@ -68,9 +81,11 @@ def import_pipeline_rows(
                 raise ValueError("Candidate、Source Channel 和 Job 必填")
             if channel == "Other" and not detail:
                 raise ValueError("选择 Other 时必须填写其他来源说明")
-            record_date = _text(row.get("record_date"))[:10]
+            # The workbook generation date is not candidate data. Entry Date is
+            # assigned at the first accepted import and never updated by HR.
+            record_date = _text(default_date)[:10]
             if not _valid_date(record_date):
-                raise ValueError("日期必须是 YYYY-MM-DD")
+                raise ValueError("系统 Entry Date 必须是 YYYY-MM-DD")
             candidate_id_text = _text(row.get("cand_id"))
             existing = database.get_candidate(int(candidate_id_text)) if candidate_id_text.isdigit() else None
             if candidate_id_text and existing is None:
@@ -83,7 +98,9 @@ def import_pipeline_rows(
             created_now = existing is None
             if existing:
                 candidate_id = existing["id"]
-                database.update_candidate(candidate_id, apply_date=record_date, name=name,
+                if _text(existing.get("name")) and name != _text(existing.get("name")):
+                    raise ValueError("Candidate 是已有记录的系统身份字段，禁止修改")
+                database.update_candidate(candidate_id,
                     channel=channel, source_detail=detail, job_request_id=row.get("job_request_id"),
                     note=_text(row.get("note")), filled_by=owner or _text(row.get("filled_by")))
                 updated += 1
@@ -121,17 +138,15 @@ def import_lark_channel_records(
     rows, errors, skipped = [], [], 0
     for index, record in enumerate(records, start=1):
         fields = record.get("fields") or {}
-        channel = _text(fields.get("招聘渠道"))
-        source_detail = _text(fields.get("其他来源说明（选择 Other 时填写）") or
-                              fields.get("其他来源说明（选 Other 时必填）") or
-                              fields.get("Source Detail"))
-        job_title = _text(fields.get("关联职位"))
-        counts = [fields.get("今日新增简历数"), fields.get("初筛通过数"),
-                  fields.get("已推荐面试数"), fields.get("已拒绝数")]
+        channel = _text(_field(fields, "channel", manual=True))
+        source_detail = _text(_field(fields, "source_detail", manual=True))
+        job_title = _text(_field(fields, "job", manual=True))
+        counts = [_field(fields, key, manual=True) for key in
+                  ("new_resumes", "passed_screening", "recommended", "rejected")]
         if not channel and not job_title and not any(_text(value) for value in counts):
             skipped += 1
             continue
-        date_value = _text(fields.get("日期"))[:10] or default_date
+        date_value = _text(_field(fields, "record_date", manual=True))[:10] or default_date
         if not _valid_date(date_value):
             errors.append("Lark 第%d条：日期格式非法（应为 YYYY-MM-DD）" % index)
             continue
@@ -151,12 +166,12 @@ def import_lark_channel_records(
                 "channel": channel,
                 "source_detail": source_detail,
                 "job_request_id": job_id,
-                "filled_by": _text(fields.get("填写人")),
-                "new_resumes": _integer(fields.get("今日新增简历数")),
-                "passed_screening": _integer(fields.get("初筛通过数")),
-                "recommended": _integer(fields.get("已推荐面试数")),
-                "rejected": _integer(fields.get("已拒绝数")),
-                "note": _text(fields.get("备注")),
+                "filled_by": _text(_field(fields, "filled_by", manual=True)),
+                "new_resumes": _integer(_field(fields, "new_resumes", manual=True)),
+                "passed_screening": _integer(_field(fields, "passed_screening", manual=True)),
+                "recommended": _integer(_field(fields, "recommended", manual=True)),
+                "rejected": _integer(_field(fields, "rejected", manual=True)),
+                "note": _text(_field(fields, "note", manual=True)),
             }
         except (TypeError, ValueError) as error:
             errors.append("Lark 第%d条：数量非法（%s）" % (index, error))
@@ -180,19 +195,18 @@ def import_lark_pipeline_records(
     writebacks = []
     for index, record in enumerate(records, start=1):
         fields = record.get("fields") or {}
-        name = _text(fields.get("Candidate"))
+        name = _text(_field(fields, "name"))
         if not name and not any(_text(value) for value in fields.values()):
             skipped += 1
             continue
-        channel = _text(fields.get("Source Channel"))
-        detail = _text(fields.get("其他来源说明（选择 Other 时填写）") or
-                       fields.get("Other Source (if Other)") or
-                       fields.get("其他来源说明（选 Other 时必填）") or
-                       fields.get("Source Detail"))
-        job_id = title_to_id.get(_text(fields.get("Job")))
-        stage = _text(fields.get("Current Stage")) or "New Lead"
-        entry_date = _text(fields.get("Entry Date"))[:10] or default_date
-        reason = _text(fields.get("Rejection Reason"))
+        channel = _text(_field(fields, "channel"))
+        detail = _text(_field(fields, "source_detail"))
+        job_id = title_to_id.get(_text(_field(fields, "job")))
+        stage = _text(_field(fields, "status")) or "New Lead"
+        # Entry Date is service-owned. The visible Lark Created Time is audit
+        # information and is never accepted as an input command.
+        entry_date = _text(default_date)[:10]
+        reason = _text(_field(fields, "rejection_reason"))
         if not name:
             errors.append("Pipeline 第%d条：Candidate 必填" % index); continue
         if channel not in channel_set:
@@ -210,21 +224,23 @@ def import_lark_pipeline_records(
         record_id = _text(record.get("record_id"))
         try:
             existing = database.get_candidate_by_lark(record_id)
-            system_id = _text(fields.get("System ID"))
+            system_id = _text(_field(fields, "cand_id"))
             if not existing and system_id.isdigit():
                 existing = database.get_candidate(int(system_id))
             created_now = existing is None
             if existing:
                 candidate_id = existing["id"]
-                database.update_candidate(candidate_id, apply_date=entry_date, name=name,
+                if _text(existing.get("name")) and name != _text(existing.get("name")):
+                    raise ValueError("Candidate 是已有记录的系统身份字段，禁止修改")
+                database.update_candidate(candidate_id,
                     channel=channel, source_detail=detail, job_request_id=job_id,
-                    note=_text(fields.get("Note")), filled_by=_text(fields.get("HR Owner")),
+                    note=_text(_field(fields, "note")), filled_by=_text(_field(fields, "filled_by")),
                     lark_record_id=record_id)
                 updated += 1
             else:
                 candidate_id = database.create_candidate(
-                    entry_date, name, channel, job_id, "New Lead", _text(fields.get("Note")),
-                    _text(fields.get("HR Owner")), "Lark", "", record_id, detail)
+                    entry_date, name, channel, job_id, "New Lead", _text(_field(fields, "note")),
+                    _text(_field(fields, "filled_by")), "Lark", "", record_id, detail)
                 existing = {"status": "New Lead"}
                 created += 1
             row_writeback = {}
@@ -232,14 +248,14 @@ def import_lark_pipeline_records(
                 row_writeback["System ID"] = str(candidate_id)
             current_stage = _text(existing.get("status")) or "New Lead"
             if created_now or stage != current_stage:
-                # Stage Date is system-owned. Lark displays a read-only field
-                # tracking Current Stage; the database records the canonical
-                # Kolkata processing date and never accepts an HR-supplied date.
+                # Stage Started On is system-owned. The database records the
+                # canonical Kolkata processing date and never accepts a value
+                # supplied by HR, Excel, or Lark.
                 stage_date = default_date
                 event_material = "|".join((record_id, str(candidate_id), stage, stage_date, reason))
                 event_ref = "lark-" + hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:32]
                 database.transition_candidate_stage(candidate_id, stage, stage_date,
-                    _text(fields.get("HR Owner")), reason, _text(fields.get("Note")), event_ref)
+                    _text(_field(fields, "filled_by")), reason, _text(_field(fields, "note")), event_ref)
             if record_id and row_writeback:
                 writebacks.append({"record_id": record_id, "fields": row_writeback})
         except Exception as error:
@@ -286,7 +302,7 @@ def sync_lark_table(
         if response.get("ok"):
             writeback_count += 1
         else:
-            writeback_errors.append(response.get("error") or "Stage Date 回写失败")
+            writeback_errors.append(response.get("error") or "Stage Started On 回写失败")
     manual_result = import_lark_channel_records(
         database, manual_response.get("records") or [], jobs=jobs,
         default_date=default_date, channels=channels)
