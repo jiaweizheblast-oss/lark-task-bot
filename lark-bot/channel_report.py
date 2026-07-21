@@ -52,7 +52,9 @@ def validate_source(channel, source_detail=""):
         errors.append("渠道「%s」不在预设项内" % channel)
     if channel == OTHER_CHANNEL and not (source_detail or "").strip():
         errors.append("选择 Other 时必须填写其他来源说明")
-    if channel != OTHER_CHANNEL and len((source_detail or "").strip()) > 200:
+    if channel != OTHER_CHANNEL and (source_detail or "").strip():
+        errors.append("只有 Source Channel 选择 Other 时才能填写 Other Source Detail")
+    if len((source_detail or "").strip()) > 200:
         errors.append("其他来源说明不能超过 200 字符")
     return errors
 

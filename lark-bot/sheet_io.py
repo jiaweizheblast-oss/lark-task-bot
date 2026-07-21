@@ -139,6 +139,25 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
         letter = get_column_letter(ci + 1)
         dv.add("%s2:%s%d" % (letter, letter, last))
 
+    # Excel can enforce the non-Other half of the dependent source rule at
+    # edit time. (The required-when-Other half remains fail-closed on submit.)
+    key_to_column = {column["key"]: index + 1 for index, column in enumerate(columns)}
+    if "channel" in key_to_column and "source_detail" in key_to_column:
+        channel_letter = get_column_letter(key_to_column["channel"])
+        detail_letter = get_column_letter(key_to_column["source_detail"])
+        detail_validation = DataValidation(
+            type="custom",
+            formula1='=OR($%s2="Other",%s2="")' % (channel_letter, detail_letter),
+            allow_blank=True,
+        )
+        detail_validation.error = (
+            "Only fill Other Source Detail when Source Channel is Other."
+        )
+        detail_validation.errorTitle = "Source Channel mismatch"
+        detail_validation.showErrorMessage = True
+        ws.add_data_validation(detail_validation)
+        detail_validation.add("%s2:%s%d" % (detail_letter, detail_letter, last))
+
     # System-owned fields are locked for HR but remain writable by the service.
     # Candidate identity is also locked for existing records while blank rows
     # remain available for HR to enter external candidates.
@@ -299,6 +318,12 @@ def parse_sheet(data, filename, jobs, default_by="", default_date=None):
         if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
             errors.append("第%d行：选择 Other 时必须填写其他来源说明" % r.get("__line__", 0))
             continue
+        if r["channel"] != "Other" and (r.get("source_detail") or "").strip():
+            errors.append(
+                "Row %d: Other Source Detail is allowed only when Source Channel = Other"
+                % r.get("__line__", 0)
+            )
+            continue
         out.append({"record_date": rd, "channel": r["channel"],
                     "source_detail": r.get("source_detail", ""), "job_request_id": jid,
                     "filled_by": r.get("filled_by") or default_by,
@@ -407,6 +432,12 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None)
             continue
         if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
             errors.append("第%d行：选择 Other 时必须填写其他来源说明" % r.get("__line__", 0))
+            continue
+        if r["channel"] != "Other" and (r.get("source_detail") or "").strip():
+            errors.append(
+                "Row %d: Other Source Detail is allowed only when Source Channel = Other"
+                % r.get("__line__", 0)
+            )
             continue
         if (r.get("status") or "New Lead") == "Rejected" and not (r.get("rejection_reason") or "").strip():
             errors.append("第%d行：Rejected 必须填写 Rejection Reason" % r.get("__line__", 0))

@@ -81,6 +81,10 @@ def import_pipeline_rows(
                 raise ValueError("Candidate、Source Channel 和 Job 必填")
             if channel == "Other" and not detail:
                 raise ValueError("选择 Other 时必须填写其他来源说明")
+            if channel != "Other" and detail:
+                raise ValueError(
+                    "Only rows with Source Channel = Other may contain Other Source Detail"
+                )
             # The workbook generation date is not candidate data. Entry Date is
             # assigned at the first accepted import and never updated by HR.
             record_date = _text(default_date)[:10]
@@ -156,6 +160,12 @@ def import_lark_channel_records(
         if channel == "Other" and not source_detail:
             errors.append("Lark 第%d条：选择 Other 时必须填写其他来源说明" % index)
             continue
+        if channel != "Other" and source_detail:
+            errors.append(
+                "Lark row %d: Other Source Detail is allowed only when Source Channel = Other"
+                % index
+            )
+            continue
         job_id = title_to_id.get(job_title)
         if not job_id:
             errors.append("Lark 第%d条：职位「%s」不存在或已停用" % (index, job_title))
@@ -213,6 +223,11 @@ def import_lark_pipeline_records(
             errors.append("Pipeline 第%d条：Source Channel 非法" % index); continue
         if channel == "Other" and not detail:
             errors.append("Pipeline 第%d条：选择 Other 时必须填写其他来源说明" % index); continue
+        if channel != "Other" and detail:
+            errors.append(
+                "Pipeline row %d: Other Source Detail is allowed only when Source Channel = Other"
+                % index
+            ); continue
         if not job_id:
             errors.append("Pipeline 第%d条：Job 不存在或已停用" % index); continue
         if stage not in stage_set:

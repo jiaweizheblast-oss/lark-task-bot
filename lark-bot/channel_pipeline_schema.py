@@ -6,7 +6,7 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v4"
+SCHEMA_VERSION = "channel-pipeline-v5"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
@@ -16,7 +16,7 @@ EXPORT_FILENAME_PREFIX = "ChannelAnalytics"
 
 ENTRY_DATE = "Entry Date"
 STAGE_STARTED_ON = "Stage Started On"
-OTHER_SOURCE_DETAIL = "Other Source Detail (required if Other)"
+OTHER_SOURCE_DETAIL = "Other Source Detail (only when Source Channel = Other)"
 
 
 # ``surfaces`` separates the business contract from transport-only identity.
@@ -38,6 +38,7 @@ PIPELINE_COLUMNS = (
     {
         "key": "source_detail", "header": OTHER_SOURCE_DETAIL, "kind": "text",
         "aliases": (
+            "Other Source Detail (required if Other)",
             "Other Source (if Other)", "Source Detail", "其他来源",
             "来源详情", "其他来源说明", "其他来源说明（选择 Other 时填写）",
             "其他来源说明（选 Other 时必填）",

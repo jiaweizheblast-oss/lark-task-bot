@@ -1003,13 +1003,16 @@ function candModal(c){
     +`<div class="row2"><div class="field"><label>Entry Date (system-owned)</label><input type="text" disabled value="${c?esc((c.apply_date||'').slice(0,10)):'Assigned when saved'}"></div>`
     +`<div class="field"><label>Candidate *</label><input id="mcName" ${c?'readonly':''} value="${c?esc(c.name||''):''}" placeholder="Candidate name"></div></div>`
     +`<div class="row2"><div class="field"><label>Source Channel *</label><select id="mcChannel">${chans}</select></div>`
-    +`<div class="field"><label>Other Source Detail (required if Other)</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="Example: industry event, campus group, private community"></div></div>`
+    +`<div class="field"><label>Other Source Detail (only when Source Channel = Other)</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="Leave blank unless Source Channel is Other"></div></div>`
     +`<div class="field"><label>Job *</label><select id="mcJob">${jobs}</select></div>`
     +`<div class="field"><label>Current Stage *</label><select id="mcStatus">${sts}</select><div class="muted" style="padding:5px 0 0;font-size:12px">Stage Started On is updated automatically only when Current Stage changes.</div></div>`
     +`<div class="row2"><div class="field"><label>HR Owner</label><select id="mcBy">${by}</select></div>`
     +`<div class="field"><label>Rejection Reason</label><input id="mcReject" value="${c?esc(c.rejection_reason||''):''}" placeholder="Required when stage is Rejected"></div></div>`
     +`<div class="field"><label>Note</label><input id="mcNote" value="${c?esc(c.note||''):''}"></div>`
     +`<div class="acts"><button class="btn" onclick="saveCandidate(${c?c.id:0})">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
+  const source=document.getElementById('mcChannel'),detail=document.getElementById('mcSourceDetail');
+  const syncOtherDetail=()=>{const enabled=source.value==='Other';detail.disabled=!enabled;if(!enabled)detail.value='';};
+  source.addEventListener('change',syncOtherDetail);syncOtherDetail();
 }
 function newCandidate(){candModal(null);}
 function editCandidate(id){const c=CANDS.find(x=>x.id===id);if(c)candModal(c);}
@@ -1021,6 +1024,7 @@ async function saveCandidate(id){
   if(!body.name){toast('请填写候选人',true);return;}
   if(!body.channel){toast('请选择 Source Channel',true);return;}
   if(body.channel==='Other'&&!body.source_detail){toast('选择 Other 时必须填写其他来源说明',true);return;}
+  if(body.channel!=='Other'&&body.source_detail){toast('Only Source Channel = Other may include Other Source Detail',true);return;}
   if(!body.job_request_id){toast('请选择职位',true);return;}
   if(body.status==='Rejected'&&!body.rejection_reason){toast('Rejected 必须填写 Rejection Reason',true);return;}
   try{

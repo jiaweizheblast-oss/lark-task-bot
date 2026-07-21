@@ -13,6 +13,7 @@ Lark 多维表格（Bitable）客户端：机器人以「应用身份」建自�
 import os
 import json
 import time
+import datetime
 import urllib.request
 import urllib.error
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -164,7 +165,17 @@ def _pipeline_fields_spec(job_titles, channels, stages):
     fields = []
     for spec in pipeline_schema.columns_for("lark"):
         field = {"field_name": spec["header"], "type": FT_TEXT}
-        if spec["kind"] == "choice":
+        if spec["key"] == "record_date":
+            # Correct from first creation: HR must never see an editable text
+            # placeholder for Entry Date.
+            field["type"] = FT_CREATED_TIME
+            field["property"] = {"date_formatter": "yyyy/MM/dd"}
+        elif spec["key"] == "stage_date":
+            # Preserve canonical column order, then convert this empty date
+            # placeholder to scoped Modified Time after Current Stage has an ID.
+            field["type"] = 5
+            field["property"] = {"date_formatter": "yyyy/MM/dd"}
+        elif spec["kind"] == "choice":
             options = (
                 channels if spec["key"] == "channel"
                 else job_titles if spec["key"] == "job"
@@ -175,7 +186,7 @@ def _pipeline_fields_spec(job_titles, channels, stages):
                 field["property"] = {"options": [{"name": value} for value in options]}
         if spec["key"] == "source_detail":
             field["description"] = (
-                "Fill only when Source Channel is Other; otherwise leave blank."
+                "ONLY fill this when Source Channel is Other. Any other combination is rejected on submit."
             )
         elif spec["key"] == "record_date":
             field["description"] = "System-owned date when the candidate first enters the pipeline."
@@ -271,6 +282,100 @@ def _find_field(fields, spec):
     )
 
 
+def _iso_date_text(value):
+    text = str(value or "").strip()[:10]
+    if not text:
+        return True
+    try:
+        datetime.date.fromisoformat(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _clear_invalid_legacy_date_values(app_token, table_id, field_name):
+    """Clear only invalid HR text before converting a system-owned date field.
+
+    Both dates have always been ignored by the importer, so invalid free text is
+    not candidate history. Valid ISO dates remain available for Lark's normal
+    field conversion instead of being destroyed.
+    """
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err, "cleared": 0}
+    cleared, page = 0, ""
+    for _ in range(50):
+        path = "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" % (
+            app_token, table_id)
+        if page:
+            path += "&page_token=" + page
+        response = _req("GET", path, token=tok)
+        if response.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Unable to inspect legacy system dates: %s" %
+                         (response.get("msg") or response),
+                "raw": response,
+                "cleared": cleared,
+            }
+        data = response.get("data") or {}
+        for record in data.get("items") or []:
+            raw = (record.get("fields") or {}).get(field_name)
+            if raw not in (None, "") and not _iso_date_text(_flatten(raw)):
+                update = _req(
+                    "PUT",
+                    "/open-apis/bitable/v1/apps/%s/tables/%s/records/%s" %
+                    (app_token, table_id, record.get("record_id")),
+                    token=tok,
+                    body={"fields": {field_name: None}},
+                )
+                if update.get("code") != 0:
+                    return {
+                        "ok": False,
+                        "error": "Unable to clear invalid legacy %s: %s" %
+                                 (field_name, update.get("msg") or update),
+                        "raw": update,
+                        "cleared": cleared,
+                    }
+                cleared += 1
+        if data.get("has_more") and data.get("page_token"):
+            page = data["page_token"]
+        else:
+            break
+    return {"ok": True, "cleared": cleared}
+
+
+def _verify_system_date_fields(app_token, pipeline_table_id):
+    """Re-read Lark state; a successful PUT response alone is not sufficient."""
+    listed = _list_fields(app_token, pipeline_table_id)
+    if not listed.get("ok"):
+        return listed
+    fields = listed["fields"]
+    stage_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                      if item["key"] == "status")
+    entry_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                      if item["key"] == "record_date")
+    date_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                     if item["key"] == "stage_date")
+    stage_field = _find_field(fields, stage_spec)
+    entry_field = _find_field(fields, entry_spec)
+    date_field = _find_field(fields, date_spec)
+    problems = []
+    if not entry_field or int(entry_field.get("type") or 0) != FT_CREATED_TIME:
+        problems.append("Entry Date is not a Created Time system field")
+    date_property = (date_field or {}).get("property") or {}
+    tracked_fields = date_property.get("fields") or []
+    if (not date_field or int(date_field.get("type") or 0) != FT_MODIFIED_TIME
+            or not stage_field or stage_field.get("field_id") not in tracked_fields):
+        problems.append("Stage Started On is not scoped to Current Stage")
+    return {
+        "ok": not problems,
+        "errors": problems,
+        "entry_field_id": (entry_field or {}).get("field_id"),
+        "stage_date_field_id": (date_field or {}).get("field_id"),
+    }
+
+
 def configure_system_entry_date_field(app_token, pipeline_table_id):
     """Make Entry Date a Lark-owned Created Time field."""
     tok, err = tenant_token()
@@ -286,6 +391,11 @@ def configure_system_entry_date_field(app_token, pipeline_table_id):
     if (int(date_field.get("type") or 0) == FT_CREATED_TIME
             and date_field.get("field_name") == pipeline_schema.ENTRY_DATE):
         return {"ok": True, "updated": False, "field_id": date_field.get("field_id")}
+    sanitised = _clear_invalid_legacy_date_values(
+        app_token, pipeline_table_id, date_field.get("field_name")
+    )
+    if not sanitised.get("ok"):
+        return sanitised
     path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" % (
         app_token, pipeline_table_id, date_field.get("field_id")
     )
@@ -299,7 +409,14 @@ def configure_system_entry_date_field(app_token, pipeline_table_id):
     if update.get("code") != 0:
         return {"ok": False, "error": "配置 Entry Date 系统字段失败：%s" %
                 (update.get("msg") or update), "raw": update}
-    return {"ok": True, "updated": True, "field_id": date_field.get("field_id")}
+    verified = _list_fields(app_token, pipeline_table_id)
+    if not verified.get("ok"):
+        return verified
+    actual = _find_field(verified["fields"], spec)
+    if not actual or int(actual.get("type") or 0) != FT_CREATED_TIME:
+        return {"ok": False, "error": "Entry Date migration returned success but did not become read-only"}
+    return {"ok": True, "updated": True, "field_id": actual.get("field_id"),
+            "cleared_invalid_values": sanitised.get("cleared", 0), "verified": True}
 
 
 def configure_system_stage_date_field(app_token, pipeline_table_id):
@@ -323,6 +440,11 @@ def configure_system_stage_date_field(app_token, pipeline_table_id):
             and stage_field.get("field_id") in (existing_property.get("fields") or [])):
         return {"ok": True, "updated": False, "field_id": date_field.get("field_id"),
                 "tracking_mode": "current_stage"}
+    sanitised = _clear_invalid_legacy_date_values(
+        app_token, pipeline_table_id, date_field.get("field_name")
+    )
+    if not sanitised.get("ok"):
+        return sanitised
     path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" % (
         app_token, pipeline_table_id, date_field.get("field_id")
     )
@@ -341,8 +463,20 @@ def configure_system_stage_date_field(app_token, pipeline_table_id):
         # HR Owner would create a false stage date. Fail closed instead.
         return {"ok": False, "error": "配置 Stage Started On 失败：%s" %
                 (update.get("msg") or update), "raw": update}
-    return {"ok": True, "updated": True, "field_id": date_field.get("field_id"),
-            "tracking_mode": "current_stage"}
+    verified = _list_fields(app_token, pipeline_table_id)
+    if not verified.get("ok"):
+        return verified
+    actual_stage = _find_field(verified["fields"], stage_spec)
+    actual_date = _find_field(verified["fields"], date_spec)
+    actual_property = (actual_date or {}).get("property") or {}
+    if (not actual_date or int(actual_date.get("type") or 0) != FT_MODIFIED_TIME
+            or not actual_stage
+            or actual_stage.get("field_id") not in (actual_property.get("fields") or [])):
+        return {"ok": False,
+                "error": "Stage Started On migration returned success but is not scoped to Current Stage"}
+    return {"ok": True, "updated": True, "field_id": actual_date.get("field_id"),
+            "tracking_mode": "current_stage",
+            "cleared_invalid_values": sanitised.get("cleared", 0), "verified": True}
 
 
 def normalize_table_field_names(app_token, table_id, specs, skip_keys=()):
@@ -453,6 +587,7 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     )
     entry_date = configure_system_entry_date_field(app_token, pipeline_table_id)
     stage_date = configure_system_stage_date_field(app_token, pipeline_table_id)
+    verification = _verify_system_date_fields(app_token, pipeline_table_id)
     cleanup = cleanup_empty_default_tables(
         app_token,
         protected_table_ids=(pipeline_table_id, manual_table_id),
@@ -460,13 +595,40 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     return {
         "ok": bool(pipeline_names.get("ok") and manual_names.get("ok")
                    and entry_date.get("ok") and stage_date.get("ok")
-                   and cleanup.get("ok")),
+                   and verification.get("ok") and cleanup.get("ok")),
         "pipeline_field_names": pipeline_names,
         "manual_field_names": manual_names,
         "entry_date": entry_date,
         "stage_date": stage_date,
+        "verification": verification,
         "default_table_cleanup": cleanup,
     }
+
+
+def verify_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
+    """Read current Lark metadata and prove the schema, without trusting a marker."""
+    if not app_token or not pipeline_table_id or not manual_table_id:
+        return {"ok": False, "error": "Channel Analytics Base configuration is incomplete"}
+    pipeline = _list_fields(app_token, pipeline_table_id)
+    manual = _list_fields(app_token, manual_table_id)
+    if not pipeline.get("ok"):
+        return pipeline
+    if not manual.get("ok"):
+        return manual
+    pipeline_names = {str(item.get("field_name") or "") for item in pipeline["fields"]}
+    manual_names = {str(item.get("field_name") or "") for item in manual["fields"]}
+    missing_pipeline = [spec["header"] for spec in pipeline_schema.columns_for("lark")
+                        if spec["header"] not in pipeline_names]
+    missing_manual = [spec["header"] for spec in pipeline_schema.MANUAL_COLUMNS
+                      if spec["header"] not in manual_names]
+    dates = _verify_system_date_fields(app_token, pipeline_table_id)
+    problems = []
+    if missing_pipeline:
+        problems.append("Missing Pipeline fields: %s" % ", ".join(missing_pipeline))
+    if missing_manual:
+        problems.append("Missing manual fields: %s" % ", ".join(missing_manual))
+    problems.extend(dates.get("errors") or ([] if dates.get("ok") else [dates.get("error") or "Date verification failed"]))
+    return {"ok": not problems, "errors": problems, "dates": dates}
 
 
 def cleanup_empty_default_tables(app_token, protected_table_ids=()):

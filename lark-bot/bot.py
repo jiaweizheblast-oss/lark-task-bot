@@ -1743,7 +1743,14 @@ def _ensure_lark_channel_schema(cfg=None):
     """Run the one-time, idempotent Base repair before any operational use."""
     cfg = cfg or _lark_cfg()
     if db.get_settings().get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION:
-        return {"ok": True, "already_ensured": True}
+        verified = lark_bitable.verify_channel_base_schema(
+            cfg.get("app_token"), cfg.get("pipeline_table_id"), cfg.get("manual_table_id")
+        )
+        if verified.get("ok"):
+            return {"ok": True, "already_ensured": True, "verification": verified}
+        # A database marker is not proof. Repair the actual Base and only retain
+        # the marker after a fresh post-migration metadata check succeeds.
+        db.set_setting("lark_channel_schema_ensured", "")
     if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
         return {"ok": False, "error": "在线渠道表尚未完整配置"}
     result = lark_bitable.ensure_channel_base_schema(
