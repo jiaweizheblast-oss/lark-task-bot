@@ -207,6 +207,26 @@ CREATE INDEX IF NOT EXISTS idx_candidate_lark ON candidate (lark_record_id);
 
 -- 职位补负责人列（幂等）
 ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT '';
+-- AI Talent Discovery jobs keep their UUID identity. Local integer IDs remain
+-- implementation details and must never be matched by title.
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS core_job_ref TEXT;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS core_requested_contact_count INTEGER;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_requests_core_ref
+    ON job_requests (core_job_ref) WHERE core_job_ref IS NOT NULL;
+
+-- Append-only, manager-only mirrors received from AI Talent Discovery.
+-- Candidate state is not copied into Nexus' mutable candidate table.
+CREATE TABLE IF NOT EXISTS talent_snapshot (
+    content_sha256 TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    source_system  TEXT NOT NULL,
+    generated_at   TIMESTAMPTZ NOT NULL,
+    content        JSONB NOT NULL,
+    signature      TEXT NOT NULL,
+    received_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_talent_snapshot_generated
+    ON talent_snapshot (generated_at DESC);
 
 -- 文档 / 模板库：招聘话术、JD、面试评估表、任务 SOP 等可复用模板
 CREATE TABLE IF NOT EXISTS templates (

@@ -37,6 +37,7 @@ import channel_report
 import sheet_io
 import attend
 import lark_bitable
+import talent_integration
 from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
@@ -57,6 +58,7 @@ COMPANY_TZ_OFFSET = float(os.environ.get("COMPANY_TZ_OFFSET", "5.5") or 5.5)  # 
 WORK_START = int(os.environ.get("WORK_START", "10") or 10)        # 工作时间开始（每天这个点发提醒）
 WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间结束（默认 22 点 / 晚10点）
 ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
+NEXUS_INTEGRATION_SIGNING_KEY = os.environ.get("NEXUS_INTEGRATION_SIGNING_KEY", "")
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -538,6 +540,59 @@ def _panel_auth():
     return pw == PANEL_PASSWORD
 
 
+def _talent_snapshot_json(row):
+    if not row:
+        return {"status": "empty", "snapshot": None}
+    return {
+        "status": "ready",
+        "snapshot": {
+            "schema_version": row["schema_version"],
+            "source_system": row["source_system"],
+            "generated_at": row["generated_at"].isoformat(),
+            "received_at": row["received_at"].isoformat(),
+            "content_sha256": row["content_sha256"],
+            "content": row["content"],
+        },
+    }
+
+
+@app.route("/api/integration/v1/talent/snapshot", methods=["POST"])
+def api_talent_snapshot_ingest():
+    """Accept one signed, manager-only mirror; never mutate candidate truth."""
+    raw = request.get_data(cache=True)
+    if len(raw) > talent_integration.MAX_BODY_BYTES:
+        return jsonify({"error": "snapshot_too_large"}), 413
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        verified = talent_integration.verify_snapshot(
+            payload, NEXUS_INTEGRATION_SIGNING_KEY
+        )
+        stored = db.store_talent_snapshot(verified)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return jsonify({"error": "invalid_json"}), 400
+    except ValueError as exc:
+        code = "stale_snapshot" if "older than" in str(exc) else "snapshot_rejected"
+        return jsonify({"error": code}), 409 if code == "stale_snapshot" else 422
+    except Exception as exc:
+        print("[talent_snapshot] unavailable:", type(exc).__name__)
+        return jsonify({"error": "snapshot_unavailable"}), 503
+    status_code = 201 if stored["accepted"] else 200
+    return jsonify({
+        "status": "stored" if stored["accepted"] else "unchanged",
+        "accepted": stored["accepted"],
+        "idempotent": stored["idempotent"],
+        "content_sha256": verified["content_sha256"],
+        "generated_at": verified["generated_at"],
+    }), status_code
+
+
+@app.route("/api/talent/snapshot", methods=["GET"])
+def api_talent_snapshot_get():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(_talent_snapshot_json(db.get_latest_talent_snapshot()))
+
+
 def _task_json(t):
     t = dict(t)
     for k in ("deadline", "created_at", "updated_at"):
@@ -1009,7 +1064,16 @@ def api_channel_add_job():
 def api_channel_update_job(jid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    existing = db.get_job_request(jid)
+    if not existing:
+        return jsonify({"error": "职位不存在"}), 404
     d = request.get_json(silent=True) or {}
+    if existing.get("core_job_ref") and any(
+        key in d for key in ("title", "status")
+    ):
+        return jsonify({
+            "error": "核心职位的名称和状态由 Talent Discovery 同步，不能在 Nexus 修改"
+        }), 409
     fields = {}
     if "title" in d:
         t = (d.get("title") or "").strip()

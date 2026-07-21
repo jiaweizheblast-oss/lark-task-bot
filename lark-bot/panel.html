@@ -391,14 +391,16 @@
       <div style="font-size:12px;color:var(--soft);line-height:1.6">口径：逐候选人记录（每行一个候选人，渠道/漏斗/速度自动统计）· 时区 Asia/Kolkata · 与 CODEX 各自独立，可经 ext_ref 关联、不合库。</div>
     </section>
     <section id="view-talent" class="hide">
-      <div class="form-card" style="max-width:720px">
-        <h2>Talent Discovery</h2>
-        <p class="sub">AI 候选人发现（AI Talent Discovery）——爬取 / 去重 / 匹配 / 打分 / 联系任务 + 不可变联系历史。由核心系统（CODEX）提供。</p>
-        <div style="background:var(--accentS);color:var(--accent);border-radius:10px;padding:14px 16px;font-size:13.5px;line-height:1.75">
-          这是独立系统的入口占位。按已锁定的协作边界：两套系统不合并代码/数据库；候选人交换走 v3 签名往返（核心签发 token + 行签名，运营侧只投递 / 读回 / 原样往返，不持密钥、不重算签名）。<br>
-          联调完成后，这里接入候选人队列与 Review 池。
-        </div>
-        <div class="muted" style="text-align:left;padding:12px 2px 0">当前状态：待联调（fixture 阶段往返测试已通过）。</div>
+      <div class="toolbar">
+        <div><div style="font-weight:750;font-size:16px">🔎 Talent Discovery</div>
+        <div class="muted" id="tdSync" style="padding:2px 0 0;font-size:12px">读取签名镜像…</div></div>
+        <div class="sp"></div><button class="btn ghost sm" onclick="loadTalent()">🔄 刷新</button>
+      </div>
+      <div id="tdEmpty" class="acard hide" style="text-align:center;color:var(--soft);line-height:1.7">还没有收到 AI Talent Discovery 的签名同步。候选人核心数据不会写入 Nexus 的可编辑候选人表。</div>
+      <div id="tdBody" class="hide">
+        <div id="tdKpis" class="kpis"></div>
+        <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>核心 Job Reqs</b><span class="muted" style="padding:0">按 core_job_ref 同步 · 条件只读</span></div><div id="tdJobs"></div></div>
+        <div class="acard"><div class="acard-h"><b>候选人匹配镜像</b><span class="muted" style="padding:0">经理可见评分 · HR 表不显示</span></div><div id="tdCandidates"></div></div>
       </div>
     </section>
     <section id="view-home" class="hide">
@@ -470,9 +472,29 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
     PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='Connection failed';}}
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
-  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();showTab('home');}
+  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();const requested=(location.hash||'').replace('#','');showTab(['recruit','talent','jobs'].includes(requested)?requested:'home');}
 async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
-function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();}
+function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent')loadTalent();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();}
+
+async function loadTalent(){
+  let data=null;try{data=await(await api('/api/talent/snapshot')).json();}catch(e){data=null;}
+  const empty=!data||data.status!=='ready'||!data.snapshot;
+  document.getElementById('tdEmpty').classList.toggle('hide',!empty);
+  document.getElementById('tdBody').classList.toggle('hide',empty);
+  if(empty){document.getElementById('tdSync').textContent='尚未同步';return;}
+  const s=data.snapshot,c=s.content||{},m=c.metrics||{},rows=c.candidate_matches||[],jobs=c.jobs||[];
+  document.getElementById('tdSync').textContent='签名镜像 · '+new Date(s.generated_at).toLocaleString()+' · '+String(s.content_sha256||'').slice(0,12);
+  const dc=m.disposition_counts||{};
+  document.getElementById('tdKpis').innerHTML=[
+    [m.candidate_count||0,'去重候选人'],[m.active_match_count||0,'Contact Ready'],
+    [dc.review_required||0,'Review Required'],[dc.candidate_pool||0,'Candidate Pool'],
+    [m.contact_activity_count||0,'联系活动']
+  ].map(x=>`<div class="kpi"><b>${x[0]}</b><span>${x[1]}</span></div>`).join('');
+  document.getElementById('tdJobs').innerHTML=jobs.length?`<table class="rtable"><thead><tr><th>职位</th><th>地区</th><th>正式配额</th><th>Active</th><th>状态</th></tr></thead><tbody>${jobs.map(j=>`<tr><td class="name">${esc(j.title)}</td><td>${esc([j.location,j.country].filter(Boolean).join(', '))}</td><td>${j.requested_contact_count||0}</td><td>${j.active_match_count||0}</td><td>${esc(j.status||'')}</td></tr>`).join('')}</tbody></table>`:'<div class="muted">暂无核心职位</div>';
+  const visible=rows.slice(0,200);
+  document.getElementById('tdCandidates').innerHTML=visible.length?`<table class="rtable"><thead><tr><th>候选人</th><th>Recent Title</th><th>地点</th><th>分类</th><th>经理评分</th><th>来源</th></tr></thead><tbody>${visible.map(r=>`<tr><td class="name">${tdCandidateName(r)}</td><td>${esc(r.recent_title||'—')}</td><td>${esc(r.location||r.country||'—')}</td><td>${esc(r.pipeline_disposition||'—')}</td><td>${esc(r.score||'—')}</td><td>${esc(r.attribution_source||'—')}</td></tr>`).join('')}</tbody></table><div class="muted" style="text-align:left;padding:10px 0 0">显示 ${visible.length} / ${rows.length} 条匹配；评分只在密码保护的经理页面出现。</div>`:'<div class="muted">暂无候选人匹配</div>';
+}
+function tdCandidateName(r){let u='';try{const x=new URL(r.public_profile_url||'');if(x.protocol==='https:')u=x.href;}catch(e){}const name=esc(r.candidate_name||'—');return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${name}</a>`:name;}
 function toggleGroup(h){h.closest('.navgroup').classList.toggle('collapsed');}
 
 async function loadExternalGroups(){try{const gs=await(await api('/api/external-groups')).json();EGROUPS=Array.isArray(gs)?gs:[];EGMAP={};EGROUPS.forEach(g=>EGMAP[g.id]=g.name);}catch(e){EGROUPS=[];}}
@@ -1104,11 +1126,13 @@ function renderJobsList(){
   const list=JOBS.filter(j=>showClosed||j.status==='open');
   const box=document.getElementById('jobList');
   if(!list.length){box.innerHTML='<div class="muted">还没有职位。点「新建职位」添加。</div>';return;}
-  box.innerHTML=`<table class="rtable"><thead><tr><th>职位</th><th>负责人</th><th>目标简历量</th><th>目标人数</th><th>状态</th><th></th></tr></thead><tbody>${list.map(j=>`<tr><td class="name">${esc(j.title)}</td><td>${esc(j.owner||'—')}</td><td>${j.target_resume_count||'—'}</td><td>${j.target_headcount||'—'}</td><td><span class="jstat ${j.status}">${j.status==='open'?'在招':'已关闭'}</span></td><td style="white-space:nowrap"><span class="dact" onclick="editJob(${j.id})">编辑</span> · <span class="dact" onclick="toggleJob(${j.id})">${j.status==='open'?'关闭':'重开'}</span></td></tr>`).join('')}</tbody></table>`;
+  box.innerHTML=`<table class="rtable"><thead><tr><th>职位</th><th>负责人</th><th>正式配额</th><th>目标简历量</th><th>目标人数</th><th>状态</th><th></th></tr></thead><tbody>${list.map(j=>`<tr><td class="name">${esc(j.title)}${j.core_job_ref?' <span class="muted" style="padding:0;font-size:10px">Core synced</span>':''}</td><td>${esc(j.owner||'—')}</td><td>${j.core_requested_contact_count||'—'}</td><td>${j.target_resume_count||'—'}</td><td>${j.target_headcount||'—'}</td><td><span class="jstat ${j.status}">${j.status==='open'?'在招':'已关闭'}</span></td><td style="white-space:nowrap"><span class="dact" onclick="editJob(${j.id})">${j.core_job_ref?'运营设置':'编辑'}</span>${j.core_job_ref?'':' · <span class="dact" onclick="toggleJob('+j.id+')">'+(j.status==='open'?'关闭':'重开')+'</span>'}</td></tr>`).join('')}</tbody></table>`;
 }
 function jobModal(j){
+  const core=!!(j&&j.core_job_ref);
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${j?'编辑职位':'新建职位'}</h3>`
-    +`<div class="field"><label>职位名 *</label><input id="jmTitle" value="${j?esc(j.title):''}"></div>`
+    +(core?`<div class="muted" style="text-align:left;padding:0 0 10px">职位名、状态和正式配额由 Talent Discovery 核心同步；这里仅编辑运营目标。</div>`:'')
+    +`<div class="field"><label>职位名 *</label><input id="jmTitle" ${core?'readonly':''} value="${j?esc(j.title):''}"></div>`
     +`<div class="field"><label>负责人</label><input id="jmOwner" value="${j?esc(j.owner||''):''}"></div>`
     +`<div class="row2"><div class="field"><label>目标简历量</label><input id="jmRes" type="number" min="0" value="${j?j.target_resume_count:0}"></div>`
     +`<div class="field"><label>目标人数</label><input id="jmHead" type="number" min="0" value="${j?j.target_headcount:0}"></div></div>`
@@ -1117,8 +1141,10 @@ function jobModal(j){
 function newJob(){jobModal(null);}
 function editJob(id){const j=JOBS.find(x=>x.id===id);if(j)jobModal(j);}
 async function saveJob(id){
-  const body={title:val('jmTitle'),owner:val('jmOwner'),target_resume_count:parseInt(document.getElementById('jmRes').value||'0',10),target_headcount:parseInt(document.getElementById('jmHead').value||'0',10)};
-  if(!body.title){toast('职位名必填',true);return;}
+  const existing=JOBS.find(x=>x.id===id),core=!!(existing&&existing.core_job_ref);
+  const body={owner:val('jmOwner'),target_resume_count:parseInt(document.getElementById('jmRes').value||'0',10),target_headcount:parseInt(document.getElementById('jmHead').value||'0',10)};
+  if(!core)body.title=val('jmTitle');
+  if(!core&&!body.title){toast('职位名必填',true);return;}
   try{if(id)await api('/api/channel/jobs/'+id,{method:'PATCH',body:JSON.stringify(body)});else await api('/api/channel/jobs',{method:'POST',body:JSON.stringify(body)});
     closeModal();toast('已保存 ✓');loadJobs();}catch(e){toast('保存失败',true);}
 }

@@ -4,6 +4,7 @@
 连接地址从环境变量 DATABASE_URL 读（Railway 会自动提供）。
 """
 import os
+import datetime
 import psycopg2
 import psycopg2.extras
 
@@ -344,6 +345,78 @@ def update_job_request(jid, **fields):
     vals = list(sets.values()) + [jid]
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"UPDATE job_requests SET {cols} WHERE id=%s", vals)
+
+
+def store_talent_snapshot(envelope):
+    """Append one verified mirror and sync core Job Refs atomically."""
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("talent_snapshot_ingest_v1",),
+            )
+            cur.execute(
+                "SELECT content_sha256, generated_at FROM talent_snapshot "
+                "ORDER BY generated_at DESC, received_at DESC LIMIT 1 FOR UPDATE"
+            )
+            latest = cur.fetchone()
+            if latest and latest["content_sha256"] == envelope["content_sha256"]:
+                conn.commit()
+                return {"accepted": False, "idempotent": True}
+            generated_at = datetime.datetime.fromisoformat(envelope["generated_at"])
+            if latest and latest["generated_at"] > generated_at:
+                raise ValueError("snapshot is older than the current mirror")
+            cur.execute(
+                """INSERT INTO talent_snapshot
+                   (content_sha256, schema_version, source_system, generated_at, content, signature)
+                   VALUES (%s,%s,%s,%s,%s::jsonb,%s)
+                   ON CONFLICT (content_sha256) DO NOTHING""",
+                (
+                    envelope["content_sha256"], envelope["schema_version"],
+                    envelope["source_system"], generated_at,
+                    psycopg2.extras.Json(envelope["content"]), envelope["signature"],
+                ),
+            )
+            inserted = cur.rowcount == 1
+            for job in envelope["content"]["jobs"]:
+                core_status = str(job.get("status") or "").casefold()
+                local_status = "open" if core_status in {"active", "open"} else "closed"
+                cur.execute(
+                    """INSERT INTO job_requests
+                       (title, target_headcount, target_resume_count, status, owner,
+                        core_job_ref, core_requested_contact_count)
+                       VALUES (%s,0,0,%s,'',%s,%s)
+                       ON CONFLICT (core_job_ref) WHERE core_job_ref IS NOT NULL DO UPDATE SET
+                         title=EXCLUDED.title,
+                         core_requested_contact_count=EXCLUDED.core_requested_contact_count,
+                         status=EXCLUDED.status""",
+                    (
+                        str(job.get("title") or "Untitled"),
+                        local_status,
+                        job["core_job_ref"],
+                        int(job.get("requested_contact_count") or 0),
+                    ),
+                )
+        conn.commit()
+        return {"accepted": inserted, "idempotent": not inserted}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_latest_talent_snapshot():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """SELECT content_sha256, schema_version, source_system,
+                      generated_at, content, received_at
+               FROM talent_snapshot
+               ORDER BY generated_at DESC, received_at DESC LIMIT 1"""
+        )
+        return cur.fetchone()
 
 
 def list_channel_records(day=None):
