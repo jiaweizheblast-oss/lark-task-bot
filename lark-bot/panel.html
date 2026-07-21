@@ -303,7 +303,7 @@
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:14px">
           <div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel2)">
             <div style="font-weight:700;margin-bottom:5px">网站 Excel</div>
-            <div class="muted" style="padding:0;font-size:12px;margin-bottom:10px">一行一个候选人职位流程；HR 只更新 Current Stage 和必要备注。Entry Date 与 Stage Started On 均由网站数据库自动维护，只在锁定的 Excel 中显示，Lark 无需填写。</div>
+            <div class="muted" style="padding:0;font-size:12px;margin-bottom:10px">一行一个候选人职位流程；HR 只更新 Current Stage 和必要备注。Entry Date 与 Stage Started On 由系统自动记录，仅用于管理端趋势、阶段历史和 Days in Stage；Lark 与 Excel 均无需填写。</div>
             <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
               <select id="cBy" style="min-width:130px" title="受控填报人"></select>
               <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增受控填报人">＋</button>
@@ -921,14 +921,14 @@ function renderCandidates(){
   const rows=CANDS.filter(c=>_CBUCKET[CANDFILTER](c.status||'New Lead'));
   if(!rows.length){box.innerHTML='<div class="muted">这个阶段暂时没有候选人。</div>';return;}
   const jobName=id=>{const j=(CMETA.jobs||[]).find(x=>x.id===id);return j?j.title:'—';};
-  box.innerHTML=`<table class="rtable"><thead><tr><th>进入日期</th><th>候选人</th><th>Source Channel</th><th>职位</th><th>Current Stage</th><th>阶段日期</th><th>备注</th><th></th></tr></thead><tbody>${rows.map(c=>{
+  box.innerHTML=`<table class="rtable"><thead><tr><th>进入日期</th><th>候选人</th><th>Source Channel</th><th>职位</th><th>Current Stage</th><th>Days in Stage</th><th>备注</th><th></th></tr></thead><tbody>${rows.map(c=>{
     return `<tr>`
     +`<td style="white-space:nowrap">${esc((c.apply_date||'').slice(0,10))}</td>`
     +`<td class="name">${esc(c.name||'—')}${c.ext_ref?' <span title="已关联 CODEX 候选人" style="color:var(--accent);font-size:11px">🔗</span>':''}</td>`
     +`<td>${esc(c.channel||'')}${c.source_detail?('<div class="muted" style="padding:0;font-size:11px">'+esc(c.source_detail)+'</div>'):''}</td>`
     +`<td>${esc(c.job_title||jobName(c.job_request_id))}</td>`
     +`<td>${candStatusBadge(c.status)}</td>`
-    +`<td style="white-space:nowrap">${esc((c.stage_date||'').slice(0,10)||'—')}</td>`
+    +`<td style="white-space:nowrap" title="Stage started ${(c.stage_date||'').slice(0,10)||'unknown'}">${c.days_in_stage==null?'—':esc(c.days_in_stage)}</td>`
     +`<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.note||'')}">${esc(c.note||'')}</td>`
     +`<td style="white-space:nowrap"><span class="dact" onclick="editCandidate(${c.id})">更新阶段</span></td>`
     +`</tr>`;}).join('')}</tbody></table>`;
@@ -949,7 +949,7 @@ async function larkRefreshStatus(){
       }
       s=await(await api('/api/lark/status')).json();
     }
-    if(s.configured){el.innerHTML='🟢 Lark 已连接'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · 上次同步 '+esc(s.last_sync)):' · 尚未同步');}
+    if(s.configured){el.innerHTML='🟢 Lark 已连接'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · 上次提交 '+esc(s.last_sync)):' · 尚无提交记录（正常）');}
     else{el.textContent='🟠 Lark 在线表未配置（不影响网站 Excel）';}
   }catch(e){}
 }

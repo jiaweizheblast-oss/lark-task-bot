@@ -374,13 +374,18 @@ def _verify_system_date_fields(app_token, pipeline_table_id):
                       if item["key"] == "record_date")
     date_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
                      if item["key"] == "stage_date")
+    id_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                   if item["key"] == "cand_id")
     entry_field = _find_field(fields, entry_spec)
     date_field = _find_field(fields, date_spec)
+    id_field = _find_field(fields, id_spec)
     problems = []
     if entry_field:
         problems.append("Legacy Entry Date field is still exposed in Lark")
     if date_field:
         problems.append("Legacy editable Stage Started On field is still exposed in Lark")
+    if id_field:
+        problems.append("Internal System ID field is still exposed in Lark")
     return {
         "ok": not problems,
         "errors": problems,
@@ -599,6 +604,37 @@ def remove_legacy_lark_stage_date_field(app_token, pipeline_table_id):
     return {"ok": True, "removed": True, "field_id": date_field.get("field_id")}
 
 
+def remove_lark_system_id_field(app_token, pipeline_table_id):
+    """Remove the redundant internal ID from Lark; record_id is authoritative."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, pipeline_table_id)
+    if not listed.get("ok"):
+        return listed
+    spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                if item["key"] == "cand_id")
+    field = _find_field(listed["fields"], spec)
+    if not field:
+        return {"ok": True, "removed": False}
+    response = _delete_retry(
+        "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" %
+        (app_token, pipeline_table_id, field.get("field_id")),
+        tok,
+    )
+    if response.get("code") != 0:
+        return {"ok": False,
+                "error": "Unable to remove internal System ID field: %s" %
+                         (response.get("msg") or response),
+                "raw": response}
+    verified = _list_fields(app_token, pipeline_table_id)
+    if not verified.get("ok"):
+        return verified
+    if _find_field(verified["fields"], spec):
+        return {"ok": False, "error": "System ID still exists after deletion"}
+    return {"ok": True, "removed": True, "field_id": field.get("field_id")}
+
+
 def delete_known_unsynced_test_rows(app_token, pipeline_table_id):
     """Delete only the exact disposable row identified for this migration.
 
@@ -772,6 +808,7 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     )
     entry_date = remove_legacy_lark_entry_date_field(app_token, pipeline_table_id)
     stage_date = remove_legacy_lark_stage_date_field(app_token, pipeline_table_id)
+    system_id = remove_lark_system_id_field(app_token, pipeline_table_id)
     verification = _verify_system_date_fields(app_token, pipeline_table_id)
     cleanup = cleanup_empty_default_tables(
         app_token,
@@ -780,11 +817,13 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     return {
         "ok": bool(pipeline_names.get("ok") and manual_names.get("ok")
                    and entry_date.get("ok") and stage_date.get("ok")
+                   and system_id.get("ok")
                    and verification.get("ok") and cleanup.get("ok")),
         "pipeline_field_names": pipeline_names,
         "manual_field_names": manual_names,
         "entry_date": entry_date,
         "stage_date": stage_date,
+        "system_id": system_id,
         "verification": verification,
         "default_table_cleanup": cleanup,
     }

@@ -238,9 +238,6 @@ def import_lark_pipeline_records(
         record_id = _text(record.get("record_id"))
         try:
             existing = database.get_candidate_by_lark(record_id)
-            system_id = _text(_field(fields, "cand_id"))
-            if not existing and system_id.isdigit():
-                existing = database.get_candidate(int(system_id))
             created_now = existing is None
             if existing:
                 candidate_id = existing["id"]
@@ -257,9 +254,6 @@ def import_lark_pipeline_records(
                     _text(_field(fields, "filled_by")), "Lark", "", record_id, detail)
                 existing = {"status": "New Lead"}
                 created += 1
-            row_writeback = {}
-            if system_id != str(candidate_id):
-                row_writeback["System ID"] = str(candidate_id)
             current_stage = _text(existing.get("status")) or "New Lead"
             if created_now or stage != current_stage:
                 # Stage Started On is system-owned. The database records the
@@ -270,8 +264,6 @@ def import_lark_pipeline_records(
                 event_ref = "lark-" + hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:32]
                 database.transition_candidate_stage(candidate_id, stage, stage_date,
                     _text(_field(fields, "filled_by")), reason, _text(_field(fields, "note")), event_ref)
-            if record_id and row_writeback:
-                writebacks.append({"record_id": record_id, "fields": row_writeback})
         except Exception as error:
             errors.append("Pipeline 第%d条：%s" % (index, error))
     return {"ok": True, "created": created, "updated": updated, "skipped": skipped,

@@ -6,7 +6,7 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v9"
+SCHEMA_VERSION = "channel-pipeline-v11"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
@@ -30,9 +30,9 @@ PIPELINE_COLUMNS = (
     {
         "key": "record_date", "header": ENTRY_DATE, "kind": "date",
         "aliases": ("Date", "日期", "入库日期"), "system": True,
-        # The database owns this date. Lark exposes neither workflow date;
-        # the locked XLSX surface still displays both system-owned dates.
-        "surfaces": ("xlsx",),
+        # Entry Date is manager analytics data, not an HR command. It is
+        # assigned on first import and never rendered on either HR surface.
+        "surfaces": (),
     },
     {
         "key": "channel", "header": "Source Channel", "kind": "choice",
@@ -59,11 +59,9 @@ PIPELINE_COLUMNS = (
     {
         "key": "stage_date", "header": STAGE_STARTED_ON, "kind": "date",
         "aliases": ("Stage Date", "Stage Date（系统自动）", "阶段日期"),
-        # Lark Base has no read-only timestamp that can be scoped to one
-        # selected field.  The service/database owns the authoritative stage
-        # transition date; XLSX can display it as a locked system column, but
-        # the HR-editable Lark surface must not expose a misleading field.
-        "system": True, "surfaces": ("xlsx",),
+        # Stage Started On belongs to the immutable stage-event history. The
+        # manager UI derives Days in Stage from it; HR never types this value.
+        "system": True, "surfaces": (),
     },
     {
         "key": "filled_by", "header": "HR Owner", "kind": "text",
@@ -80,6 +78,9 @@ PIPELINE_COLUMNS = (
     {
         "key": "cand_id", "header": "System ID", "kind": "text",
         "aliases": ("记录ID", "系统ID"), "system": True, "hidden": True,
+        # Excel needs a hidden stable identifier. Lark already supplies its own
+        # immutable record_id, so showing another internal ID only confuses HR.
+        "surfaces": ("xlsx",),
     },
     {
         "key": "row_ref", "header": "Row Ref", "kind": "text",

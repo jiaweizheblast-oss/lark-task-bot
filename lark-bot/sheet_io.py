@@ -384,22 +384,19 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
     for c in (candidates or []):
         prefill.append({
             "cand_id": str(c.get("id") or ""),
-            "record_date": str(c.get("apply_date") or "")[:10],
             "name": c.get("name") or "",
             "channel": c.get("channel") or "",
             "source_detail": c.get("source_detail") or "",
             "job": c.get("job_title") or id2title.get(c.get("job_request_id"), ""),
             "status": c.get("status") or "New Lead",
-            "stage_date": str(c.get("stage_date") or "")[:10],
             "rejection_reason": c.get("rejection_reason") or "",
             "note": c.get("note") or "",
             "filled_by": c.get("filled_by") or "",
             "row_ref": c.get("ext_ref") or ("candidate-%s" % c.get("id")),
         })
     blank_count = 30 if prefill else 60
-    # Blank input rows intentionally contain no dates or stage. Entry Date is
-    # assigned when the row is first imported; Stage Started On is assigned by
-    # the first immutable stage event. This prevents stale template dates.
+    # HR surfaces contain commands only. Entry Date is assigned when a row is
+    # first imported, while Stage Started On comes from immutable stage events.
     prefill.extend({"row_ref": "manual-" + str(uuid.uuid4()), "filled_by": by}
                    for _ in range(blank_count))
     return build_xlsx(cols, prefill_rows=prefill,

@@ -1092,6 +1092,16 @@ def _chan_json(r):
 
 def _cand_json(c):
     c = dict(c)
+    raw_stage_date = c.get("stage_date")
+    try:
+        stage_day = (
+            raw_stage_date.date() if isinstance(raw_stage_date, datetime.datetime)
+            else raw_stage_date if isinstance(raw_stage_date, datetime.date)
+            else datetime.date.fromisoformat(str(raw_stage_date)[:10])
+        )
+        c["days_in_stage"] = max(0, (_kolkata_today() - stage_day).days)
+    except (TypeError, ValueError):
+        c["days_in_stage"] = None
     for k in ("apply_date", "stage_date", "effective_date", "created_at", "updated_at"):
         if c.get(k) is not None:
             c[k] = c[k].isoformat() if hasattr(c[k], "isoformat") else str(c[k])
@@ -1753,16 +1763,21 @@ def _ensure_lark_channel_schema(cfg=None):
         db.set_setting("lark_channel_schema_ensured", "")
     if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
         return {"ok": False, "error": "在线渠道表尚未完整配置"}
-    result = lark_bitable.ensure_channel_base_schema(
-        cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"]
-    )
-    if result.get("ok") and not cfg.get("last_sync"):
+    test_cleanup = None
+    if not cfg.get("last_sync"):
+        # Run this before removing the legacy System ID column so an existing
+        # identified row can never match the disposable-test-row fingerprint.
         test_cleanup = lark_bitable.delete_known_unsynced_test_rows(
             cfg["app_token"], cfg["pipeline_table_id"]
         )
-        result["discarded_test_rows"] = test_cleanup
         if not test_cleanup.get("ok"):
-            result["ok"] = False
+            return {"ok": False, "discarded_test_rows": test_cleanup,
+                    "error": test_cleanup.get("error") or "Test-row cleanup failed"}
+    result = lark_bitable.ensure_channel_base_schema(
+        cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"]
+    )
+    if test_cleanup is not None:
+        result["discarded_test_rows"] = test_cleanup
     if result.get("ok"):
         db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
     return result
