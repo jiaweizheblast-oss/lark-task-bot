@@ -325,7 +325,7 @@
         <details style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
           <summary style="cursor:pointer;color:var(--soft);font-size:12px;font-weight:650">⚙ Lark 连接设置（管理员首次配置 / 故障排查）</summary>
           <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:10px">
-            <button class="btn ghost sm" onclick="larkPing()">测试机器人凭证</button>
+            <button class="btn ghost sm" onclick="larkPing()">测试 Recruitment Bot 凭证</button>
             <button class="btn ghost sm" onclick="larkCreateTable()">首次创建在线渠道表</button>
             <button class="btn ghost sm" onclick="larkShareExisting()">重新授予管理员权限</button>
             <button class="btn ghost sm" onclick="larkReconnect()">纠正错误机器人连接</button>
@@ -951,7 +951,7 @@ async function larkOpenTable(){
 async function larkPing(){
   toast('检测中…');
   try{const r=await(await api('/api/lark/ping',{method:'POST'})).json();
-    toast(r.ok?('✅ 机器人能连上 Lark（app…'+esc(r.app_id_tail||'')+'）'):('✗ '+(r.error||'连不上')),!r.ok);
+    toast(r.ok?('✅ Recruitment Bot 能连上 Lark（app…'+esc(r.app_id_tail||'')+'）'):('✗ '+(r.error||'连不上')),!r.ok);
   }catch(e){toast('自检失败',true);}
 }
 async function larkCreateTable(){

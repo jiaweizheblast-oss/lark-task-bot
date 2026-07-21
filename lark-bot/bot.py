@@ -49,6 +49,7 @@ APP_SECRET = os.environ.get("APP_SECRET", "")
 LARK_DOMAIN = os.environ.get("LARK_DOMAIN", "https://open.larksuite.com")  # 国内飞书填 https://open.feishu.cn
 ADMIN_SETUP_CODE = os.environ.get("ADMIN_SETUP_CODE", "")
 BOT_NAME = os.environ.get("BOT_NAME", "")                 # 机器人名字，用来在群成员里排除它自己
+RECRUITMENT_BOT_NAME = os.environ.get("RECRUITMENT_BOT_NAME", "RECRUITMENT BOT")
 ENCRYPT_KEY = os.environ.get("ENCRYPT_KEY", "")
 VERIFICATION_TOKEN = os.environ.get("VERIFICATION_TOKEN", "")
 MODE = os.environ.get("MODE", "webhook")
@@ -357,42 +358,13 @@ def handle_dm(sender_open_id, dm_chat_id, text):
     if low.casefold() in {
         "/channel_sheet", "/channel_download", "获取渠道表", "下载渠道表",
     }:
-        if not db.is_admin(sender_open_id):
-            send_text(dm_chat_id, "❌ 只有管理员可以获取渠道运营表。")
-            return
-        cfg = _lark_cfg()
-        panel_url = (_public_base() + "/panel#recruit") if _public_base() else ""
-        send_card(
-            dm_chat_id,
-            cards.channel_sheet_card(
-                url=cfg.get("url") or "",
-                panel_url=panel_url,
-                configured=bool(cfg.get("app_token") and cfg.get("pipeline_table_id")
-                                and cfg.get("manual_table_id")
-                                and cfg.get("schema_version") == "channel-analytics-v2"),
-                last_sync=cfg.get("last_sync") or "",
-            ),
-        )
+        send_text(dm_chat_id, "请在 RECRUITMENT BOT 中发送 /channel_sheet。Task Bot 只处理任务管理。")
         return
 
     if low.casefold() in {
         "/submit_channel_sheet", "/channel_upload", "提交渠道表", "同步渠道表",
     }:
-        if not db.is_admin(sender_open_id):
-            send_text(dm_chat_id, "❌ 只有管理员可以提交渠道运营表。")
-            return
-        cfg = _lark_cfg()
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        result = channel_sheet_service.sync_lark_table(
-            db,
-            lark_bitable,
-            cfg,
-            jobs=db.list_job_requests(only_open=False),
-            channels=channel_report.CHANNELS,
-            default_date=_kolkata_today().isoformat(),
-            synced_at=now_utc.isoformat(),
-        )
-        send_card(dm_chat_id, cards.channel_sync_result_card(result))
+        send_text(dm_chat_id, "请在 RECRUITMENT BOT 中发送 /submit_channel_sheet。Task Bot 不提交招聘渠道表。")
         return
 
     if low.startswith("/help") or low == "帮助":
@@ -1786,8 +1758,8 @@ def api_lark_status():
                                        and c["schema_version"] == "channel-analytics-v2"),
                     "url": c["url"], "last_sync": c["last_sync"],
                     "schema_version": c["schema_version"],
-                    "bot_name": BOT_NAME or "(未命名)",
-                    "app_id_tail": APP_ID[-8:] if APP_ID else ""})
+                    "bot_name": RECRUITMENT_BOT_NAME,
+                    "app_id_tail": lark_bitable.APP_ID[-8:] if lark_bitable.APP_ID else ""})
 
 
 @app.route("/api/lark/share", methods=["POST"])

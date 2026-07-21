@@ -325,8 +325,7 @@ def help_text():
         "• `/claimadmin <code>` — set yourself as admin the first time\n"
         "• `/whoami` — check your role\n\n"
         "**Recruiting / Channel Analytics**\n"
-        "• `/channel_sheet` — get the shared Lark channel activity table\n"
-        "• `/submit_channel_sheet` — submit/sync the completed Lark table to the website\n\n"
+        "Recruiting tables are handled by RECRUITMENT BOT, not Task Bot.\n\n"
         "Only admins can assign tasks. Assignees respond via the card buttons: Accept / Report an Issue / Complete."
     )
 

@@ -17,8 +17,13 @@ import urllib.request
 import urllib.error
 
 DOMAIN = os.environ.get("LARK_DOMAIN", "https://open.larksuite.com").rstrip("/")
-APP_ID = os.environ.get("APP_ID", "")
-APP_SECRET = os.environ.get("APP_SECRET", "")
+
+# Channel Analytics belongs to the outward-facing Recruitment Bot. Keep these
+# credentials separate from APP_ID / APP_SECRET, which remain owned by Task Bot.
+# There is deliberately no fallback: missing Recruitment Bot configuration must
+# fail closed instead of creating a Base under the wrong Lark application.
+APP_ID = os.environ.get("RECRUITMENT_LARK_APP_ID", "")
+APP_SECRET = os.environ.get("RECRUITMENT_LARK_APP_SECRET", "")
 
 # 字段类型（Bitable）：1=多行文本 3=单选
 FT_TEXT = 1
@@ -53,7 +58,10 @@ def tenant_token():
     if _token_cache["v"] and _token_cache["exp"] - 60 > now:
         return _token_cache["v"], None
     if not APP_ID or not APP_SECRET:
-        return None, "缺 APP_ID / APP_SECRET（应在 Railway 环境变量里）"
+        return None, (
+            "Missing RECRUITMENT_LARK_APP_ID / RECRUITMENT_LARK_APP_SECRET "
+            "in Railway variables"
+        )
     r = _req("POST", "/open-apis/auth/v3/tenant_access_token/internal",
              body={"app_id": APP_ID, "app_secret": APP_SECRET})
     if r.get("code") == 0 and r.get("tenant_access_token"):

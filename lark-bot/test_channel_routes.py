@@ -145,12 +145,22 @@ def main():
     assert store.candidates[candidate_id]["status"] == "Rejected"
 
     cards = []
+    texts = []
     bot.send_card = lambda chat_id, card: cards.append((chat_id, card)) or "message-id"
+    bot.send_text = lambda chat_id, text: texts.append((chat_id, text)) or "message-id"
     bot.handle_dm("admin-open-id", "chat-id", "/channel_sheet")
-    assert cards[-1][1]["header"]["title"]["content"].startswith("Channel Analytics")
+    assert "RECRUITMENT BOT" in texts[-1][1]
     bot.handle_dm("admin-open-id", "chat-id", "/submit_channel_sheet")
-    assert cards[-1][1]["header"]["title"]["content"] == "渠道表已同步"
-    assert store.rows[key]["new_resumes"] == 11
+    assert "RECRUITMENT BOT" in texts[-1][1]
+
+    bot.APP_ID = "cli_task_bot_task999"
+    bot.RECRUITMENT_BOT_NAME = "RECRUITMENT BOT"
+    bot.lark_bitable.APP_ID = "cli_recruitment_bot_rec8888"
+    lark_status = client.get("/api/lark/status", headers={"X-Auth": bot.PANEL_PASSWORD})
+    assert lark_status.status_code == 200
+    assert lark_status.get_json()["bot_name"] == "RECRUITMENT BOT"
+    assert lark_status.get_json()["app_id_tail"] == "_rec8888"
+    assert lark_status.get_json()["app_id_tail"] != bot.APP_ID[-8:]
 
     status = client.get(
         "/api/integration/v1/channel/status",
@@ -184,7 +194,7 @@ def main():
     assert store.settings["lark_channel_app_token"] == ""
 
     print("Channel website upload and Lark/Bot submission routes: PASSED")
-    print("XLSX-only boundary, shared upsert service, source rules, direct-stage entry, and Bot commands: PASSED")
+    print("XLSX-only boundary, shared upsert service, source rules, direct-stage entry, and dual-Bot isolation: PASSED")
 
 
 if __name__ == "__main__":
