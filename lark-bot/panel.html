@@ -514,7 +514,7 @@ async function loadTalent(){
   const empty=!data||data.status!=='ready'||!data.snapshot;
   document.getElementById('tdEmpty').classList.toggle('hide',!empty);
   document.getElementById('tdBody').classList.toggle('hide',empty);
-  if(empty){document.getElementById('tdSync').textContent='尚未同步';return;}
+  if(empty){document.getElementById('tdSync').textContent='No Lark submission recorded yet';return;}
   const s=data.snapshot,c=s.content||{},m=c.metrics||{},rows=c.candidate_matches||[],jobs=c.jobs||[];TALENT_JOBS=jobs;
   const searchJob=document.getElementById('tdSearchJob');if(searchJob){const previous=searchJob.value;searchJob.innerHTML=jobs.filter(j=>(j.status||'').toLowerCase()==='active').map(j=>`<option value="${esc(j.core_job_ref)}">${esc(j.title)} · ${esc([j.location,j.country].filter(Boolean).join(', '))}</option>`).join('');if([...searchJob.options].some(o=>o.value===previous))searchJob.value=previous;}
   document.getElementById('tdSync').textContent='签名镜像 · '+new Date(s.generated_at).toLocaleString()+' · '+String(s.content_sha256||'').slice(0,12);
@@ -949,7 +949,7 @@ async function larkRefreshStatus(){
       }
       s=await(await api('/api/lark/status')).json();
     }
-    if(s.configured){el.innerHTML='🟢 Lark connected'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · Last submitted '+esc(s.last_sync)):' · No submissions yet (normal)');}
+    if(s.configured){el.innerHTML='🟢 Lark connected'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · Last submitted '+esc(s.last_sync)):' · Status snapshot: no Lark submission recorded yet');}
     else{el.textContent='🟠 Lark 在线表未配置（不影响网站 Excel）';}
   }catch(e){}
 }

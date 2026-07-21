@@ -17,7 +17,10 @@
     parse_candidate_sheet(data, filename, jobs, sources)        -> {rows, skipped, errors}
 """
 import csv
+import hashlib
+import hmac
 import io
+import json
 import uuid
 from datetime import date
 from io import BytesIO
@@ -31,9 +34,92 @@ from openpyxl.utils import get_column_letter
 from channel_report import CHANNELS, PIPELINE_STATUS
 import channel_pipeline_schema as pipeline_schema
 
+
+WORKBOOK_META_SHEET = "_NEXUS_META"
+WORKBOOK_ARTIFACT_TYPE = "channel-candidate-pipeline"
+WORKBOOK_META_VERSION = "channel-workbook-v1"
+MINIMUM_SIGNING_KEY_BYTES = 32
+
+
+def _workbook_signature(metadata, signing_key):
+    key = str(signing_key or "").encode("utf-8")
+    if len(key) < MINIMUM_SIGNING_KEY_BYTES:
+        raise ValueError("NEXUS_INTEGRATION_SIGNING_KEY is not configured safely")
+    canonical = json.dumps(
+        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hmac.new(key, b"channel-workbook-v1\n" + canonical, hashlib.sha256).hexdigest()
+
+
+def _attach_workbook_metadata(data, generated_date, signing_key):
+    metadata = {
+        "artifact_type": WORKBOOK_ARTIFACT_TYPE,
+        "artifact_version": WORKBOOK_META_VERSION,
+        "schema_version": pipeline_schema.SCHEMA_VERSION,
+        "generated_date": str(generated_date or "")[:10],
+        "artifact_id": str(uuid.uuid4()),
+    }
+    date.fromisoformat(metadata["generated_date"])
+    metadata["signature"] = _workbook_signature(metadata, signing_key)
+    wb = load_workbook(io.BytesIO(data))
+    ws = wb.create_sheet(WORKBOOK_META_SHEET)
+    for row_index, key in enumerate(
+        ("artifact_type", "artifact_version", "schema_version", "generated_date",
+         "artifact_id", "signature"), start=1
+    ):
+        ws.cell(row=row_index, column=1, value=key)
+        ws.cell(row=row_index, column=2, value=metadata[key])
+    ws.sheet_state = "veryHidden"
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def _verify_workbook_metadata(data, expected_date, signing_key):
+    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=False)
+    if WORKBOOK_META_SHEET not in wb.sheetnames:
+        raise ValueError(
+            "This workbook has no Nexus provenance record. Download a fresh workbook today."
+        )
+    ws = wb[WORKBOOK_META_SHEET]
+    metadata = {
+        str(ws.cell(row=row, column=1).value or ""): str(
+            ws.cell(row=row, column=2).value or ""
+        )
+        for row in range(1, 7)
+    }
+    signature = metadata.pop("signature", "")
+    required = {
+        "artifact_type", "artifact_version", "schema_version", "generated_date", "artifact_id"
+    }
+    if set(metadata) != required:
+        raise ValueError("The workbook provenance record is incomplete.")
+    if metadata["artifact_type"] != WORKBOOK_ARTIFACT_TYPE:
+        raise ValueError("This is not a Channel Analytics Candidate Pipeline workbook.")
+    if metadata["artifact_version"] != WORKBOOK_META_VERSION:
+        raise ValueError("This workbook format is no longer supported. Download a fresh workbook.")
+    if metadata["schema_version"] != pipeline_schema.SCHEMA_VERSION:
+        raise ValueError("This workbook schema is outdated. Download a fresh workbook.")
+    try:
+        uuid.UUID(metadata["artifact_id"])
+        generated_date = date.fromisoformat(metadata["generated_date"])
+        current_date = date.fromisoformat(str(expected_date or "")[:10])
+    except (ValueError, TypeError) as exc:
+        raise ValueError("The workbook provenance date or artifact ID is invalid.") from exc
+    expected_signature = _workbook_signature(metadata, signing_key)
+    if not hmac.compare_digest(signature, expected_signature):
+        raise ValueError("The workbook provenance signature is invalid.")
+    if generated_date != current_date:
+        raise ValueError(
+            "This workbook was generated on %s; the current Asia/Kolkata date is %s. "
+            "Download a fresh workbook before submitting."
+            % (generated_date.isoformat(), current_date.isoformat())
+        )
+    return metadata
+
 # 候选人联系表用到的下拉
 CANDIDATE_STATUS = ["未联系", "已联系", "无法联系", "不合适"]
-CANDIDATE_SOURCES = ["RecruitEm", "领英公开", "GitHub", "StackOverflow"] + CHANNELS
+CANDIDATE_SOURCES = ["RecruitEm", "领英公开", "GitHub"] + CHANNELS
 
 
 # ---------------- 列定义 ----------------
@@ -375,7 +461,7 @@ def pipeline_columns(job_titles):
     return columns
 
 
-def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
+def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=""):
     """候选人跟进表：把在跟进中的候选人（带「记录ID」+当前状态）预填进去，HR 直接在「状态」列往前改；
     末尾留空行给新候选人（记录ID 留空）。上传时——有记录ID 的按 ID 原地更新，没 ID 的当新增，系统自动分辨。"""
     cols = pipeline_columns([j["title"] for j in jobs])
@@ -399,13 +485,16 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
     # first imported, while Stage Started On comes from immutable stage events.
     prefill.extend({"row_ref": "manual-" + str(uuid.uuid4()), "filled_by": by}
                    for _ in range(blank_count))
-    return build_xlsx(cols, prefill_rows=prefill,
+    data = build_xlsx(cols, prefill_rows=prefill,
                       sheet_title=pipeline_schema.PIPELINE_TABLE_NAME,
                       extra_blank=0, blank_defaults={})
+    return _attach_workbook_metadata(data, day, signing_key)
 
 
-def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None):
+def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
+                         signing_key=""):
     """解析 HR 交回的候选人跟进表 → 候选人行。带「记录ID」= 已有候选人（更新），无 ID = 新候选人（新增）。"""
+    _verify_workbook_metadata(data, default_date, signing_key)
     title2id = {_s(j["title"]): j["id"] for j in jobs}
     cols = pipeline_columns([j["title"] for j in jobs])
 

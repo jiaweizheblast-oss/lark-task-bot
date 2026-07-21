@@ -343,9 +343,12 @@ def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
             "text": {"tag": "plain_text", "content": "Open Channel Analytics Workspace"}, "url": url,
         }]})
         if last_sync:
-            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "Last submitted: " + last_sync}]})
+            status_text = "Status snapshot — last submitted: " + last_sync
         else:
-            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "No submissions yet (normal)."}]})
+            status_text = "Status snapshot — no Lark submission recorded yet."
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
+            status_text + " This card does not update automatically; send /channel_sheet again to refresh."
+        }]})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
             "The online workspace is not configured. An administrator must create it from "

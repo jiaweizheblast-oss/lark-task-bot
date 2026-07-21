@@ -396,7 +396,9 @@ def channel_series(rows, granularity):
     """每个渠道各自的时间序列（供趋势图下钻到单个渠道）。"""
     out = {}
     seen = set()
-    for ch in CHANNELS + sorted({r["channel"] for r in rows} - set(CHANNELS)):
+    # Retired values remain in historical storage for auditability, but they
+    # are not active choices and must not reappear in current UI filters.
+    for ch in CHANNELS:
         if ch in seen:
             continue
         seen.add(ch)

@@ -1701,7 +1701,13 @@ def api_channel_template():
     day = _kolkata_today().isoformat()
     by = request.args.get("by", "")
     jobs = db.list_job_requests(only_open=True)
-    data = sheet_io.build_pipeline_template_xlsx(jobs, day, by, db.list_candidates_active())
+    try:
+        data = sheet_io.build_pipeline_template_xlsx(
+            jobs, day, by, db.list_candidates_active(),
+            signing_key=NEXUS_INTEGRATION_SIGNING_KEY,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 503
     return Response(
         data,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1726,7 +1732,10 @@ def api_channel_upload():
     default_date = _kolkata_today().isoformat()
     jobs = db.list_job_requests(only_open=False)
     try:
-        parsed = sheet_io.parse_pipeline_sheet(f.read(), f.filename or "", jobs, owner, default_date)
+        parsed = sheet_io.parse_pipeline_sheet(
+            f.read(), f.filename or "", jobs, owner, default_date,
+            signing_key=NEXUS_INTEGRATION_SIGNING_KEY,
+        )
     except Exception as e:
         return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx）：%s" % e}), 400
     return jsonify(channel_sheet_service.import_pipeline_rows(
