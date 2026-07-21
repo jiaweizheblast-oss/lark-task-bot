@@ -13,6 +13,7 @@ import os
 import json
 import time
 import secrets
+import hmac
 import datetime
 import threading
 import requests
@@ -38,6 +39,7 @@ import sheet_io
 import attend
 import lark_bitable
 import talent_integration
+import talent_search_queue
 from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
@@ -59,6 +61,7 @@ WORK_START = int(os.environ.get("WORK_START", "10") or 10)        # 工作时间
 WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间结束（默认 22 点 / 晚10点）
 ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
 NEXUS_INTEGRATION_SIGNING_KEY = os.environ.get("NEXUS_INTEGRATION_SIGNING_KEY", "")
+NEXUS_TALENT_WORKER_TOKEN = os.environ.get("NEXUS_TALENT_WORKER_TOKEN", "")
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -540,6 +543,41 @@ def _panel_auth():
     return pw == PANEL_PASSWORD
 
 
+def _talent_worker_auth():
+    if len(NEXUS_TALENT_WORKER_TOKEN) < 32:
+        return False
+    value = request.headers.get("Authorization", "")
+    expected = f"Bearer {NEXUS_TALENT_WORKER_TOKEN}"
+    return hmac.compare_digest(value, expected)
+
+
+def _search_task_json(row, *, include_payload=True, include_result=True):
+    value = {
+        "task_id": str(row["task_id"]),
+        "schema_version": row["schema_version"],
+        "task_type": row["task_type"],
+        "revision": row["revision"],
+        "status": row["status"],
+        "core_job_ref": row["core_job_ref"],
+        "payload_sha256": row["payload_sha256"],
+        "result_sha256": row.get("result_sha256"),
+        "worker_id": row.get("worker_id"),
+        "attempt_count": row.get("attempt_count", 0),
+        "last_error_code": row.get("last_error_code"),
+    }
+    for field in (
+        "created_at", "updated_at", "expires_at", "claimed_at",
+        "lease_expires_at",
+    ):
+        current = row.get(field)
+        value[field] = current.isoformat() if current is not None else None
+    if include_payload:
+        value["payload"] = row.get("payload")
+    if include_result:
+        value["result"] = row.get("result")
+    return value
+
+
 def _talent_snapshot_json(row):
     if not row:
         return {"status": "empty", "snapshot": None}
@@ -591,6 +629,141 @@ def api_talent_snapshot_get():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify(_talent_snapshot_json(db.get_latest_talent_snapshot()))
+
+
+@app.route("/api/talent/search-tasks", methods=["POST"])
+def api_talent_search_task_create():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        task = talent_search_queue.build_task(request.get_json(silent=True) or {})
+        job = db.get_job_request_by_core_ref(task["core_job_ref"])
+        if not job:
+            return jsonify({"error": "unknown_core_job_ref"}), 422
+        if job["status"] != "open":
+            return jsonify({"error": "job_not_active"}), 409
+        row, inserted = db.enqueue_talent_search_task(task)
+    except ValueError as exc:
+        return jsonify({"error": "invalid_search_task", "detail": str(exc)}), 422
+    except Exception as exc:
+        print("[talent_search_task] unavailable:", type(exc).__name__)
+        return jsonify({"error": "search_queue_unavailable"}), 503
+    return jsonify({
+        "status": "queued" if inserted else "unchanged",
+        "idempotent": not inserted,
+        "task": _search_task_json(row),
+    }), 201 if inserted else 200
+
+
+@app.route("/api/talent/search-tasks", methods=["GET"])
+def api_talent_search_task_list():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "tasks": [
+            _search_task_json(row)
+            for row in db.list_talent_search_tasks(limit=50)
+        ]
+    })
+
+
+@app.route("/api/integration/v1/talent/search-tasks/claim", methods=["POST"])
+def api_talent_search_task_claim():
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        if set(body) != {"worker_id", "lease_seconds"}:
+            raise ValueError("invalid claim fields")
+        worker_id = talent_search_queue.valid_worker_id(body["worker_id"])
+        lease_seconds = talent_search_queue.valid_lease_seconds(body["lease_seconds"])
+        claimed = db.claim_talent_search_task(worker_id, lease_seconds)
+    except ValueError as exc:
+        return jsonify({"error": "invalid_claim", "detail": str(exc)}), 422
+    except Exception as exc:
+        print("[talent_search_claim] unavailable:", type(exc).__name__)
+        return jsonify({"error": "search_queue_unavailable"}), 503
+    if not claimed:
+        return jsonify({"task": None}), 200
+    row, lease_token = claimed
+    return jsonify({"task": row["payload"], "lease_token": lease_token})
+
+
+def _worker_lease_body():
+    body = request.get_json(silent=True) or {}
+    worker_id = talent_search_queue.valid_worker_id(body.get("worker_id"))
+    lease_token = str(body.get("lease_token") or "")
+    if len(lease_token) < 32 or len(lease_token) > 200:
+        raise ValueError("lease_token is invalid")
+    return body, worker_id, lease_token
+
+
+@app.route("/api/integration/v1/talent/search-tasks/<task_id>/heartbeat", methods=["POST"])
+def api_talent_search_task_heartbeat(task_id):
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body, worker_id, lease_token = _worker_lease_body()
+        if set(body) != {"worker_id", "lease_token", "lease_seconds"}:
+            raise ValueError("invalid heartbeat fields")
+        lease_seconds = talent_search_queue.valid_lease_seconds(body["lease_seconds"])
+        ok = db.heartbeat_talent_search_task(
+            task_id, worker_id, lease_token, lease_seconds
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_heartbeat", "detail": str(exc)}), 422
+    if not ok:
+        return jsonify({"error": "lease_conflict"}), 409
+    return jsonify({"status": "extended"})
+
+
+@app.route("/api/integration/v1/talent/search-tasks/<task_id>/complete", methods=["POST"])
+def api_talent_search_task_complete(task_id):
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body, worker_id, lease_token = _worker_lease_body()
+        if set(body) != {"worker_id", "lease_token", "result"}:
+            raise ValueError("invalid completion fields")
+        row = db.get_talent_search_task(task_id)
+        if not row:
+            return jsonify({"error": "task_not_found"}), 404
+        result = talent_search_queue.validate_result(
+            body["result"],
+            task_id=str(row["task_id"]),
+            core_job_ref=row["core_job_ref"],
+        )
+        completed = db.complete_talent_search_task(
+            task_id, worker_id, lease_token, result,
+            talent_search_queue.sha256(result),
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_result", "detail": str(exc)}), 422
+    except Exception as exc:
+        print("[talent_search_complete] unavailable:", type(exc).__name__)
+        return jsonify({"error": "search_queue_unavailable"}), 503
+    if not completed:
+        return jsonify({"error": "lease_conflict"}), 409
+    return jsonify(completed)
+
+
+@app.route("/api/integration/v1/talent/search-tasks/<task_id>/fail", methods=["POST"])
+def api_talent_search_task_fail(task_id):
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body, worker_id, lease_token = _worker_lease_body()
+        if set(body) != {"worker_id", "lease_token", "error_code"}:
+            raise ValueError("invalid failure fields")
+        error_code = talent_search_queue.valid_error_code(body["error_code"])
+        ok = db.fail_talent_search_task(
+            task_id, worker_id, lease_token, error_code
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_failure", "detail": str(exc)}), 422
+    if not ok:
+        return jsonify({"error": "lease_conflict"}), 409
+    return jsonify({"status": "failed"})
 
 
 def _task_json(t):

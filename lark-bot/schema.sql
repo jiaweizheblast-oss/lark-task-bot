@@ -228,6 +228,37 @@ CREATE TABLE IF NOT EXISTS talent_snapshot (
 CREATE INDEX IF NOT EXISTS idx_talent_snapshot_generated
     ON talent_snapshot (generated_at DESC);
 
+-- Persistent commands for an authorized local Talent Discovery worker.
+-- Nexus only queues bounded read-only previews; candidate truth remains in AI-TD.
+CREATE TABLE IF NOT EXISTS talent_search_task (
+    task_id             UUID PRIMARY KEY,
+    schema_version      TEXT NOT NULL,
+    task_type           TEXT NOT NULL,
+    revision            INTEGER NOT NULL DEFAULT 1,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    core_job_ref        TEXT NOT NULL,
+    payload             JSONB NOT NULL,
+    payload_sha256      TEXT NOT NULL,
+    result              JSONB,
+    result_sha256       TEXT,
+    worker_id           TEXT,
+    lease_token_sha256  TEXT,
+    claimed_at          TIMESTAMPTZ,
+    lease_expires_at    TIMESTAMPTZ,
+    attempt_count       INTEGER NOT NULL DEFAULT 0,
+    last_error_code     TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ck_talent_search_task_status CHECK (
+      status IN ('pending','claimed','succeeded','shortfall','failed','cancelled')
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_talent_search_task_claim
+    ON talent_search_task (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_talent_search_task_job
+    ON talent_search_task (core_job_ref, created_at DESC);
+
 -- 文档 / 模板库：招聘话术、JD、面试评估表、任务 SOP 等可复用模板
 CREATE TABLE IF NOT EXISTS templates (
     id          SERIAL PRIMARY KEY,

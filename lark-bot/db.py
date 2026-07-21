@@ -5,6 +5,8 @@
 """
 import os
 import datetime
+import hashlib
+import secrets
 import psycopg2
 import psycopg2.extras
 
@@ -417,6 +419,202 @@ def get_latest_talent_snapshot():
                ORDER BY generated_at DESC, received_at DESC LIMIT 1"""
         )
         return cur.fetchone()
+
+
+def get_job_request_by_core_ref(core_job_ref):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT * FROM job_requests WHERE core_job_ref=%s",
+            (core_job_ref,),
+        )
+        return cur.fetchone()
+
+
+def enqueue_talent_search_task(task):
+    """Persist one immutable, idempotent read-only preview command."""
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            """INSERT INTO talent_search_task
+               (task_id, schema_version, task_type, revision, status,
+                core_job_ref, payload, payload_sha256, expires_at)
+               VALUES (%s,%s,%s,%s,'pending',%s,%s::jsonb,%s,%s)
+               ON CONFLICT (task_id) DO NOTHING""",
+            (
+                task["task_id"], task["schema_version"], task["task_type"],
+                task["revision"], task["core_job_ref"],
+                psycopg2.extras.Json(task), task["payload_sha256"],
+                datetime.datetime.fromisoformat(task["expires_at"]),
+            ),
+        )
+        inserted = cur.rowcount == 1
+        cur.execute(
+            "SELECT * FROM talent_search_task WHERE task_id=%s",
+            (task["task_id"],),
+        )
+        row = cur.fetchone()
+        if not row or row["payload_sha256"] != task["payload_sha256"]:
+            raise ValueError("task_id already exists with another payload")
+        return row, inserted
+
+
+def list_talent_search_tasks(limit=50):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            """SELECT * FROM talent_search_task
+               ORDER BY created_at DESC LIMIT %s""",
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def get_talent_search_task(task_id):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT * FROM talent_search_task WHERE task_id=%s",
+            (task_id,),
+        )
+        return cur.fetchone()
+
+
+def claim_talent_search_task(worker_id, lease_seconds):
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET status='pending', worker_id=NULL,
+                       lease_token_sha256=NULL, claimed_at=NULL,
+                       lease_expires_at=NULL, updated_at=now()
+                   WHERE status='claimed' AND lease_expires_at < now()
+                     AND attempt_count < 3 AND expires_at > now()"""
+            )
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET status='failed', last_error_code='lease_attempts_exhausted',
+                       lease_token_sha256=NULL, lease_expires_at=NULL,
+                       updated_at=now()
+                   WHERE status='claimed' AND lease_expires_at < now()
+                     AND attempt_count >= 3"""
+            )
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET status='cancelled', last_error_code='task_expired',
+                       updated_at=now()
+                   WHERE status IN ('pending','claimed') AND expires_at <= now()"""
+            )
+            cur.execute(
+                """SELECT * FROM talent_search_task
+                   WHERE status='pending' AND expires_at > now()
+                     AND attempt_count < 3
+                   ORDER BY created_at
+                   FOR UPDATE SKIP LOCKED LIMIT 1"""
+            )
+            row = cur.fetchone()
+            if not row:
+                conn.commit()
+                return None
+            lease_token = secrets.token_urlsafe(32)
+            lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET status='claimed', worker_id=%s,
+                       lease_token_sha256=%s, claimed_at=now(),
+                       lease_expires_at=now() + (%s * interval '1 second'),
+                       attempt_count=attempt_count+1, updated_at=now()
+                   WHERE task_id=%s RETURNING *""",
+                (worker_id, lease_hash, lease_seconds, row["task_id"]),
+            )
+            claimed = cur.fetchone()
+        conn.commit()
+        return claimed, lease_token
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def heartbeat_talent_search_task(task_id, worker_id, lease_token, lease_seconds):
+    lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE talent_search_task
+               SET lease_expires_at=now() + (%s * interval '1 second'),
+                   updated_at=now()
+               WHERE task_id=%s AND status='claimed' AND worker_id=%s
+                 AND lease_token_sha256=%s AND lease_expires_at > now()
+               RETURNING task_id""",
+            (lease_seconds, task_id, worker_id, lease_hash),
+        )
+        return cur.fetchone() is not None
+
+
+def complete_talent_search_task(task_id, worker_id, lease_token, result, result_sha256):
+    lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    terminal_status = (
+        "succeeded"
+        if result.get("quota_fulfilled") is True and result.get("applicable") is True
+        else "shortfall"
+    )
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT status, result_sha256 FROM talent_search_task WHERE task_id=%s",
+            (task_id,),
+        )
+        existing = cur.fetchone()
+        if not existing:
+            return None
+        if existing["status"] in {"succeeded", "shortfall"}:
+            if existing["result_sha256"] == result_sha256:
+                return {"status": existing["status"], "idempotent": True}
+            raise ValueError("terminal task already has a different result")
+        cur.execute(
+            """UPDATE talent_search_task
+               SET status=%s, result=%s::jsonb, result_sha256=%s,
+                   lease_token_sha256=NULL, lease_expires_at=NULL,
+                   updated_at=now()
+               WHERE task_id=%s AND status='claimed' AND worker_id=%s
+                 AND lease_token_sha256=%s AND lease_expires_at > now()
+               RETURNING status""",
+            (
+                terminal_status, psycopg2.extras.Json(result), result_sha256,
+                task_id, worker_id, lease_hash,
+            ),
+        )
+        row = cur.fetchone()
+        return (
+            {"status": row["status"], "idempotent": False}
+            if row else None
+        )
+
+
+def fail_talent_search_task(task_id, worker_id, lease_token, error_code):
+    lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE talent_search_task
+               SET status='failed', last_error_code=%s,
+                   lease_token_sha256=NULL, lease_expires_at=NULL,
+                   updated_at=now()
+               WHERE task_id=%s AND status='claimed' AND worker_id=%s
+                 AND lease_token_sha256=%s AND lease_expires_at > now()
+               RETURNING task_id""",
+            (error_code, task_id, worker_id, lease_hash),
+        )
+        return cur.fetchone() is not None
 
 
 def list_channel_records(day=None):

@@ -398,6 +398,18 @@
       </div>
       <div id="tdEmpty" class="acard hide" style="text-align:center;color:var(--soft);line-height:1.7">还没有收到 AI Talent Discovery 的签名同步。候选人核心数据不会写入 Nexus 的可编辑候选人表。</div>
       <div id="tdBody" class="hide">
+        <div class="acard" style="margin-bottom:14px">
+          <div class="acard-h"><b>新候选人 Preview</b><span class="muted" style="padding:0">确定性搜索 · 本地 Windows Worker · 不依赖外部 AI API</span></div>
+          <div style="display:grid;grid-template-columns:minmax(220px,2fr) minmax(130px,1fr) minmax(130px,1fr) auto;gap:10px;align-items:end">
+            <label style="font-size:12px">核心职位<select id="tdSearchJob" style="display:block;width:100%;margin-top:5px"></select></label>
+            <label style="font-size:12px">Contact Ready 正式配额<input id="tdSearchQuota" type="number" min="1" max="200" value="100" style="display:block;width:100%;margin-top:5px"></label>
+            <label style="font-size:12px">后续批次 Review Pool 上限<input id="tdSearchReview" type="number" min="0" max="50" value="10" style="display:block;width:100%;margin-top:5px"></label>
+            <button class="btn" onclick="queueTalentPreview()">加入搜索队列</button>
+          </div>
+          <div class="muted" style="text-align:left;padding:10px 0 0;font-size:12px">排队不会写候选人状态。已授权的 Windows Worker 只执行有预算上限的公开只读 Preview，并冻结同一次扫描结果等待经理确认。</div>
+          <div id="tdSearchMessage" style="font-size:12px;margin-top:8px"></div>
+        </div>
+        <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>搜索任务队列</b><button class="btn ghost sm" onclick="loadTalentTasks()">刷新</button></div><div id="tdSearchTasks"></div></div>
         <div id="tdKpis" class="kpis"></div>
         <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>核心 Job Reqs</b><span class="muted" style="padding:0">按 core_job_ref 同步 · 条件只读</span></div><div id="tdJobs"></div></div>
         <div class="acard"><div class="acard-h"><b>候选人匹配镜像</b><span class="muted" style="padding:0">经理可见评分 · HR 表不显示</span></div><div id="tdCandidates"></div></div>
@@ -450,7 +462,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -482,7 +494,8 @@ async function loadTalent(){
   document.getElementById('tdEmpty').classList.toggle('hide',!empty);
   document.getElementById('tdBody').classList.toggle('hide',empty);
   if(empty){document.getElementById('tdSync').textContent='尚未同步';return;}
-  const s=data.snapshot,c=s.content||{},m=c.metrics||{},rows=c.candidate_matches||[],jobs=c.jobs||[];
+  const s=data.snapshot,c=s.content||{},m=c.metrics||{},rows=c.candidate_matches||[],jobs=c.jobs||[];TALENT_JOBS=jobs;
+  const searchJob=document.getElementById('tdSearchJob');if(searchJob){const previous=searchJob.value;searchJob.innerHTML=jobs.filter(j=>(j.status||'').toLowerCase()==='active').map(j=>`<option value="${esc(j.core_job_ref)}">${esc(j.title)} · ${esc([j.location,j.country].filter(Boolean).join(', '))}</option>`).join('');if([...searchJob.options].some(o=>o.value===previous))searchJob.value=previous;}
   document.getElementById('tdSync').textContent='签名镜像 · '+new Date(s.generated_at).toLocaleString()+' · '+String(s.content_sha256||'').slice(0,12);
   const dc=m.disposition_counts||{};
   document.getElementById('tdKpis').innerHTML=[
@@ -493,7 +506,10 @@ async function loadTalent(){
   document.getElementById('tdJobs').innerHTML=jobs.length?`<table class="rtable"><thead><tr><th>职位</th><th>地区</th><th>正式配额</th><th>Active</th><th>状态</th></tr></thead><tbody>${jobs.map(j=>`<tr><td class="name">${esc(j.title)}</td><td>${esc([j.location,j.country].filter(Boolean).join(', '))}</td><td>${j.requested_contact_count||0}</td><td>${j.active_match_count||0}</td><td>${esc(j.status||'')}</td></tr>`).join('')}</tbody></table>`:'<div class="muted">暂无核心职位</div>';
   const visible=rows.slice(0,200);
   document.getElementById('tdCandidates').innerHTML=visible.length?`<table class="rtable"><thead><tr><th>候选人</th><th>Recent Title</th><th>地点</th><th>分类</th><th>经理评分</th><th>来源</th></tr></thead><tbody>${visible.map(r=>`<tr><td class="name">${tdCandidateName(r)}</td><td>${esc(r.recent_title||'—')}</td><td>${esc(r.location||r.country||'—')}</td><td>${esc(r.pipeline_disposition||'—')}</td><td>${esc(r.score||'—')}</td><td>${esc(r.attribution_source||'—')}</td></tr>`).join('')}</tbody></table><div class="muted" style="text-align:left;padding:10px 0 0">显示 ${visible.length} / ${rows.length} 条匹配；评分只在密码保护的经理页面出现。</div>`:'<div class="muted">暂无候选人匹配</div>';
+  loadTalentTasks();
 }
+async function queueTalentPreview(){const msg=document.getElementById('tdSearchMessage'),job=val('tdSearchJob'),quota=Number(val('tdSearchQuota')),review=Number(val('tdSearchReview'));msg.textContent='';if(!job){msg.textContent='请选择一个有效的核心职位。';return;}if(!Number.isInteger(quota)||quota<1||quota>200||!Number.isInteger(review)||review<0||review>50){msg.textContent='正式配额须为 1–200，Review Pool 须为 0–50。';return;}const taskId=(crypto&&crypto.randomUUID)?crypto.randomUUID():('00000000-0000-4000-8000-'+String(Date.now()).padStart(12,'0').slice(-12));const observations=Math.min(2000,Math.max(500,quota*8));const payload={task_id:taskId,core_job_ref:job,requested_contact_count:quota,max_review_pool_count:review,budgets:{max_sources:2,max_queries_per_source:Math.min(30,Math.max(12,Math.ceil(quota/5))),max_pages_per_query:2,max_results_per_source:Math.min(1000,Math.max(250,quota*5)),max_total_observations:observations,max_enrichment_candidates:Math.min(200,Math.max(50,quota)),max_provider_api_requests:20,max_enrichment_api_requests:10,time_budget_seconds:Math.min(1800,Math.max(600,quota*9)),api_time_budget_seconds:90,request_timeout_seconds:10}};try{const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();if(!response.ok){msg.textContent='任务被拒绝：'+(body.error||'unknown');return;}msg.textContent='已安全排队。Chrome 公共搜索准备好后启动授权 Windows Worker。';loadTalentTasks();}catch(e){msg.textContent='搜索队列暂不可用。';}}
+async function loadTalentTasks(){const root=document.getElementById('tdSearchTasks');if(!root)return;try{const data=await(await api('/api/talent/search-tasks')).json(),tasks=data.tasks||[];root.innerHTML=tasks.length?`<table class="rtable"><thead><tr><th>创建时间</th><th>职位</th><th>正式配额</th><th>状态</th><th>尝试</th><th>结果</th></tr></thead><tbody>${tasks.map(t=>{const p=t.payload||{},r=t.result||{},job=TALENT_JOBS.find(j=>j.core_job_ref===t.core_job_ref);return`<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(t.status||'—')}</td><td>${esc(t.attempt_count||0)}</td><td>${t.status==='succeeded'||t.status==='shortfall'?esc((r.contact_ready||0)+' ready / '+(r.contact_shortfall||0)+' shortfall'):esc(t.last_error_code||'—')}</td></tr>`}).join('')}</tbody></table>`:'<div class="muted">还没有搜索任务。</div>';}catch(e){root.innerHTML='<div class="muted">搜索队列暂不可用。</div>';}}
 function tdCandidateName(r){let u='';try{const x=new URL(r.public_profile_url||'');if(x.protocol==='https:')u=x.href;}catch(e){}const name=esc(r.candidate_name||'—');return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${name}</a>`:name;}
 function toggleGroup(h){h.closest('.navgroup').classList.toggle('collapsed');}
 
