@@ -18,6 +18,7 @@
 """
 import csv
 import io
+import uuid
 from datetime import date
 from io import BytesIO
 
@@ -45,6 +46,7 @@ def channel_columns(job_titles):
     return [
         _col("record_date", "日期", "date"),
         _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道"]),
+        _col("source_detail", "Source Detail", "text", aliases=["其他来源", "来源详情"]),
         _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
         _col("new_resumes", "今日新增简历数", "int", aliases=["新增", "新增简历数"], minv=0),
         _col("passed_screening", "初筛通过数", "int", aliases=["初筛通过", "初筛"], minv=0),
@@ -215,14 +217,10 @@ def parse_rows(columns, data, filename, required=None, skip=None):
 # ---------------- 渠道汇总表（第二个程序，向后兼容） ----------------
 def build_template_xlsx(jobs, day, by=""):
     cols = channel_columns([j["title"] for j in jobs])
-    prefill = []
-    for j in jobs:
-        for ch in CHANNELS:
-            prefill.append({"record_date": day, "channel": ch, "job": j["title"],
-                            "new_resumes": 0, "passed_screening": 0, "recommended": 0,
-                            "rejected": 0, "note": "", "filled_by": by})
-    return build_xlsx(cols, prefill_rows=prefill, sheet_title="每日渠道录入",
-                      extra_blank=40, blank_defaults={"record_date": day, "filled_by": by})
+    # Blank controlled rows are substantially easier than a jobs×channels zero
+    # matrix. HR fills only combinations that actually had activity that day.
+    return build_xlsx(cols, prefill_rows=[], sheet_title="每日渠道录入",
+                      extra_blank=80, blank_defaults={"record_date": day, "filled_by": by})
 
 
 def parse_sheet(data, filename, jobs, default_by="", default_date=None):
@@ -254,7 +252,11 @@ def parse_sheet(data, filename, jobs, default_by="", default_date=None):
         except ValueError:
             errors.append("第%d行：日期格式非法「%s」（应为 YYYY-MM-DD）" % (r.get("__line__", 0), rd))
             continue
-        out.append({"record_date": rd, "channel": r["channel"], "job_request_id": jid,
+        if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
+            errors.append("第%d行：选择 Other 时必须填写 Source Detail" % r.get("__line__", 0))
+            continue
+        out.append({"record_date": rd, "channel": r["channel"],
+                    "source_detail": r.get("source_detail", ""), "job_request_id": jid,
                     "filled_by": r.get("filled_by") or default_by,
                     "new_resumes": r["new_resumes"], "passed_screening": r["passed_screening"],
                     "recommended": r["recommended"], "rejected": r["rejected"],
@@ -292,11 +294,15 @@ def pipeline_columns(job_titles):
         _col("record_date", "日期", "date"),
         _col("name", "候选人", "text"),
         _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道", "来源渠道"]),
+        _col("source_detail", "Source Detail", "text", aliases=["其他来源", "来源详情"]),
         _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
-        _col("status", "状态", "choice", choices=PIPELINE_STATUS, aliases=["招聘状态", "阶段"]),
+        _col("status", "Current Stage", "choice", choices=PIPELINE_STATUS, aliases=["状态", "招聘状态", "阶段"]),
+        _col("stage_date", "Stage Date", "date", aliases=["阶段日期"]),
+        _col("rejection_reason", "Rejection Reason", "text", aliases=["拒绝原因"]),
         _col("note", "备注", "text"),
         _col("filled_by", "填写人", "text"),
         _col("cand_id", "记录ID", "text", aliases=["系统ID"], sys=True),   # 系统列：已有候选人预填，HR 勿改；新候选人留空
+        _col("row_ref", "Row Ref", "text", sys=True),
     ]
 
 
@@ -312,14 +318,21 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
             "record_date": (str(c.get("apply_date") or "")[:10]) or day,
             "name": c.get("name") or "",
             "channel": c.get("channel") or "",
+            "source_detail": c.get("source_detail") or "",
             "job": c.get("job_title") or id2title.get(c.get("job_request_id"), ""),
-            "status": c.get("status") or "新简历",
+            "status": c.get("status") or "New Lead",
+            "stage_date": (str(c.get("stage_date") or "")[:10]) or day,
+            "rejection_reason": c.get("rejection_reason") or "",
             "note": c.get("note") or "",
             "filled_by": c.get("filled_by") or "",
+            "row_ref": c.get("ext_ref") or ("candidate-%s" % c.get("id")),
         })
-    return build_xlsx(cols, prefill_rows=prefill, sheet_title="候选人跟进",
-                      extra_blank=(30 if prefill else 60),
-                      blank_defaults={"record_date": day, "filled_by": by, "status": "新简历"})
+    blank_count = 30 if prefill else 60
+    prefill.extend({"row_ref": "manual-" + str(uuid.uuid4()), "record_date": day,
+                    "stage_date": day, "filled_by": by, "status": "New Lead"}
+                   for _ in range(blank_count))
+    return build_xlsx(cols, prefill_rows=prefill, sheet_title="Candidate Pipeline",
+                      extra_blank=0, blank_defaults={})
 
 
 def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None):
@@ -343,9 +356,24 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None)
         except ValueError:
             errors.append("第%d行：日期格式非法「%s」（应为 YYYY-MM-DD）" % (r.get("__line__", 0), rd))
             continue
-        out.append({"cand_id": (r.get("cand_id") or "").strip(), "record_date": rd,
+        if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
+            errors.append("第%d行：选择 Other 时必须填写 Source Detail" % r.get("__line__", 0))
+            continue
+        stage_date = (r.get("stage_date") or rd).strip()[:10]
+        try:
+            date.fromisoformat(stage_date)
+        except ValueError:
+            errors.append("第%d行：Stage Date 格式非法" % r.get("__line__", 0))
+            continue
+        if (r.get("status") or "New Lead") == "Rejected" and not (r.get("rejection_reason") or "").strip():
+            errors.append("第%d行：Rejected 必须填写 Rejection Reason" % r.get("__line__", 0))
+            continue
+        out.append({"cand_id": (r.get("cand_id") or "").strip(),
+                    "row_ref": (r.get("row_ref") or "").strip(), "record_date": rd,
                     "name": r.get("name", ""), "channel": r["channel"],
-                    "job_request_id": jid, "status": r.get("status") or "新简历",
+                    "source_detail": r.get("source_detail", ""),
+                    "job_request_id": jid, "status": r.get("status") or "New Lead",
+                    "stage_date": stage_date, "rejection_reason": r.get("rejection_reason", ""),
                     "note": r.get("note", ""), "filled_by": r.get("filled_by") or default_by})
     return {"rows": out, "skipped": res["skipped"], "errors": errors}
 

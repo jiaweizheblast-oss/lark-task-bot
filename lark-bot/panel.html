@@ -293,37 +293,53 @@
       <div id="reportBody"></div>
     </section>
     <section id="view-recruit" class="hide">
-      <!-- 数据入口：表格进（网站 或 Lark Bot 拿表/回传；网页不手填） -->
-      <div class="toolbar" style="flex-wrap:wrap">
-        <div style="font-weight:750;font-size:16px">📥 数据入口</div>
-        <span style="font-size:12px;color:var(--soft)">填报人</span>
-        <select id="cBy" style="min-width:140px"></select>
-        <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增填报人（受控名单）">＋</button>
-        <span style="font-size:12px;color:var(--soft)">表日期</span>
-        <input id="cTplDate" type="date" style="width:150px">
-        <button class="btn ghost sm" onclick="downloadChannelTemplate()">⬇ 下载跟进表</button>
-        <button class="btn ghost sm" onclick="pickChannelUpload()">⬆ 上传填好的表</button>
-        <input id="cUpFile" type="file" accept=".xlsx,.csv" style="display:none" onchange="onChannelUpload(event)">
-        <span style="font-size:12px;color:var(--soft)">下载跟进表发 HR → HR 在表里改状态 / 加新人 → 你上传，系统按「记录ID」自动更新、无 ID 的当新增。</span>
+      <!-- 网站 Excel 与 Lark 在线表是两个载体；二者提交后进入同一 Channel application service。 -->
+      <div class="toolbar" style="display:block;padding:16px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="font-weight:750;font-size:16px">📥 渠道跟进表</div>
+          <span style="font-size:12px;color:var(--soft)">网站与 Lark 共用同一份渠道数据；任选一种方式即可，不要重复提交同一修改。</span>
+          <span id="larkStatus" class="muted" style="padding:0;font-size:12px;margin-left:auto"></span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:14px">
+          <div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel2)">
+            <div style="font-weight:700;margin-bottom:5px">网站 Excel</div>
+            <div class="muted" style="padding:0;font-size:12px;margin-bottom:10px">一行一个候选人职位流程；HR 只更新 Current Stage、日期和必要备注。</div>
+            <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+              <select id="cBy" style="min-width:130px" title="受控填报人"></select>
+              <button type="button" class="btn ghost sm" onclick="addRoster()" title="新增受控填报人">＋</button>
+              <input id="cTplDate" type="date" style="width:145px" title="表日期">
+              <button class="btn ghost sm" onclick="downloadChannelTemplate()">⬇ 获取 Excel 表</button>
+              <button class="btn sm" onclick="pickChannelUpload()">⬆ 提交 Excel 表</button>
+              <input id="cUpFile" type="file" accept=".xlsx" style="display:none" onchange="onChannelUpload(event)">
+            </div>
+          </div>
+          <div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel2)">
+            <div style="font-weight:700;margin-bottom:5px">Lark 在线表 / Recruitment Bot</div>
+            <div class="muted" style="padding:0;font-size:12px;margin-bottom:10px">Bot 发送 <code>/channel_sheet</code> 获取同一张在线表；填完发送 <code>/submit_channel_sheet</code>，或在这里同步。</div>
+            <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+              <button class="btn ghost sm" onclick="larkOpenTable()">📄 打开在线渠道表</button>
+              <button class="btn sm" onclick="larkPull()">✅ 同步并提交</button>
+            </div>
+          </div>
+        </div>
+        <details style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+          <summary style="cursor:pointer;color:var(--soft);font-size:12px;font-weight:650">⚙ Lark 连接设置（管理员首次配置 / 故障排查）</summary>
+          <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:10px">
+            <button class="btn ghost sm" onclick="larkPing()">测试机器人凭证</button>
+            <button class="btn ghost sm" onclick="larkCreateTable()">首次创建在线渠道表</button>
+            <span class="muted" style="padding:0;font-size:12px">旧版“推进候选人”已停用：渠道分析不复制 Talent Discovery 的候选人状态。</span>
+          </div>
+        </details>
       </div>
       <div id="cUpResult" class="hide" style="margin:0 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);font-size:13px"></div>
-
-      <div class="toolbar" style="flex-wrap:wrap">
-        <div style="font-weight:750;font-size:15px">🔗 Lark 主路 <span class="muted" style="padding:0;font-weight:400;font-size:12px">HR 在 Lark 多维表格里填 → 你核对 → 点导入</span></div>
-        <button class="btn ghost sm" onclick="larkOpenTable()">📄 打开 Lark 表核对</button>
-        <button class="btn sm" onclick="larkPull()">✅ 导入 HR 填好的</button>
-        <span id="larkStatus" class="muted" style="padding:0;font-size:12px"></span>
-      </div>
-      <div class="toolbar" style="flex-wrap:wrap;margin-top:-4px">
-        <span class="muted" style="padding:0;font-size:12px">一次性设置：</span>
-        <button class="btn ghost sm" onclick="larkPing()">① 连接自检</button>
-        <button class="btn ghost sm" onclick="larkCreateTable()">② 生成 Lark 表</button>
-        <button class="btn ghost sm" onclick="larkPush()">③ 把现有候选人推进去</button>
-      </div>
 
       <!-- 分析控制条 -->
       <div class="toolbar" style="flex-wrap:wrap">
         <div style="font-weight:750;font-size:16px">📊 招聘分析</div>
+        <select id="cSpace" onchange="CSPACE=this.value;loadAnalytics()" title="两类数据分开展示，不相加">
+          <option value="manual">人工渠道汇总</option>
+          <option value="derived">逐人数据派生</option>
+        </select>
         <span style="font-size:12px;color:var(--soft)">窗口</span>
         <span class="rcal-wrap">
           <button class="btn ghost sm" id="cRangeBtn" onclick="toggleRangeCal(event)">📅 <span id="cRangeLbl">选择区间</span></button>
@@ -350,7 +366,7 @@
       <div id="cDash">
       <div id="cInsights" class="cins hide"></div>
       <div id="cKpis" class="kpis"></div>
-      <div id="cEmpty" class="acard hide" style="margin-bottom:14px;text-align:center;color:var(--soft);line-height:1.7">该区间还没有数据。用上面的「⬇ 下载空表」发给 HR 填，收回后「⬆ 上传填好的表」，这里就会自动出图。<br>想看全部，把窗口点成「上线至今」。</div>
+      <div id="cEmpty" class="acard hide" style="margin-bottom:14px;text-align:center;color:var(--soft);line-height:1.7">该区间还没有渠道数据。可获取网站 Excel 表，或让 HR 直接填写 Lark 在线渠道表；提交后这里会自动更新。<br>想看全部，把窗口点成「上线至今」。</div>
 
       <div class="agrid">
         <div class="acard">
@@ -376,7 +392,10 @@
       </div><!-- /cDash -->
 
       <div class="acard" style="margin-bottom:14px">
-        <div class="acard-h"><b>候选人跟进</b><span style="display:flex;gap:8px;align-items:center"><span class="muted" id="candCount" style="padding:0"></span><button class="btn ghost sm" onclick="newCandidate()">＋ 添加候选人</button><button class="btn ghost sm" onclick="loadCandidates()">🔄</button></span></div>
+        <div class="acard-h">
+          <div><b>Candidate Pipeline</b><div class="muted" style="padding:2px 0 0;font-size:12px">所有来源平级；这里只跟进招聘阶段，不修改 Talent Discovery 的联系任务。</div></div>
+          <span style="display:flex;gap:8px;align-items:center"><span class="muted" id="candCount" style="padding:0"></span><button class="btn ghost sm" onclick="newCandidate()">＋ 添加外部候选人</button><button class="btn ghost sm" onclick="loadCandidates()">🔄</button></span>
+        </div>
         <div id="candTabs" style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px"></div>
         <div id="candList"></div>
       </div>
@@ -388,7 +407,7 @@
         <ul id="cAlerts" style="list-style:none;padding:0;margin:12px 0 0"></ul>
       </div>
 
-      <div style="font-size:12px;color:var(--soft);line-height:1.6">口径：逐候选人记录（每行一个候选人，渠道/漏斗/速度自动统计）· 时区 Asia/Kolkata · 与 CODEX 各自独立，可经 ext_ref 关联、不合库。</div>
+      <div style="font-size:12px;color:var(--soft);line-height:1.6">口径：人工渠道汇总与逐人身份派生分开展示、绝不相加冒充去重候选人数 · 时区 Asia/Kolkata · 候选人状态只由 Talent Discovery 负责。</div>
     </section>
     <section id="view-talent" class="hide">
       <div class="toolbar">
@@ -707,7 +726,7 @@ async function addExtGroup(){const name=val('egName'),url=val('egUrl'),err=docum
 async function delExtGroup(id){if(!confirm('Remove this external group?'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('Removed');}catch(e){toast('Remove failed',true);}}
 
 // ---- 招聘分析看板模块（表格进 + 分析出；网页不手填，图表与 Bot 同一数据源） ----
-let CMETA={channels:[],jobs:[],today:''}, CGRAN='day', CANA=null, cTrend=null, cChan=null;
+let CMETA={channels:[],jobs:[],today:''}, CGRAN='day', CSPACE='manual', CANA=null, cTrend=null, cChan=null;
 const cpct=x=>x==null?'—':Math.round(x*100)+'%';
 const cwow=x=>{if(x==null)return '<span class="muted" style="padding:0">—</span>';const s=(x>=0?'+':'')+Math.round(x*100)+'%';return `<span style="color:${x<0?'var(--danger)':'var(--ok)'};font-weight:600">${s}</span>`;};
 const rateClass=x=>x==null?'':(x>=0.5?'good':(x>=0.25?'mid':'bad'));
@@ -738,7 +757,7 @@ async function addRoster(){
 function setGran(g){CGRAN=g;document.querySelectorAll('#cGranBtns button').forEach(b=>b.classList.toggle('on',b.dataset.g===g));loadAnalytics();}
 async function loadAnalytics(){
   const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value,job=document.getElementById('cJobFilter').value;
-  const qs='/api/channel/analytics?g='+CGRAN+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'')+(job?'&job_id='+encodeURIComponent(job):'');
+  const qs='/api/channel/analytics?g='+CGRAN+'&space='+encodeURIComponent(CSPACE)+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'')+(job?'&job_id='+encodeURIComponent(job):'');
   let a;try{a=await(await api(qs)).json();}catch(e){toast('加载分析失败',true);return;}
   CANA=a;
   const _empty=!a.timeseries.length;const _eb=document.getElementById('cEmpty');if(_eb)_eb.classList.toggle('hide',!_empty);
@@ -814,7 +833,7 @@ function renderInsights(a){
   el.classList.remove('hide');
   el.innerHTML=ins.map(x=>`<span class="chip">💡 ${esc(x)}</span>`).join('');
 }
-function _cparams(){const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value,job=document.getElementById('cJobFilter').value;return 'g='+CGRAN+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'')+(job?'&job_id='+encodeURIComponent(job):'');}
+function _cparams(){const f=document.getElementById('cFrom').value,t=document.getElementById('cTo').value,job=document.getElementById('cJobFilter').value;return 'g='+CGRAN+'&space='+encodeURIComponent(CSPACE)+(f?'&from='+encodeURIComponent(f):'')+(t?'&to='+encodeURIComponent(t):'')+(job?'&job_id='+encodeURIComponent(job):'');}
 async function exportXlsx(){
   try{const r=await api('/api/channel/export.xlsx?'+_cparams());if(!r.ok){toast('导出失败',true);return;}
     const blob=await r.blob();const el=document.createElement('a');const w=CANA?CANA.window:{from:'',to:''};
@@ -853,9 +872,9 @@ async function downloadChannelTemplate(){
     const r=await api('/api/channel/template?d='+encodeURIComponent(d)+'&by='+encodeURIComponent(by));
     if(!r.ok){toast('生成空表失败',true);return;}
     const blob=await r.blob();
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='候选人跟进_'+d+'.xlsx';
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Candidate_Pipeline_'+d+'.xlsx';
     document.body.appendChild(a);a.click();a.remove();
-    toast('✅ 跟进表已下载（含在跟进的候选人），发给 HR');
+    toast('✅ Candidate Pipeline 已下载，发给 HR 更新招聘阶段');
   }catch(e){toast('下载失败',true);}
 }
 function pickChannelUpload(){document.getElementById('cUpFile').click();}
@@ -869,24 +888,23 @@ async function onChannelUpload(ev){
   ev.target.value='';
   const box=document.getElementById('cUpResult');box.classList.remove('hide');
   const errs=j.errors||[];
-  box.innerHTML='<b>✅ 新增 '+j.imported+' 人 · 更新 '+(j.updated||0)+' 人</b>'+(j.skipped?('　跳过 '+j.skipped+' 空行'):'')+(errs.length?('　<span style="color:var(--danger)">'+errs.length+' 行有问题</span>'):'')+(errs.length?('<ul style="margin:8px 0 0;padding-left:18px;color:var(--danger)">'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>'):'');
-  toast((j.imported||j.updated)?('✅ 新增 '+j.imported+' · 更新 '+(j.updated||0)):'没有可处理的行',!(j.imported||j.updated));
+  box.innerHTML='<b>✅ Pipeline 新增 '+(j.created||0)+' · 更新 '+(j.updated||0)+'</b>'+(j.skipped?('　跳过 '+j.skipped+' 个空白行'):'')+(errs.length?('　<span style="color:var(--danger)">'+errs.length+' 行有问题</span>'):'')+(errs.length?('<ul style="margin:8px 0 0;padding-left:18px;color:var(--danger)">'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>'):'');
+  toast((j.created||j.updated)?('✅ Pipeline 新增 '+(j.created||0)+' · 更新 '+(j.updated||0)):'没有可处理的 Pipeline 行',!(j.created||j.updated));
   loadAnalytics();loadCandidates();
 }
 
-// ---- 候选人跟进（一张表 + 待初筛/待跟进/已完成 视图；过初筛自动进跟进，一键推进到录用/拒绝） ----
-let CANDS=[], CANDFILTER='待跟进';
-const _CBUCKET={'待初筛':s=>s==='新简历','待跟进':s=>s==='初筛通过'||s==='已推荐面试','已完成':s=>s==='已录用'||s==='已拒绝','全部':()=>true};
-function _cnext(s){
-  if(s==='新简历')return [{t:'✓ 初筛通过',to:'初筛通过'},{t:'✗ 拒绝',to:'已拒绝',del:1}];
-  if(s==='初筛通过')return [{t:'→ 推荐面试',to:'已推荐面试'},{t:'✗ 拒绝',to:'已拒绝',del:1}];
-  if(s==='已推荐面试')return [{t:'✓ 录用',to:'已录用'},{t:'✗ 拒绝',to:'已拒绝',del:1}];
-  return [];
-}
+// ---- 来源中立的 Candidate Pipeline：一行显示当前阶段，后台追加阶段历史。 ----
+let CANDS=[], CANDFILTER='Active';
+const _CBUCKET={
+  'New':s=>s==='New Lead'||s==='Contacted / Awaiting Reply',
+  'Active':s=>['HR Screening','Interview 1','Interview 2 / Final','Offer','On Hold'].includes(s),
+  'Completed':s=>['Hired','Rejected','Withdrawn'].includes(s),
+  'All':()=>true
+};
 function candStatusBadge(s){
-  const map={'新简历':'#64748b','初筛通过':'#0d9488','已推荐面试':'#2563eb','已录用':'#16a34a','已拒绝':'#dc2626'};
+  const map={'New Lead':'#64748b','Contacted / Awaiting Reply':'#7c3aed','HR Screening':'#0d9488','Interview 1':'#2563eb','Interview 2 / Final':'#1d4ed8','Offer':'#c2410c','Hired':'#16a34a','On Hold':'#a16207','Rejected':'#dc2626','Withdrawn':'#475569'};
   const c=map[s]||'#64748b';
-  return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;color:#fff;background:${c}">${esc(s||'新简历')}</span>`;
+  return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;color:#fff;background:${c}">${esc(s||'New Lead')}</span>`;
 }
 async function loadCandidates(){
   let cs=[];try{cs=await(await api('/api/candidates')).json();if(!Array.isArray(cs))cs=[];}catch(e){cs=[];}
@@ -894,47 +912,38 @@ async function loadCandidates(){
 }
 function renderCandidates(){
   const box=document.getElementById('candList');if(!box)return;
-  const cnt=k=>CANDS.filter(c=>_CBUCKET[k](c.status||'新简历')).length;
+  const cnt=k=>CANDS.filter(c=>_CBUCKET[k](c.status||'New Lead')).length;
   const tabsEl=document.getElementById('candTabs');
-  if(tabsEl)tabsEl.innerHTML=['待跟进','待初筛','已完成','全部'].map(k=>`<button onclick="setCandFilter('${k}')" style="padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:${k===CANDFILTER?'var(--accent)':'var(--panel)'};color:${k===CANDFILTER?'#fff':'var(--ink)'};font-size:12.5px;font-weight:600;cursor:pointer">${k} <span style="opacity:.75">${cnt(k)}</span></button>`).join('');
+  if(tabsEl)tabsEl.innerHTML=['Active','New','Completed','All'].map(k=>`<button onclick="setCandFilter('${k}')" style="padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:${k===CANDFILTER?'var(--accent)':'var(--panel)'};color:${k===CANDFILTER?'#fff':'var(--ink)'};font-size:12.5px;font-weight:600;cursor:pointer">${k} <span style="opacity:.75">${cnt(k)}</span></button>`).join('');
   const cc=document.getElementById('candCount');if(cc)cc.textContent=CANDS.length?('共 '+CANDS.length+' 人'):'';
-  const rows=CANDS.filter(c=>_CBUCKET[CANDFILTER](c.status||'新简历'));
-  if(!rows.length){box.innerHTML='<div class="muted">'+(CANDFILTER==='待跟进'?'暂无待跟进的人。候选人一旦标为「初筛通过」，就会自动出现在这里，等你一键推进到录用/拒绝。':(CANDFILTER==='待初筛'?'没有待初筛的新简历。':'这个分组暂时没人。'))+'</div>';return;}
+  const rows=CANDS.filter(c=>_CBUCKET[CANDFILTER](c.status||'New Lead'));
+  if(!rows.length){box.innerHTML='<div class="muted">这个阶段暂时没有候选人。</div>';return;}
   const jobName=id=>{const j=(CMETA.jobs||[]).find(x=>x.id===id);return j?j.title:'—';};
-  box.innerHTML=`<table class="rtable"><thead><tr><th>日期</th><th>候选人</th><th>渠道</th><th>职位</th><th>状态</th><th>一键推进</th><th>备注</th><th></th></tr></thead><tbody>${rows.map(c=>{
-    const adv=_cnext(c.status||'新简历').map(a=>`<button onclick="advanceCandidate(${c.id},'${a.to}')" style="padding:3px 9px;border-radius:6px;border:1px solid ${a.del?'var(--danger)':'var(--accent)'};background:transparent;color:${a.del?'var(--danger)':'var(--accent)'};font-size:12px;font-weight:600;cursor:pointer;margin-right:4px">${a.t}</button>`).join('')||'<span class="muted" style="padding:0">已完成</span>';
+  box.innerHTML=`<table class="rtable"><thead><tr><th>进入日期</th><th>候选人</th><th>Source Channel</th><th>职位</th><th>Current Stage</th><th>阶段日期</th><th>备注</th><th></th></tr></thead><tbody>${rows.map(c=>{
     return `<tr>`
     +`<td style="white-space:nowrap">${esc((c.apply_date||'').slice(0,10))}</td>`
     +`<td class="name">${esc(c.name||'—')}${c.ext_ref?' <span title="已关联 CODEX 候选人" style="color:var(--accent);font-size:11px">🔗</span>':''}</td>`
-    +`<td>${esc(c.channel||'')}</td>`
+    +`<td>${esc(c.channel||'')}${c.source_detail?('<div class="muted" style="padding:0;font-size:11px">'+esc(c.source_detail)+'</div>'):''}</td>`
     +`<td>${esc(c.job_title||jobName(c.job_request_id))}</td>`
     +`<td>${candStatusBadge(c.status)}</td>`
-    +`<td style="white-space:nowrap">${adv}</td>`
+    +`<td style="white-space:nowrap">${esc((c.stage_date||'').slice(0,10)||'—')}</td>`
     +`<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.note||'')}">${esc(c.note||'')}</td>`
-    +`<td style="white-space:nowrap"><span class="dact" onclick="editCandidate(${c.id})">编辑</span> · <span class="dact del" onclick="delCandidate(${c.id})">删除</span></td>`
+    +`<td style="white-space:nowrap"><span class="dact" onclick="editCandidate(${c.id})">更新阶段</span></td>`
     +`</tr>`;}).join('')}</tbody></table>`;
 }
 function setCandFilter(f){CANDFILTER=f;renderCandidates();}
-async function advanceCandidate(id,to){
-  const c=CANDS.find(x=>x.id===id);if(!c)return;
-  const body={apply_date:(c.apply_date||'').slice(0,10),name:c.name||'',channel:c.channel,
-    job_request_id:c.job_request_id||null,status:to,filled_by:c.filled_by||'',note:c.note||''};
-  try{await api('/api/candidates/'+id,{method:'PATCH',body:JSON.stringify(body)});
-    toast('已更新为「'+to+'」');loadCandidates();loadAnalytics();
-  }catch(e){toast('更新失败',true);}
-}
 
 // ---- Lark 多维表格同步（管理员操作；机器人建自己的表，HR 只在 Lark 里填） ----
 async function larkRefreshStatus(){
   const el=document.getElementById('larkStatus');if(!el)return;
   try{const s=await(await api('/api/lark/status')).json();
-    if(s.configured){el.innerHTML='✅ 表已就绪'+(s.last_sync?('　上次导入 '+esc(s.last_sync)):'　还没导入过');}
-    else{el.textContent='还没建 Lark 表：先做下面①连接自检 → ②生成 Lark 表。';}
+    if(s.configured){el.innerHTML='🟢 Lark 已连接'+(s.last_sync?(' · 上次同步 '+esc(s.last_sync)):' · 尚未同步');}
+    else{el.textContent='🟠 Lark 在线表未配置（不影响网站 Excel）';}
   }catch(e){}
 }
 async function larkOpenTable(){
   try{const s=await(await api('/api/lark/status')).json();
-    if(s.url)window.open(s.url,'_blank');else toast('还没生成 Lark 表，先做下面①②',true);
+    if(s.url)window.open(s.url,'_blank');else toast('在线渠道表尚未配置，请展开「Lark 连接设置」',true);
   }catch(e){toast('打不开',true);}
 }
 async function larkPing(){
@@ -944,7 +953,7 @@ async function larkPing(){
   }catch(e){toast('自检失败',true);}
 }
 async function larkCreateTable(){
-  if(!confirm('让机器人在 Lark 里新建一张候选人表？机器人是这张表的主人。'))return;
+  if(!confirm('首次创建 Channel Analytics 在线工作区？其中包含 Candidate Pipeline 和未建档渠道汇总两个页签。已配置时不要重复创建。'))return;
   const email=(prompt('分享给哪个管理员的 Lark 邮箱？（留空=先只归机器人，之后再分享）','')||'').trim();
   toast('建表中…（首次几秒）');
   try{const r=await(await api('/api/lark/table',{method:'POST',body:JSON.stringify({share_email:email})})).json();
@@ -953,33 +962,29 @@ async function larkCreateTable(){
     else toast('✗ 建表失败：'+(r.error||''),true);
   }catch(e){toast('建表失败',true);}
 }
-async function larkPush(){
-  toast('推送到 Lark 中…');
-  try{const r=await(await api('/api/lark/push',{method:'POST'})).json();
-    if(r.ok){toast('✅ 已推到 Lark：新建 '+r.created+' · 更新 '+r.updated);if(r.errors&&r.errors.length)console.log('lark push errors',r.errors);}
-    else toast('✗ '+(r.error||'推送失败'),true);
-  }catch(e){toast('推送失败',true);}
-}
 async function larkPull(){
-  if(!confirm('确认导入？\n请先在 Lark 表里核对 HR 填的没问题——点确定后才写进系统。'))return;
-  toast('导入中…');
+  if(!confirm('提交 Lark 在线渠道表并同步到网站？系统会按 Lark 记录 ID 更新，重复提交不会新增重复记录。'))return;
+  toast('同步中…');
   try{const r=await(await api('/api/lark/pull',{method:'POST'})).json();
-    if(r.ok){toast('✅ 已导入：新建 '+r.created+' · 更新 '+r.updated+(r.skipped?('（跳过 '+r.skipped+'）'):''));loadCandidates();loadAnalytics();larkRefreshStatus();if(r.errors&&r.errors.length)console.log('lark pull errors',r.errors);}
-    else toast('✗ '+(r.error||'导入失败'),true);
-  }catch(e){toast('导入失败',true);}
+    if(r.ok){toast('✅ 已同步：Pipeline 新增 '+(r.created||0)+' · 更新 '+(r.updated||0)+' · 渠道汇总 '+(r.applied||0)+(r.skipped?('（跳过 '+r.skipped+'）'):''));loadCandidates();loadAnalytics();larkRefreshStatus();if(r.errors&&r.errors.length)console.log('lark sync errors',r.errors);}
+    else toast('✗ '+(r.error||'同步失败'),true);
+  }catch(e){toast('同步失败',true);}
 }
 function candModal(c){
-  const chans=(CMETA.channels||[]).map(x=>`<option ${c&&c.channel===x?'selected':''}>${esc(x)}</option>`).join('');
-  const jobs='<option value="">（不绑定职位）</option>'+(CMETA.jobs||[]).map(j=>`<option value="${j.id}" ${c&&c.job_request_id===j.id?'selected':''}>${esc(j.title)}</option>`).join('');
-  const sts=(CMETA.statuses||['新简历','初筛通过','已推荐面试','已录用','已拒绝']).map(s=>`<option ${c&&c.status===s?'selected':''}>${esc(s)}</option>`).join('');
-  const by='<option value="">（选填报人）</option>'+(CMETA.roster||[]).map(n=>`<option ${c&&c.filled_by===n?'selected':''}>${esc(n)}</option>`).join('');
-  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${c?'编辑候选人':'添加候选人'}</h3>`
-    +`<div class="row2"><div class="field"><label>日期 *</label><input id="mcDate" type="date" value="${c?esc((c.apply_date||'').slice(0,10)):(CMETA.today||todayStr())}"></div>`
-    +`<div class="field"><label>候选人姓名</label><input id="mcName" value="${c?esc(c.name||''):''}" placeholder="选填，便于追踪/去重"></div></div>`
-    +`<div class="row2"><div class="field"><label>招聘渠道 *</label><select id="mcChannel">${chans}</select></div>`
-    +`<div class="field"><label>关联职位</label><select id="mcJob">${jobs}</select></div></div>`
-    +`<div class="row2"><div class="field"><label>状态</label><select id="mcStatus">${sts}</select></div>`
-    +`<div class="field"><label>填写人</label><select id="mcBy">${by}</select></div></div>`
+  const chans='<option value="">Select source…</option>'+(CMETA.channels||[]).map(x=>`<option ${c&&c.channel===x?'selected':''}>${esc(x)}</option>`).join('');
+  const jobs='<option value="">Select job…</option>'+(CMETA.jobs||[]).map(j=>`<option value="${j.id}" ${c&&c.job_request_id===j.id?'selected':''}>${esc(j.title)}</option>`).join('');
+  const sts=(CMETA.statuses||['New Lead','Contacted / Awaiting Reply','HR Screening','Interview 1','Interview 2 / Final','Offer','Hired','On Hold','Rejected','Withdrawn']).map(s=>`<option ${c&&c.status===s?'selected':''}>${esc(s)}</option>`).join('');
+  const by='<option value="">Select HR owner…</option>'+(CMETA.roster||[]).map(n=>`<option ${c&&c.filled_by===n?'selected':''}>${esc(n)}</option>`).join('');
+  document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${c?'Update Candidate Stage':'Add External Candidate'}</h3>`
+    +`<div class="row2"><div class="field"><label>Entry Date *</label><input id="mcDate" type="date" value="${c?esc((c.apply_date||'').slice(0,10)):(CMETA.today||todayStr())}"></div>`
+    +`<div class="field"><label>Candidate *</label><input id="mcName" value="${c?esc(c.name||''):''}" placeholder="Candidate name"></div></div>`
+    +`<div class="row2"><div class="field"><label>Source Channel *</label><select id="mcChannel">${chans}</select></div>`
+    +`<div class="field"><label>Source Detail</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="Required when Source Channel is Other"></div></div>`
+    +`<div class="field"><label>Job *</label><select id="mcJob">${jobs}</select></div>`
+    +`<div class="row2"><div class="field"><label>Current Stage *</label><select id="mcStatus">${sts}</select></div>`
+    +`<div class="field"><label>Stage Date *</label><input id="mcStageDate" type="date" value="${c?esc((c.stage_date||c.apply_date||'').slice(0,10)):(CMETA.today||todayStr())}"></div></div>`
+    +`<div class="row2"><div class="field"><label>HR Owner</label><select id="mcBy">${by}</select></div>`
+    +`<div class="field"><label>Rejection Reason</label><input id="mcReject" value="${c?esc(c.rejection_reason||''):''}" placeholder="Required when stage is Rejected"></div></div>`
     +`<div class="field"><label>备注</label><input id="mcNote" value="${c?esc(c.note||''):''}"></div>`
     +`<div class="acts"><button class="btn" onclick="saveCandidate(${c?c.id:0})">保存</button><button class="btn ghost sm" onclick="closeModal()">取消</button></div></div></div>`;
 }
@@ -988,17 +993,18 @@ function editCandidate(id){const c=CANDS.find(x=>x.id===id);if(c)candModal(c);}
 async function saveCandidate(id){
   const g=x=>document.getElementById(x).value;
   const body={apply_date:g('mcDate'),name:(g('mcName')||'').trim(),channel:g('mcChannel'),
-    job_request_id:g('mcJob')||null,status:g('mcStatus'),filled_by:g('mcBy'),note:(g('mcNote')||'').trim()};
-  if(!body.channel){toast('请选招聘渠道',true);return;}
+    source_detail:(g('mcSourceDetail')||'').trim(),job_request_id:g('mcJob')||null,status:g('mcStatus'),
+    stage_date:g('mcStageDate'),rejection_reason:(g('mcReject')||'').trim(),filled_by:g('mcBy'),note:(g('mcNote')||'').trim()};
+  if(!body.name){toast('请填写候选人',true);return;}
+  if(!body.channel){toast('请选择 Source Channel',true);return;}
+  if(body.channel==='Other'&&!body.source_detail){toast('选择 Other 时必须填写 Source Detail',true);return;}
+  if(!body.job_request_id){toast('请选择职位',true);return;}
+  if(body.status==='Rejected'&&!body.rejection_reason){toast('Rejected 必须填写 Rejection Reason',true);return;}
   try{
     if(id)await api('/api/candidates/'+id,{method:'PATCH',body:JSON.stringify(body)});
     else await api('/api/candidates',{method:'POST',body:JSON.stringify(body)});
     closeModal();toast('已保存 ✓');loadCandidates();loadAnalytics();
   }catch(e){toast('保存失败',true);}
-}
-async function delCandidate(id){
-  if(!confirm('删除这个候选人？'))return;
-  try{await api('/api/candidates/'+id,{method:'DELETE'});loadCandidates();loadAnalytics();}catch(e){toast('删除失败',true);}
 }
 
 // ---- 日历区间选择 + 三态上色（未来/上线前=淡；上线起=正常，即使某天没上传） ----

@@ -79,6 +79,7 @@ def _fields_spec(job_titles, channels, statuses):
         {"field_name": "日期", "type": FT_TEXT},
         {"field_name": "招聘渠道", "type": FT_SINGLE,
          "property": {"options": [{"name": c} for c in channels]}},
+        {"field_name": "Source Detail", "type": FT_TEXT},
         {"field_name": "关联职位", "type": FT_SINGLE,
          "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
         {"field_name": "关联职位", "type": FT_TEXT},
@@ -116,6 +117,84 @@ def create_base(name, job_titles, channels, statuses, folder_token=""):
     return {"ok": True, "app_token": app_token, "table_id": table_id, "url": url}
 
 
+def _channel_fields_spec(job_titles, channels):
+    """Channel Analytics manual-unidentified schema (one channel/job/day)."""
+    return [
+        {"field_name": "日期", "type": FT_TEXT},
+        {"field_name": "招聘渠道", "type": FT_SINGLE,
+         "property": {"options": [{"name": c} for c in channels]}},
+        {"field_name": "Source Detail", "type": FT_TEXT},
+        {"field_name": "关联职位", "type": FT_SINGLE,
+         "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
+        {"field_name": "关联职位", "type": FT_TEXT},
+        {"field_name": "今日新增简历数", "type": 2},
+        {"field_name": "初筛通过数", "type": 2},
+        {"field_name": "已推荐面试数", "type": 2},
+        {"field_name": "已拒绝数", "type": 2},
+        {"field_name": "备注", "type": FT_TEXT},
+        {"field_name": "填写人", "type": FT_TEXT},
+    ]
+
+
+def _pipeline_fields_spec(job_titles, channels, stages):
+    return [
+        {"field_name": "Candidate", "type": FT_TEXT},
+        {"field_name": "Entry Date", "type": FT_TEXT},
+        {"field_name": "Source Channel", "type": FT_SINGLE,
+         "property": {"options": [{"name": c} for c in channels]}},
+        {"field_name": "Source Detail", "type": FT_TEXT},
+        {"field_name": "Job", "type": FT_SINGLE,
+         "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
+        {"field_name": "Job", "type": FT_TEXT},
+        {"field_name": "Current Stage", "type": FT_SINGLE,
+         "property": {"options": [{"name": s} for s in stages]}},
+        {"field_name": "Stage Date", "type": FT_TEXT},
+        {"field_name": "HR Owner", "type": FT_TEXT},
+        {"field_name": "Rejection Reason", "type": FT_TEXT},
+        {"field_name": "Note", "type": FT_TEXT},
+        {"field_name": "System ID", "type": FT_TEXT},
+    ]
+
+
+def create_channel_base(name, job_titles, channels, stages, folder_token=""):
+    """Create one Base containing the primary Pipeline and optional bulk counts."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    body = {"name": name}
+    if folder_token:
+        body["folder_token"] = folder_token
+    response = _req("POST", "/open-apis/bitable/v1/apps", token=tok, body=body)
+    if response.get("code") != 0:
+        return {"ok": False, "error": "建 base 失败：%s" % (response.get("msg") or response), "raw": response}
+    app = (response.get("data") or {}).get("app") or {}
+    app_token = app.get("app_token")
+    url = app.get("url") or (DOMAIN + "/base/" + str(app_token))
+    if not app_token:
+        return {"ok": False, "error": "建 base 没返回 app_token", "raw": response}
+    pipeline_response = _req(
+        "POST",
+        "/open-apis/bitable/v1/apps/%s/tables" % app_token,
+        token=tok,
+        body={"table": {"name": "Candidate Pipeline", "default_view_name": "Pipeline",
+                         "fields": _pipeline_fields_spec(job_titles, channels, stages)}},
+    )
+    if pipeline_response.get("code") != 0:
+        return {"ok": False, "error": "建 Pipeline 表失败：%s" % (pipeline_response.get("msg") or pipeline_response),
+                "app_token": app_token, "url": url, "raw": pipeline_response}
+    manual_response = _req(
+        "POST", "/open-apis/bitable/v1/apps/%s/tables" % app_token, token=tok,
+        body={"table": {"name": "每日渠道录入", "default_view_name": "渠道日报",
+                         "fields": _channel_fields_spec(job_titles, channels)}},
+    )
+    if manual_response.get("code") != 0:
+        return {"ok": False, "error": "建渠道汇总表失败：%s" % (manual_response.get("msg") or manual_response),
+                "app_token": app_token, "url": url, "raw": manual_response}
+    return {"ok": True, "app_token": app_token,
+            "pipeline_table_id": (pipeline_response.get("data") or {}).get("table_id"),
+            "manual_table_id": (manual_response.get("data") or {}).get("table_id"), "url": url}
+
+
 def add_member(app_token, member_id, member_type="email", perm="full_access"):
     """把这张表分享给管理员（机器人是主人，能授权）。member_type: email/openid/userid。
     需要应用开通 drive 相关权限；没开会在这里报权限错误，联调时按提示加。"""
@@ -131,6 +210,14 @@ def add_member(app_token, member_id, member_type="email", perm="full_access"):
 
 # ---------------- 读写记录 ----------------
 FIELD_KEYS = ("候选人", "日期", "招聘渠道", "关联职位", "状态", "备注", "填写人")
+CHANNEL_FIELD_KEYS = (
+    "日期", "招聘渠道", "Source Detail", "关联职位", "今日新增简历数",
+    "初筛通过数", "已推荐面试数", "已拒绝数", "备注", "填写人",
+)
+PIPELINE_FIELD_KEYS = (
+    "Candidate", "Entry Date", "Source Channel", "Source Detail", "Job",
+    "Current Stage", "Stage Date", "HR Owner", "Rejection Reason", "Note", "System ID",
+)
 
 
 def _flatten(v):
@@ -166,6 +253,58 @@ def list_records(app_token, table_id):
                         "fields": {k: _flatten(f.get(k)) for k in FIELD_KEYS}})
         if d.get("has_more") and d.get("page_token"):
             page = d["page_token"]
+        else:
+            break
+    return {"ok": True, "records": out}
+
+
+def list_channel_records(app_token, table_id):
+    """Read the full Channel Analytics Bitable with bounded pagination."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    out, page = [], ""
+    for _ in range(50):
+        path = "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" % (app_token, table_id)
+        if page:
+            path += "&page_token=" + page
+        response = _req("GET", path, token=tok)
+        if response.get("code") != 0:
+            return {"ok": False, "error": "读渠道记录失败：%s" % (response.get("msg") or response),
+                    "raw": response}
+        data = response.get("data") or {}
+        for item in data.get("items", []):
+            fields = item.get("fields", {})
+            out.append({"record_id": item.get("record_id"),
+                        "fields": {key: _flatten(fields.get(key)) for key in CHANNEL_FIELD_KEYS}})
+        if data.get("has_more") and data.get("page_token"):
+            page = data["page_token"]
+        else:
+            break
+    return {"ok": True, "records": out}
+
+
+def list_pipeline_records(app_token, table_id):
+    """Read all Candidate Pipeline rows with bounded pagination."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    out, page = [], ""
+    for _ in range(50):
+        path = "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" % (app_token, table_id)
+        if page:
+            path += "&page_token=" + page
+        response = _req("GET", path, token=tok)
+        if response.get("code") != 0:
+            return {"ok": False, "error": "读 Pipeline 失败：%s" % (response.get("msg") or response),
+                    "raw": response}
+        data = response.get("data") or {}
+        for item in data.get("items", []):
+            fields = item.get("fields", {})
+            out.append({"record_id": item.get("record_id"),
+                        "fields": {key: _flatten(fields.get(key)) for key in PIPELINE_FIELD_KEYS}})
+        if data.get("has_more") and data.get("page_token"):
+            page = data["page_token"]
         else:
             break
     return {"ok": True, "records": out}

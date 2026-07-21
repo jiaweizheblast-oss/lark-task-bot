@@ -38,6 +38,7 @@ import channel_report
 import sheet_io
 import attend
 import lark_bitable
+import channel_sheet_service
 import talent_integration
 import talent_search_queue
 from parse import extract_deadline, overdue_stage
@@ -352,6 +353,47 @@ def handle_task_wizard(sender_open_id, dm_chat_id, text, draft):
 
 def handle_dm(sender_open_id, dm_chat_id, text):
     low = text.strip()
+
+    if low.casefold() in {
+        "/channel_sheet", "/channel_download", "获取渠道表", "下载渠道表",
+    }:
+        if not db.is_admin(sender_open_id):
+            send_text(dm_chat_id, "❌ 只有管理员可以获取渠道运营表。")
+            return
+        cfg = _lark_cfg()
+        panel_url = (_public_base() + "/panel#recruit") if _public_base() else ""
+        send_card(
+            dm_chat_id,
+            cards.channel_sheet_card(
+                url=cfg.get("url") or "",
+                panel_url=panel_url,
+                configured=bool(cfg.get("app_token") and cfg.get("pipeline_table_id")
+                                and cfg.get("manual_table_id")
+                                and cfg.get("schema_version") == "channel-analytics-v2"),
+                last_sync=cfg.get("last_sync") or "",
+            ),
+        )
+        return
+
+    if low.casefold() in {
+        "/submit_channel_sheet", "/channel_upload", "提交渠道表", "同步渠道表",
+    }:
+        if not db.is_admin(sender_open_id):
+            send_text(dm_chat_id, "❌ 只有管理员可以提交渠道运营表。")
+            return
+        cfg = _lark_cfg()
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        result = channel_sheet_service.sync_lark_table(
+            db,
+            lark_bitable,
+            cfg,
+            jobs=db.list_job_requests(only_open=False),
+            channels=channel_report.CHANNELS,
+            default_date=_kolkata_today().isoformat(),
+            synced_at=now_utc.isoformat(),
+        )
+        send_card(dm_chat_id, cards.channel_sync_result_card(result))
+        return
 
     if low.startswith("/help") or low == "帮助":
         send_text(dm_chat_id, cards.help_text())
@@ -1077,7 +1119,7 @@ def _chan_json(r):
 
 def _cand_json(c):
     c = dict(c)
-    for k in ("apply_date", "created_at", "updated_at"):
+    for k in ("apply_date", "stage_date", "effective_date", "created_at", "updated_at"):
         if c.get(k) is not None:
             c[k] = c[k].isoformat() if hasattr(c[k], "isoformat") else str(c[k])
     return c
@@ -1096,7 +1138,7 @@ def api_channel_meta():
         "timezone": "Asia/Kolkata",
         "go_live": _channel_go_live(),
         "statuses": channel_report.PIPELINE_STATUS,
-        "data_days": db.candidate_data_days(),
+        "data_days": sorted(set(db.candidate_data_days()) | set(db.channel_data_days())),
     })
 
 
@@ -1160,11 +1202,20 @@ def api_candidate_create():
     rd = (d.get("apply_date") or _kolkata_today().isoformat())[:10]
     if not _valid_date(rd):
         return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
+    stage_date = (d.get("stage_date") or rd)[:10]
+    if not _valid_date(stage_date):
+        return jsonify({"error": "阶段日期格式非法（应为 YYYY-MM-DD）", "errors": ["阶段日期非法"]}), 422
     cid = db.create_candidate(
         rd, (d.get("name") or "").strip(), d["channel"], jid,
-        d.get("status") or "新简历", (d.get("note") or "").strip(),
+        "New Lead", (d.get("note") or "").strip(),
         (d.get("filled_by") or "").strip(), d.get("source") or "手动",
-        (d.get("ext_ref") or "").strip())
+        (d.get("ext_ref") or "").strip(), "", (d.get("source_detail") or "").strip())
+    requested_stage = d.get("status") or "New Lead"
+    if requested_stage != "New Lead":
+        db.transition_candidate_stage(
+            cid, requested_stage, stage_date, (d.get("filled_by") or "").strip(),
+            (d.get("rejection_reason") or "").strip(), (d.get("note") or "").strip(),
+            (d.get("event_ref") or "").strip())
     return jsonify({"ok": True, "id": cid, "warnings": warnings})
 
 
@@ -1172,7 +1223,8 @@ def api_candidate_create():
 def api_candidate_update(cid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    if not db.get_candidate(cid):
+    existing = db.get_candidate(cid)
+    if not existing:
         return jsonify({"error": "候选人不存在"}), 404
     d = request.get_json(silent=True) or {}
     errors, warnings = channel_report.validate_candidate(d)
@@ -1184,7 +1236,7 @@ def api_candidate_update(cid):
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
     fields = dict(
         name=(d.get("name") or "").strip(), channel=d["channel"], job_request_id=jid,
-        status=d.get("status") or "新简历", note=(d.get("note") or "").strip(),
+        source_detail=(d.get("source_detail") or "").strip(), note=(d.get("note") or "").strip(),
         filled_by=(d.get("filled_by") or "").strip())
     if d.get("source"):
         fields["source"] = d["source"]
@@ -1194,8 +1246,28 @@ def api_candidate_update(cid):
         if not _valid_date(d["apply_date"]):
             return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
         fields["apply_date"] = d["apply_date"][:10]
+    stage_date = (d.get("stage_date") or d.get("apply_date") or _kolkata_today().isoformat())[:10]
+    if not _valid_date(stage_date):
+        return jsonify({"error": "阶段日期格式非法（应为 YYYY-MM-DD）", "errors": ["阶段日期非法"]}), 422
     db.update_candidate(cid, **fields)
-    return jsonify({"ok": True, "warnings": warnings})
+    transition = None
+    requested_stage = d.get("status") or "New Lead"
+    if requested_stage != (existing.get("status") or "New Lead"):
+        transition = db.transition_candidate_stage(
+            cid, requested_stage,
+            stage_date,
+            (d.get("filled_by") or "").strip(), (d.get("rejection_reason") or "").strip(),
+            (d.get("note") or "").strip(), (d.get("event_ref") or "").strip())
+    return jsonify({"ok": True, "warnings": warnings, "transition": transition})
+
+
+@app.route("/api/candidates/<int:cid>/stage-events")
+def api_candidate_stage_events(cid):
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if not db.get_candidate(cid):
+        return jsonify({"error": "候选人不存在"}), 404
+    return jsonify([_cand_json(row) for row in db.list_candidate_stage_events(cid)])
 
 
 @app.route("/api/candidates/<int:cid>", methods=["DELETE"])
@@ -1383,7 +1455,7 @@ _ANALYTICS_SPAN = {"day": 30, "week": 84, "month": 365, "year": 365 * 3}
 
 @app.route("/api/channel/analytics")
 def api_channel_analytics():
-    """招聘分析看板数据（网站画图 + Bot 回文字共用同一引擎）。参数 g/from/to/job_id。"""
+    """Channel Analytics, with manual and identity-derived spaces kept separate."""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     g = request.args.get("g", "day")
@@ -1398,11 +1470,18 @@ def api_channel_analytics():
     job_id = int(jid) if jid.isdigit() else None
     span = (dto - dfrom).days + 1
     prev_from = dfrom - datetime.timedelta(days=span)          # 上一周期（同长度、紧邻在前）
-    cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
-    rows = channel_report.candidates_to_daily(cands)           # 候选人行 -> 日聚合，喂同一分析引擎
+    space = request.args.get("space", "manual")
+    if space == "derived":
+        cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
+        rows = channel_report.candidates_to_daily(cands)
+    else:
+        space = "manual"
+        rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
     jobs = db.list_job_requests(only_open=False)
     costs = db.list_channel_costs()
-    return jsonify(channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs))
+    result = channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs)
+    result["data_space"] = "identity_derived" if space == "derived" else "manual_unidentified"
+    return jsonify(result)
 
 
 @app.route("/api/channel/export.xlsx")
@@ -1422,11 +1501,16 @@ def api_channel_export():
     job_id = int(jid) if jid.isdigit() else None
     span = (dto - dfrom).days + 1
     prev_from = dfrom - datetime.timedelta(days=span)
-    cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
-    rows = channel_report.candidates_to_daily(cands)
+    space = request.args.get("space", "manual")
+    if space == "derived":
+        cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
+        rows = channel_report.candidates_to_daily(cands)
+    else:
+        rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
     jobs = db.list_job_requests(only_open=False)
     costs = db.list_channel_costs()
     a = channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs)
+    a["data_space"] = "identity_derived" if space == "derived" else "manual_unidentified"
     data = sheet_io.build_analytics_xlsx(a)
     fname = "招聘分析_%s_%s.xlsx" % (a["window"]["from"], a["window"]["to"])
     return Response(
@@ -1634,61 +1718,40 @@ def api_checkin_submit(token):
 
 @app.route("/api/channel/template")
 def api_channel_template():
-    """下载候选人跟进表（.xlsx）：在跟进中的候选人带「记录ID」+当前状态预填好，HR 直接改状态；
-    末尾留空行给新候选人。上传时按记录ID更新、无ID新增，系统自动分辨。"""
+    """下载来源中立的 Candidate Pipeline workbook。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     day = (request.args.get("d") or _kolkata_today().isoformat())[:10]
     by = request.args.get("by", "")
     jobs = db.list_job_requests(only_open=True)
-    cands = db.list_candidates_active()
-    data = sheet_io.build_pipeline_template_xlsx(jobs, day, by, cands)
+    data = sheet_io.build_pipeline_template_xlsx(jobs, day, by, db.list_candidates_active())
     return Response(
         data,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="candidates_%s.xlsx"' % day},
+        headers={"Content-Disposition": 'attachment; filename="candidate_pipeline_%s.xlsx"' % day},
     )
 
 
 @app.route("/api/channel/upload", methods=["POST"])
 def api_channel_upload():
-    """HR 填好的候选人表（.xlsx/.csv）上传 -> 解析 -> 每行一个候选人 upsert
-    （按 ext_ref 或 姓名+渠道+职位 去重，重传更新不重复建行）。
+    """HR 填好的渠道候选人表（.xlsx）上传 -> 解析 -> 统一 application service。
+    （按记录 ID 或 姓名+渠道+职位 去重，重传更新不重复建行）。
     填报人以上传时选定的受控 owner 为准（表内声明仅作展示）。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "没有收到文件"}), 400
+    if not (f.filename or "").casefold().endswith(".xlsx"):
+        return jsonify({"error": "渠道跟进表只接受系统生成的 .xlsx；CSV 不保留受控列和记录 ID"}), 400
     owner = (request.form.get("by") or "").strip()      # 受控填报人（roster 选择），权威 owner
     default_date = (request.form.get("d") or "").strip() or _kolkata_today().isoformat()
     jobs = db.list_job_requests(only_open=False)
     try:
         parsed = sheet_io.parse_pipeline_sheet(f.read(), f.filename or "", jobs, owner, default_date)
     except Exception as e:
-        return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx 或 .csv）：%s" % e}), 400
-    imported = 0
-    updated = 0
-    for r in parsed["rows"]:
-        try:
-            cid = (r.get("cand_id") or "").strip()
-            if cid.isdigit() and db.get_candidate(int(cid)):
-                # 有记录ID 且存在 -> 原地更新（HR 在跟进表里改了状态等）
-                db.update_candidate(int(cid), apply_date=r["record_date"], name=r.get("name", ""),
-                                    channel=r["channel"], job_request_id=r.get("job_request_id"),
-                                    status=r.get("status") or "新简历", note=r.get("note", ""),
-                                    filled_by=owner or r.get("filled_by", ""))
-                updated += 1
-            else:
-                # 无ID（或ID已不存在）-> 新候选人；再按 姓名+渠道+职位 兜底去重
-                db.upsert_candidate(r["record_date"], r.get("name", ""), r["channel"],
-                                    r.get("job_request_id"), r.get("status") or "新简历",
-                                    r.get("note", ""), owner or r.get("filled_by", ""), "手动", "")
-                imported += 1
-        except Exception as e:
-            parsed["errors"].append("入库失败（%s/%s）：%s" % (r.get("channel"), r.get("record_date"), e))
-    return jsonify({"ok": True, "imported": imported, "updated": updated,
-                    "skipped": parsed["skipped"], "errors": parsed["errors"]})
+        return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx）：%s" % e}), 400
+    return jsonify(channel_sheet_service.import_pipeline_rows(db, parsed, owner=owner))
 
 
 # ==================== Lark 多维表格同步（机器人自己的表；只对管理员开放） ====================
@@ -1697,10 +1760,12 @@ def _lark_cfg():
         s = db.get_settings()
     except Exception:
         s = {}
-    return {"app_token": s.get("lark_cand_app_token", ""),
-            "table_id": s.get("lark_cand_table_id", ""),
-            "url": s.get("lark_cand_url", ""),
-            "last_sync": s.get("lark_cand_last_sync", "")}
+    return {"app_token": s.get("lark_channel_app_token", ""),
+            "pipeline_table_id": s.get("lark_channel_pipeline_table_id", ""),
+            "manual_table_id": s.get("lark_channel_manual_table_id", ""),
+            "url": s.get("lark_channel_url", ""),
+            "last_sync": s.get("lark_channel_last_sync", ""),
+            "schema_version": s.get("lark_channel_schema_version", "")}
 
 
 @app.route("/api/lark/ping", methods=["POST", "GET"])
@@ -1716,25 +1781,38 @@ def api_lark_status():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     c = _lark_cfg()
-    return jsonify({"configured": bool(c["app_token"] and c["table_id"]),
-                    "url": c["url"], "last_sync": c["last_sync"]})
+    return jsonify({"configured": bool(c["app_token"] and c["pipeline_table_id"]
+                                        and c["manual_table_id"]
+                                        and c["schema_version"] == "channel-analytics-v2"),
+                    "url": c["url"], "last_sync": c["last_sync"],
+                    "schema_version": c["schema_version"]})
 
 
 @app.route("/api/lark/table", methods=["POST"])
 def api_lark_create_table():
-    """机器人建一张它自己的候选人多维表格（自己是主人，无需授权）；可选分享给管理员邮箱。存配置、返回链接。"""
+    """机器人首次创建 Channel Analytics 多维表格；不创建第二份候选人联系表。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    current = _lark_cfg()
+    if (current.get("app_token") and current.get("pipeline_table_id")
+            and current.get("manual_table_id")
+            and current.get("schema_version") == "channel-analytics-v2"):
+        return jsonify({"error": "在线渠道表已配置；为防止分叉，不会重复创建",
+                        "url": current.get("url")}), 409
     d = request.get_json(silent=True) or {}
     jobs = db.list_job_requests(only_open=True)
-    res = lark_bitable.create_base("Nexus 候选人跟进", [j["title"] for j in jobs],
-                                   channel_report.CHANNELS, channel_report.PIPELINE_STATUS,
-                                   folder_token=(d.get("folder_token") or "").strip())
+    res = lark_bitable.create_channel_base(
+        "Nexus Channel Analytics", [j["title"] for j in jobs], channel_report.CHANNELS,
+        channel_report.PIPELINE_STATUS,
+        folder_token=(d.get("folder_token") or "").strip(),
+    )
     if not res.get("ok"):
         return jsonify(res), 502
-    db.set_setting("lark_cand_app_token", res["app_token"])
-    db.set_setting("lark_cand_table_id", res.get("table_id") or "")
-    db.set_setting("lark_cand_url", res.get("url") or "")
+    db.set_setting("lark_channel_app_token", res["app_token"])
+    db.set_setting("lark_channel_pipeline_table_id", res.get("pipeline_table_id") or "")
+    db.set_setting("lark_channel_manual_table_id", res.get("manual_table_id") or "")
+    db.set_setting("lark_channel_url", res.get("url") or "")
+    db.set_setting("lark_channel_schema_version", "channel-analytics-v2")
     shared = None
     share = (d.get("share_email") or "").strip()
     if share:
@@ -1744,82 +1822,30 @@ def api_lark_create_table():
 
 @app.route("/api/lark/push", methods=["POST"])
 def api_lark_push():
-    """把 Nexus 在跟进的候选人写进 Lark 表：有 record_id 的更新，没有的新建并回填 record_id（种子/回写）。"""
+    """Legacy endpoint retained fail-closed: Channel Analytics never seeds candidate rows."""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    c = _lark_cfg()
-    if not (c["app_token"] and c["table_id"]):
-        return jsonify({"error": "还没生成 Lark 表，先点「生成 Lark 表」"}), 400
-    jobs_by_id = {j["id"]: j["title"] for j in db.list_job_requests(only_open=False)}
-    created = updated = 0
-    errors = []
-    for cand in db.list_candidates_active():
-        try:
-            if cand.get("lark_record_id"):
-                r = lark_bitable.update_record(c["app_token"], c["table_id"], cand["lark_record_id"], cand, jobs_by_id)
-                updated += 1 if r.get("ok") else 0
-                if not r.get("ok"):
-                    errors.append("%s：%s" % (cand.get("name") or cand["id"], r.get("error")))
-            else:
-                r = lark_bitable.create_record(c["app_token"], c["table_id"], cand, jobs_by_id)
-                if r.get("ok"):
-                    db.update_candidate(cand["id"], lark_record_id=r.get("record_id") or "")
-                    created += 1
-                else:
-                    errors.append("%s：%s" % (cand.get("name") or cand["id"], r.get("error")))
-        except Exception as e:
-            errors.append("%s：%s" % (cand.get("name") or cand["id"], e))
-    return jsonify({"ok": True, "created": created, "updated": updated, "errors": errors[:20]})
+    return jsonify({"error": "该旧功能已停用：Channel Analytics 不再复制候选人；请使用渠道日报表"}), 410
 
 
 @app.route("/api/lark/pull", methods=["POST"])
 def api_lark_pull():
-    """从 Lark 表读回记录 upsert 进候选人：按 lark_record_id 更新、没见过的新建。HR 在 Lark 改的状态就进来了。"""
+    """从 Lark 在线渠道表提交；网站按钮和 Bot 命令共用同一 application service。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    c = _lark_cfg()
-    if not (c["app_token"] and c["table_id"]):
-        return jsonify({"error": "还没生成 Lark 表，先点「生成 Lark 表」"}), 400
-    res = lark_bitable.list_records(c["app_token"], c["table_id"])
-    if not res.get("ok"):
-        return jsonify(res), 502
-    title2id = {j["title"]: j["id"] for j in db.list_job_requests(only_open=False)}
-    created = updated = skipped = 0
-    errors = []
-    for rec in res["records"]:
-        f = rec["fields"]
-        name = (f.get("候选人") or "").strip()
-        channel = (f.get("招聘渠道") or "").strip()
-        if not name and not channel:
-            skipped += 1
-            continue
-        rd = (f.get("日期") or _kolkata_today().isoformat()).strip()[:10]
-        if not _valid_date(rd):
-            rd = _kolkata_today().isoformat()
-        status = (f.get("状态") or "新简历").strip()
-        if status not in channel_report.PIPELINE_STATUS:
-            status = "新简历"
-        jid = title2id.get((f.get("关联职位") or "").strip())
-        note = (f.get("备注") or "").strip()
-        by = (f.get("填写人") or "").strip()
-        try:
-            existing = db.get_candidate_by_lark(rec["record_id"])
-            if not existing:
-                existing = db.find_candidate(name, channel or "其他", jid)  # 跨门兜底：认亲，避免重复
-            if existing:
-                db.update_candidate(existing["id"], apply_date=rd, name=name, channel=channel or "其他",
-                                    job_request_id=jid, status=status, note=note, filled_by=by,
-                                    lark_record_id=rec["record_id"])
-                updated += 1
-            else:
-                db.create_candidate(rd, name, channel or "其他", jid, status, note, by,
-                                    "Lark", "", rec["record_id"])
-                created += 1
-        except Exception as e:
-            errors.append("%s：%s" % (name or rec["record_id"], e))
-    db.set_setting("lark_cand_last_sync",
-                   _kolkata_today().isoformat() + " " + datetime.datetime.utcnow().strftime("%H:%M UTC"))
-    return jsonify({"ok": True, "created": created, "updated": updated, "skipped": skipped, "errors": errors[:20]})
+    result = channel_sheet_service.sync_lark_table(
+        db,
+        lark_bitable,
+        _lark_cfg(),
+        jobs=db.list_job_requests(only_open=False),
+        channels=channel_report.CHANNELS,
+        default_date=_kolkata_today().isoformat(),
+        synced_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+    if result.get("ok"):
+        return jsonify(result)
+    status = 400 if "尚未配置" in str(result.get("error") or "") or "旧版" in str(result.get("error") or "") else 502
+    return jsonify(result), status
 
 
 # ---------------- 日历订阅（iCal）：把任务截止日期同步进个人日历 ----------------

@@ -12,15 +12,49 @@
 """
 from datetime import date, timedelta
 
-CHANNELS = ["BOSS直聘", "猎聘", "内推", "LinkedIn", "招聘会", "其他"]
+CHANNELS = [
+    # System and owned channels
+    "Talent Discovery", "Company Careers", "Direct Application",
+    "Employee Referral", "Internal Mobility", "Historical Talent Pool",
+    # India / general job platforms
+    "LinkedIn", "Naukri", "Indeed", "Foundit / Monster", "Shine",
+    "Apna", "WorkIndia", "Job Hai", "Internshala", "Wellfound", "Glassdoor",
+    # Community and messaging channels
+    "Telegram", "WhatsApp", "Facebook", "Instagram", "X / Twitter",
+    "Discord", "GitHub", "Stack Overflow",
+    # iGaming-focused channels and partners
+    "iGamingJobs", "SiGMA Careers", "BettingJobs / iGaming Agency",
+    "iGaming Community / Affiliate Network",
+    # Offline / partner channels
+    "Recruitment Agency", "Recruitment Event / Job Fair", "University / Campus",
+    "Other",
+]
+OTHER_CHANNEL = "Other"
 
 # 招聘流水线状态（每个候选人一个状态）。顺序即漏斗层级：越靠后越深。
 # 用于把「每行一个候选人」折算成 channel_daily 同形的日聚合行（candidates_to_daily），
 # 这样整套 analytics()/build_report() 一行都不用改就能吃候选人数据（单一分析引擎）。
-PIPELINE_STATUS = ["新简历", "初筛通过", "已推荐面试", "已录用", "已拒绝"]
-_ST_PASSED = {"初筛通过", "已推荐面试", "已录用"}   # 达到即视为「已过初筛」
-_ST_RECO = {"已推荐面试", "已录用"}                 # 达到即视为「已推荐」
-_ST_REJECT = "已拒绝"
+PIPELINE_STATUS = [
+    "New Lead", "Contacted / Awaiting Reply", "HR Screening", "Interview 1",
+    "Interview 2 / Final", "Offer", "Hired", "On Hold", "Rejected", "Withdrawn",
+]
+_ST_PASSED = {"Interview 1", "Interview 2 / Final", "Offer", "Hired",
+              "初筛通过", "已推荐面试", "已录用"}
+_ST_RECO = {"Interview 1", "Interview 2 / Final", "Offer", "Hired",
+            "已推荐面试", "已录用"}
+_ST_REJECT = {"Rejected", "已拒绝"}
+
+
+def validate_source(channel, source_detail=""):
+    """Validate a controlled source. `Other` always requires an explanation."""
+    errors = []
+    if channel not in CHANNELS:
+        errors.append("渠道「%s」不在预设项内" % channel)
+    if channel == OTHER_CHANNEL and not (source_detail or "").strip():
+        errors.append("选择 Other 时必须填写 Source Detail")
+    if channel != OTHER_CHANNEL and len((source_detail or "").strip()) > 200:
+        errors.append("Source Detail 不能超过 200 字符")
+    return errors
 
 
 def candidates_to_daily(cands):
@@ -42,12 +76,12 @@ def candidates_to_daily(cands):
                                "new_resumes": 0, "passed_screening": 0,
                                "recommended": 0, "rejected": 0}
         cell["new_resumes"] += 1
-        st = c.get("status") or "新简历"
+        st = c.get("status") or "New Lead"
         if st in _ST_PASSED:
             cell["passed_screening"] += 1
         if st in _ST_RECO:
             cell["recommended"] += 1
-        if st == _ST_REJECT:
+        if st in _ST_REJECT:
             cell["rejected"] += 1
     return list(agg.values())
 
@@ -55,13 +89,16 @@ def candidates_to_daily(cands):
 def validate_candidate(payload):
     """候选人行校验。返回 (errors, warnings)。errors 非空 -> 拒收。"""
     errors, warnings = [], []
-    if payload.get("channel") not in CHANNELS:
-        errors.append("渠道「%s」不在预设项内" % payload.get("channel"))
-    st = payload.get("status") or "新简历"
+    errors.extend(validate_source(payload.get("channel"), payload.get("source_detail")))
+    st = payload.get("status") or "New Lead"
     if st not in PIPELINE_STATUS:
         errors.append("状态「%s」不在预设项内" % st)
     if not (payload.get("name") or "").strip():
-        warnings.append("未填候选人姓名（允许，但建议填，便于去重与追踪）")
+        errors.append("候选人姓名必填")
+    if not payload.get("job_request_id"):
+        errors.append("请选择关联职位")
+    if st == "Rejected" and not (payload.get("rejection_reason") or "").strip():
+        errors.append("阶段为 Rejected 时必须填写 Rejection Reason")
     return errors, warnings
 
 
@@ -69,8 +106,7 @@ def validate_candidate(payload):
 def validate(payload):
     """返回 (errors, warnings)。errors 非空 -> 拒收；warnings -> 允许但提示复核。"""
     errors, warnings = [], []
-    if payload.get("channel") not in CHANNELS:
-        errors.append(f"招聘渠道 “{payload.get('channel')}” 不在预设项内")
+    errors.extend(validate_source(payload.get("channel"), payload.get("source_detail")))
     if not payload.get("job_request_id"):
         errors.append("请选择关联职位")
     # 填报人不再是唯一键，改为受控 roster 选择、可空；不在此处强制。

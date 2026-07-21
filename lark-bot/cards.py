@@ -324,5 +324,59 @@ def help_text():
         "then I'll @-mention them in the group\n"
         "• `/claimadmin <code>` — set yourself as admin the first time\n"
         "• `/whoami` — check your role\n\n"
+        "**Recruiting / Channel Analytics**\n"
+        "• `/channel_sheet` — get the shared Lark channel activity table\n"
+        "• `/submit_channel_sheet` — submit/sync the completed Lark table to the website\n\n"
         "Only admins can assign tasks. Assignees respond via the card buttons: Accept / Report an Issue / Complete."
     )
+
+
+def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
+    """One clear Bot entry for the Channel Analytics daily workflow."""
+    elements = []
+    if configured and url:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+            "HR 直接在这张 **渠道跟进表** 更新状态或补充新候选人。填完后由管理员发送 "
+            "`/submit_channel_sheet`，结果会立即同步到网站 Channel Analytics。"}})
+        elements.append({"tag": "action", "actions": [{
+            "tag": "button", "type": "primary",
+            "text": {"tag": "plain_text", "content": "打开在线渠道表"}, "url": url,
+        }]})
+        if last_sync:
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "上次同步：" + last_sync}]})
+    else:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+            "在线渠道表尚未完成首次配置。请管理员在网站的 **Channel Analytics → Lark 连接设置** 中创建。"}})
+    if panel_url:
+        elements.append({"tag": "action", "actions": [{
+            "tag": "button", "text": {"tag": "plain_text", "content": "打开 Channel Analytics"},
+            "url": panel_url,
+        }]})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "Channel Analytics · 获取渠道表"}},
+        "elements": elements,
+    }
+
+
+def channel_sync_result_card(result):
+    """Render a safe summary after Bot-triggered Lark submission."""
+    ok = bool(result.get("ok"))
+    if ok:
+        content = (
+            "已同步到网站。\n"
+            f"- Pipeline 新增：{int(result.get('created') or 0)}\n"
+            f"- Pipeline 更新：{int(result.get('updated') or 0)}\n"
+            f"- 已应用渠道记录：{int(result.get('applied') or 0)}\n"
+            f"- 跳过空行：{int(result.get('skipped') or 0)}\n"
+            f"- 问题行：{len(result.get('errors') or [])}"
+        )
+    else:
+        content = "没有写入。原因：" + str(result.get("error") or "同步失败")
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "green" if ok else "red", "title": {
+            "tag": "plain_text", "content": "渠道表已同步" if ok else "渠道表同步失败",
+        }},
+        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+    }

@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS channel_daily (
     id               SERIAL PRIMARY KEY,
     record_date      DATE NOT NULL,                    -- report_date
     channel          TEXT NOT NULL,                    -- 人工渠道标签（运营侧受控命名空间）
+    source_detail    TEXT NOT NULL DEFAULT '',          -- channel=Other 时必填具体来源
     job_request_id   INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
     filled_by        TEXT NOT NULL DEFAULT '',         -- 填报人（受控 roster 选择；仅声明/展示，非唯一键）
     new_resumes      INTEGER NOT NULL DEFAULT 0,
@@ -154,10 +155,11 @@ CREATE TABLE IF NOT EXISTS channel_daily (
     note             TEXT NOT NULL DEFAULT '',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, job_request_id)
+    CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, source_detail, job_request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_channel_daily_date ON channel_daily (record_date);
 CREATE INDEX IF NOT EXISTS idx_channel_daily_ch ON channel_daily (channel, record_date);
+ALTER TABLE channel_daily ADD COLUMN IF NOT EXISTS source_detail TEXT NOT NULL DEFAULT '';
 
 -- 迁移（幂等）：从"含填写人的旧键"改成"单一 owner 键"。
 -- 先按新键去重（每组保留一条），再删旧约束、加新约束，避免上新键失败。
@@ -165,11 +167,13 @@ DELETE FROM channel_daily a USING channel_daily b
   WHERE a.ctid < b.ctid
     AND a.record_date = b.record_date
     AND a.channel = b.channel
+    AND a.source_detail = b.source_detail
     AND a.job_request_id = b.job_request_id;
 ALTER TABLE channel_daily DROP CONSTRAINT IF EXISTS channel_daily_record_date_channel_job_request_id_filled_by_key;
+ALTER TABLE channel_daily DROP CONSTRAINT IF EXISTS uq_channel_manual;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_channel_manual') THEN
-    ALTER TABLE channel_daily ADD CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, job_request_id);
+    ALTER TABLE channel_daily ADD CONSTRAINT uq_channel_manual UNIQUE (record_date, channel, source_detail, job_request_id);
   END IF;
 END $$;
 
@@ -184,8 +188,9 @@ CREATE TABLE IF NOT EXISTS candidate (
     apply_date     DATE NOT NULL,                    -- 进入日期（简历到达/首次接触）
     name           TEXT NOT NULL DEFAULT '',         -- 候选人姓名
     channel        TEXT NOT NULL,                    -- 来源渠道（运营侧受控命名）
+    source_detail  TEXT NOT NULL DEFAULT '',         -- channel=Other 时必填具体来源
     job_request_id INTEGER REFERENCES job_requests(id) ON DELETE SET NULL,  -- 关联职位（可空）
-    status         TEXT NOT NULL DEFAULT '新简历',    -- 新简历/初筛通过/已推荐面试/已录用/已拒绝
+    status         TEXT NOT NULL DEFAULT 'New Lead', -- 当前招聘阶段
     note           TEXT NOT NULL DEFAULT '',
     filled_by      TEXT NOT NULL DEFAULT '',          -- 填报人（受控 roster；仅展示）
     source         TEXT NOT NULL DEFAULT '手动',       -- 手动 / CODEX（来源系统）
@@ -199,7 +204,24 @@ CREATE INDEX IF NOT EXISTS idx_candidate_job ON candidate (job_request_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_extref ON candidate (ext_ref);
 -- Lark 多维表格同步：记录本候选人对应的 Lark 记录 record_id（机器人自己那张表），拉取时按它更新去重
 ALTER TABLE candidate ADD COLUMN IF NOT EXISTS lark_record_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE candidate ADD COLUMN IF NOT EXISTS source_detail TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_candidate_lark ON candidate (lark_record_id);
+
+-- 阶段变化追加留痕；主表 status 只保存当前阶段供快速读取。
+CREATE TABLE IF NOT EXISTS candidate_stage_event (
+    id                 BIGSERIAL PRIMARY KEY,
+    candidate_id       INTEGER NOT NULL REFERENCES candidate(id) ON DELETE CASCADE,
+    from_stage         TEXT NOT NULL DEFAULT '',
+    to_stage           TEXT NOT NULL,
+    effective_date     DATE NOT NULL,
+    rejection_reason   TEXT NOT NULL DEFAULT '',
+    note               TEXT NOT NULL DEFAULT '',
+    changed_by         TEXT NOT NULL DEFAULT '',
+    event_ref          TEXT NOT NULL UNIQUE,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_stage_event_candidate
+    ON candidate_stage_event(candidate_id, created_at, id);
 
 -- ============================================================
 --  Nexus 运营模块（纯增量：职位 owner、文档模板库、渠道成本）
