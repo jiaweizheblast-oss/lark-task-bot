@@ -6,7 +6,7 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v7"
+SCHEMA_VERSION = "channel-pipeline-v8"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
@@ -30,6 +30,9 @@ PIPELINE_COLUMNS = (
     {
         "key": "record_date", "header": ENTRY_DATE, "kind": "date",
         "aliases": ("Date", "日期", "入库日期"), "system": True,
+        # The database owns this date. Lark exposes neither workflow date;
+        # the locked XLSX surface still displays both system-owned dates.
+        "surfaces": ("xlsx",),
     },
     {
         "key": "channel", "header": "Source Channel", "kind": "choice",

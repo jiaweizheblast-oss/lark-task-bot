@@ -213,8 +213,7 @@ def import_lark_pipeline_records(
         detail = _text(_field(fields, "source_detail"))
         job_id = title_to_id.get(_text(_field(fields, "job")))
         stage = _text(_field(fields, "status")) or "New Lead"
-        # Entry Date is service-owned. The visible Lark Created Time is audit
-        # information and is never accepted as an input command.
+        # Entry Date is service-owned and is not exposed on the Lark HR form.
         entry_date = _text(default_date)[:10]
         reason = _text(_field(fields, "rejection_reason"))
         if not name:
@@ -317,7 +316,7 @@ def sync_lark_table(
         if response.get("ok"):
             writeback_count += 1
         else:
-            writeback_errors.append(response.get("error") or "Stage Started On 回写失败")
+            writeback_errors.append(response.get("error") or "System ID 回写失败")
     manual_result = import_lark_channel_records(
         database, manual_response.get("records") or [], jobs=jobs,
         default_date=default_date, channels=channels)

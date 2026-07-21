@@ -365,7 +365,7 @@ def _clear_invalid_legacy_date_values(app_token, table_id, field_name):
 
 
 def _verify_system_date_fields(app_token, pipeline_table_id):
-    """Re-read Lark state; a successful PUT response alone is not sufficient."""
+    """Verify that service-owned dates are absent from the Lark HR surface."""
     listed = _list_fields(app_token, pipeline_table_id)
     if not listed.get("ok"):
         return listed
@@ -377,14 +377,14 @@ def _verify_system_date_fields(app_token, pipeline_table_id):
     entry_field = _find_field(fields, entry_spec)
     date_field = _find_field(fields, date_spec)
     problems = []
-    if not entry_field or int(entry_field.get("type") or 0) != FT_CREATED_TIME:
-        problems.append("Entry Date is not a Created Time system field")
+    if entry_field:
+        problems.append("Legacy Entry Date field is still exposed in Lark")
     if date_field:
         problems.append("Legacy editable Stage Started On field is still exposed in Lark")
     return {
         "ok": not problems,
         "errors": problems,
-        "entry_field_id": (entry_field or {}).get("field_id"),
+        "entry_field_id": None,
         "stage_date_field_id": None,
     }
 
@@ -509,6 +509,54 @@ def configure_system_entry_date_field(app_token, pipeline_table_id):
                 "error": "Entry Date replacement did not reach a clean verified state"}
     return {"ok": True, "updated": True,
             "field_id": final_exact.get("field_id"), "verified": True}
+
+
+def remove_legacy_lark_entry_date_field(app_token, pipeline_table_id):
+    """Remove every old Entry Date variant from the Lark HR surface.
+
+    Entry Date is authoritative in the service database and remains visible as
+    a locked XLSX column. Lark must not expose an editable or ambiguously
+    migrated copy. The operation is idempotent and also cleans a temporary
+    field left by an interrupted v7 migration.
+    """
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, pipeline_table_id)
+    if not listed.get("ok"):
+        return listed
+    spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                if item["key"] == "record_date")
+    names = {spec["header"], *spec.get("aliases", ()),
+             "Entry Date (legacy migration)"}
+    targets = [item for item in listed["fields"]
+               if str(item.get("field_name") or "") in names]
+    removed = []
+    for field in targets:
+        response = _delete_retry(
+            "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" %
+            (app_token, pipeline_table_id, field.get("field_id")),
+            tok,
+        )
+        if response.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Unable to remove legacy Entry Date field: %s" %
+                         (response.get("msg") or response),
+                "raw": response,
+                "removed": removed,
+            }
+        removed.append(field.get("field_id"))
+    verified = _list_fields(app_token, pipeline_table_id)
+    if not verified.get("ok"):
+        return verified
+    remaining = [item for item in verified["fields"]
+                 if str(item.get("field_name") or "") in names]
+    if remaining:
+        return {"ok": False,
+                "error": "Legacy Entry Date field still exists after deletion",
+                "removed": removed}
+    return {"ok": True, "removed": removed}
 
 
 def remove_legacy_lark_stage_date_field(app_token, pipeline_table_id):
@@ -724,7 +772,7 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     manual_names = normalize_table_field_names(
         app_token, manual_table_id, pipeline_schema.MANUAL_COLUMNS,
     )
-    entry_date = configure_system_entry_date_field(app_token, pipeline_table_id)
+    entry_date = remove_legacy_lark_entry_date_field(app_token, pipeline_table_id)
     stage_date = remove_legacy_lark_stage_date_field(app_token, pipeline_table_id)
     verification = _verify_system_date_fields(app_token, pipeline_table_id)
     cleanup = cleanup_empty_default_tables(
@@ -967,8 +1015,8 @@ def update_pipeline_record_fields(app_token, table_id, record_id, fields):
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
-    # Entry Date and Stage Started On are read-only Lark system fields. Only
-    # identity is written back; HR input fields are never replaced here.
+    # Workflow dates are database-owned and absent from Lark. Only identity is
+    # written back; HR input fields are never replaced here.
     allowed = {"System ID"}
     safe_fields = {key: value for key, value in dict(fields or {}).items() if key in allowed}
     if not safe_fields:
