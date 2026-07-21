@@ -509,18 +509,39 @@ def get_candidate(cid):
 
 
 def create_candidate(apply_date, name, channel, job_request_id=None,
-                     status="新简历", note="", filled_by="", source="手动", ext_ref=""):
+                     status="新简历", note="", filled_by="", source="手动", ext_ref="", lark_record_id=""):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""INSERT INTO candidate
-            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref))
+            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref, lark_record_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref, lark_record_id))
         return cur.fetchone()[0]
+
+
+def get_candidate_by_lark(record_id):
+    """按 Lark 记录 record_id 找候选人（同步拉取时去重/更新用）。"""
+    if not record_id:
+        return None
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM candidate WHERE lark_record_id=%s LIMIT 1", (record_id,))
+        return cur.fetchone()
+
+
+def find_candidate(name, channel, job_request_id):
+    """按 姓名+渠道+职位 认亲（跨门兜底去重）：Excel 门进来的没 lark_record_id，
+    Lark 门来同一个人时用它认出、避免建重复行。name 空则不认（无法可靠去重）。"""
+    if not (name or "").strip():
+        return None
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT * FROM candidate WHERE name=%s AND channel=%s
+                       AND COALESCE(job_request_id,0)=COALESCE(%s,0) ORDER BY id LIMIT 1""",
+                    (name, channel, job_request_id))
+        return cur.fetchone()
 
 
 def update_candidate(cid, **fields):
     allowed = {"apply_date", "name", "channel", "job_request_id",
-               "status", "note", "filled_by", "source", "ext_ref"}
+               "status", "note", "filled_by", "source", "ext_ref", "lark_record_id"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return

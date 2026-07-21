@@ -197,6 +197,9 @@ CREATE INDEX IF NOT EXISTS idx_candidate_date ON candidate (apply_date);
 CREATE INDEX IF NOT EXISTS idx_candidate_ch ON candidate (channel, apply_date);
 CREATE INDEX IF NOT EXISTS idx_candidate_job ON candidate (job_request_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_extref ON candidate (ext_ref);
+-- Lark 多维表格同步：记录本候选人对应的 Lark 记录 record_id（机器人自己那张表），拉取时按它更新去重
+ALTER TABLE candidate ADD COLUMN IF NOT EXISTS lark_record_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_candidate_lark ON candidate (lark_record_id);
 
 -- ============================================================
 --  Nexus 运营模块（纯增量：职位 owner、文档模板库、渠道成本）

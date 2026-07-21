@@ -24,6 +24,7 @@ from io import BytesIO
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
 from channel_report import CHANNELS, PIPELINE_STATUS
@@ -34,10 +35,10 @@ CANDIDATE_SOURCES = ["RecruitEm", "领英公开", "GitHub", "StackOverflow"] + C
 
 
 # ---------------- 列定义 ----------------
-def _col(key, header, kind="text", choices=None, aliases=None, minv=None):
-    """kind: text / int / date / choice。choices 给 choice 列的下拉项；minv 给 int 列下限。"""
+def _col(key, header, kind="text", choices=None, aliases=None, minv=None, sys=False):
+    """kind: text / int / date / choice。choices 给 choice 列的下拉项；minv 给 int 列下限。sys=系统列（表头灰+勿填批注）。"""
     return {"key": key, "header": header, "kind": kind,
-            "choices": choices, "aliases": aliases or [], "minv": minv}
+            "choices": choices, "aliases": aliases or [], "minv": minv, "sys": sys}
 
 
 def channel_columns(job_titles):
@@ -78,10 +79,14 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
     ws.title = sheet_title
     ws.append([c["header"] for c in columns])
     head_fill = PatternFill("solid", fgColor="EEF1F5")
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.fill = head_fill
+    sys_fill = PatternFill("solid", fgColor="D9DEE5")
+    for i, c in enumerate(columns):
+        cell = ws.cell(row=1, column=i + 1)
+        cell.font = Font(bold=True, color=("8A94A0" if c.get("sys") else "000000"))
+        cell.fill = sys_fill if c.get("sys") else head_fill
         cell.alignment = Alignment(horizontal="center")
+        if c.get("sys"):
+            cell.comment = Comment("系统列，请勿填写或修改（系统用来自动认人）", "Nexus")
 
     # 所有 choice 列的下拉项放隐藏引用表，避免内联列表 255 字符限制
     refs = wb.create_sheet("_refs")
@@ -291,7 +296,7 @@ def pipeline_columns(job_titles):
         _col("status", "状态", "choice", choices=PIPELINE_STATUS, aliases=["招聘状态", "阶段"]),
         _col("note", "备注", "text"),
         _col("filled_by", "填写人", "text"),
-        _col("cand_id", "记录ID", "text", aliases=["系统ID"]),   # 系统列：已有候选人预填，HR 勿改；新候选人留空
+        _col("cand_id", "记录ID", "text", aliases=["系统ID"], sys=True),   # 系统列：已有候选人预填，HR 勿改；新候选人留空
     ]
 
 

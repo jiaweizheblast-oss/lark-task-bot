@@ -36,6 +36,7 @@ import cards
 import channel_report
 import sheet_io
 import attend
+import lark_bitable
 from parse import extract_deadline, overdue_stage
 
 # ---------------- 配置（从环境变量读）----------------
@@ -1451,6 +1452,137 @@ def api_channel_upload():
             parsed["errors"].append("入库失败（%s/%s）：%s" % (r.get("channel"), r.get("record_date"), e))
     return jsonify({"ok": True, "imported": imported, "updated": updated,
                     "skipped": parsed["skipped"], "errors": parsed["errors"]})
+
+
+# ==================== Lark 多维表格同步（机器人自己的表；只对管理员开放） ====================
+def _lark_cfg():
+    try:
+        s = db.get_settings()
+    except Exception:
+        s = {}
+    return {"app_token": s.get("lark_cand_app_token", ""),
+            "table_id": s.get("lark_cand_table_id", ""),
+            "url": s.get("lark_cand_url", ""),
+            "last_sync": s.get("lark_cand_last_sync", "")}
+
+
+@app.route("/api/lark/ping", methods=["POST", "GET"])
+def api_lark_ping():
+    """连接自检：机器人能不能以应用身份拿到 Lark token。联调第一步。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(lark_bitable.ping())
+
+
+@app.route("/api/lark/status")
+def api_lark_status():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    c = _lark_cfg()
+    return jsonify({"configured": bool(c["app_token"] and c["table_id"]),
+                    "url": c["url"], "last_sync": c["last_sync"]})
+
+
+@app.route("/api/lark/table", methods=["POST"])
+def api_lark_create_table():
+    """机器人建一张它自己的候选人多维表格（自己是主人，无需授权）；可选分享给管理员邮箱。存配置、返回链接。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    jobs = db.list_job_requests(only_open=True)
+    res = lark_bitable.create_base("Nexus 候选人跟进", [j["title"] for j in jobs],
+                                   channel_report.CHANNELS, channel_report.PIPELINE_STATUS,
+                                   folder_token=(d.get("folder_token") or "").strip())
+    if not res.get("ok"):
+        return jsonify(res), 502
+    db.set_setting("lark_cand_app_token", res["app_token"])
+    db.set_setting("lark_cand_table_id", res.get("table_id") or "")
+    db.set_setting("lark_cand_url", res.get("url") or "")
+    shared = None
+    share = (d.get("share_email") or "").strip()
+    if share:
+        shared = lark_bitable.add_member(res["app_token"], share, "email", "full_access")
+    return jsonify({"ok": True, "url": res.get("url"), "table_id": res.get("table_id"), "shared": shared})
+
+
+@app.route("/api/lark/push", methods=["POST"])
+def api_lark_push():
+    """把 Nexus 在跟进的候选人写进 Lark 表：有 record_id 的更新，没有的新建并回填 record_id（种子/回写）。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    c = _lark_cfg()
+    if not (c["app_token"] and c["table_id"]):
+        return jsonify({"error": "还没生成 Lark 表，先点「生成 Lark 表」"}), 400
+    jobs_by_id = {j["id"]: j["title"] for j in db.list_job_requests(only_open=False)}
+    created = updated = 0
+    errors = []
+    for cand in db.list_candidates_active():
+        try:
+            if cand.get("lark_record_id"):
+                r = lark_bitable.update_record(c["app_token"], c["table_id"], cand["lark_record_id"], cand, jobs_by_id)
+                updated += 1 if r.get("ok") else 0
+                if not r.get("ok"):
+                    errors.append("%s：%s" % (cand.get("name") or cand["id"], r.get("error")))
+            else:
+                r = lark_bitable.create_record(c["app_token"], c["table_id"], cand, jobs_by_id)
+                if r.get("ok"):
+                    db.update_candidate(cand["id"], lark_record_id=r.get("record_id") or "")
+                    created += 1
+                else:
+                    errors.append("%s：%s" % (cand.get("name") or cand["id"], r.get("error")))
+        except Exception as e:
+            errors.append("%s：%s" % (cand.get("name") or cand["id"], e))
+    return jsonify({"ok": True, "created": created, "updated": updated, "errors": errors[:20]})
+
+
+@app.route("/api/lark/pull", methods=["POST"])
+def api_lark_pull():
+    """从 Lark 表读回记录 upsert 进候选人：按 lark_record_id 更新、没见过的新建。HR 在 Lark 改的状态就进来了。"""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    c = _lark_cfg()
+    if not (c["app_token"] and c["table_id"]):
+        return jsonify({"error": "还没生成 Lark 表，先点「生成 Lark 表」"}), 400
+    res = lark_bitable.list_records(c["app_token"], c["table_id"])
+    if not res.get("ok"):
+        return jsonify(res), 502
+    title2id = {j["title"]: j["id"] for j in db.list_job_requests(only_open=False)}
+    created = updated = skipped = 0
+    errors = []
+    for rec in res["records"]:
+        f = rec["fields"]
+        name = (f.get("候选人") or "").strip()
+        channel = (f.get("招聘渠道") or "").strip()
+        if not name and not channel:
+            skipped += 1
+            continue
+        rd = (f.get("日期") or _kolkata_today().isoformat()).strip()[:10]
+        if not _valid_date(rd):
+            rd = _kolkata_today().isoformat()
+        status = (f.get("状态") or "新简历").strip()
+        if status not in channel_report.PIPELINE_STATUS:
+            status = "新简历"
+        jid = title2id.get((f.get("关联职位") or "").strip())
+        note = (f.get("备注") or "").strip()
+        by = (f.get("填写人") or "").strip()
+        try:
+            existing = db.get_candidate_by_lark(rec["record_id"])
+            if not existing:
+                existing = db.find_candidate(name, channel or "其他", jid)  # 跨门兜底：认亲，避免重复
+            if existing:
+                db.update_candidate(existing["id"], apply_date=rd, name=name, channel=channel or "其他",
+                                    job_request_id=jid, status=status, note=note, filled_by=by,
+                                    lark_record_id=rec["record_id"])
+                updated += 1
+            else:
+                db.create_candidate(rd, name, channel or "其他", jid, status, note, by,
+                                    "Lark", "", rec["record_id"])
+                created += 1
+        except Exception as e:
+            errors.append("%s：%s" % (name or rec["record_id"], e))
+    db.set_setting("lark_cand_last_sync",
+                   _kolkata_today().isoformat() + " " + datetime.datetime.utcnow().strftime("%H:%M UTC"))
+    return jsonify({"ok": True, "created": created, "updated": updated, "skipped": skipped, "errors": errors[:20]})
 
 
 # ---------------- 日历订阅（iCal）：把任务截止日期同步进个人日历 ----------------
