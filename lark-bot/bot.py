@@ -1756,6 +1756,13 @@ def _ensure_lark_channel_schema(cfg=None):
     result = lark_bitable.ensure_channel_base_schema(
         cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"]
     )
+    if result.get("ok") and not cfg.get("last_sync"):
+        test_cleanup = lark_bitable.delete_known_unsynced_test_rows(
+            cfg["app_token"], cfg["pipeline_table_id"]
+        )
+        result["discarded_test_rows"] = test_cleanup
+        if not test_cleanup.get("ok"):
+            result["ok"] = False
     if result.get("ok"):
         db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
     return result

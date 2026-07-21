@@ -6,7 +6,7 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v5"
+SCHEMA_VERSION = "channel-pipeline-v6"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
@@ -55,7 +55,11 @@ PIPELINE_COLUMNS = (
     {
         "key": "stage_date", "header": STAGE_STARTED_ON, "kind": "date",
         "aliases": ("Stage Date", "Stage Date（系统自动）", "阶段日期"),
-        "system": True,
+        # Lark Base has no read-only timestamp that can be scoped to one
+        # selected field.  The service/database owns the authoritative stage
+        # transition date; XLSX can display it as a locked system column, but
+        # the HR-editable Lark surface must not expose a misleading field.
+        "system": True, "surfaces": ("xlsx",),
     },
     {
         "key": "filled_by", "header": "HR Owner", "kind": "text",

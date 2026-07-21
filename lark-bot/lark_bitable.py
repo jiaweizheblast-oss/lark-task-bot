@@ -170,11 +170,6 @@ def _pipeline_fields_spec(job_titles, channels, stages):
             # placeholder for Entry Date.
             field["type"] = FT_CREATED_TIME
             field["property"] = {"date_formatter": "yyyy/MM/dd"}
-        elif spec["key"] == "stage_date":
-            # Preserve canonical column order, then convert this empty date
-            # placeholder to scoped Modified Time after Current Stage has an ID.
-            field["type"] = 5
-            field["property"] = {"date_formatter": "yyyy/MM/dd"}
         elif spec["kind"] == "choice":
             options = (
                 channels if spec["key"] == "channel"
@@ -274,6 +269,18 @@ def _field_update(path, token, body):
     return response
 
 
+def _delete_retry(path, token):
+    """Serialise schema cleanup through Lark's transient consistency window."""
+    transient_codes = {1254291, 1254607, 1254608, 1255001, 1255040}
+    response = {}
+    for attempt in range(4):
+        response = _req("DELETE", path, token=token)
+        if response.get("code") not in transient_codes or attempt == 3:
+            return response
+        time.sleep(0.5 * (attempt + 1))
+    return response
+
+
 def _find_field(fields, spec):
     names = (spec["header"], *spec.get("aliases", ()))
     return next(
@@ -351,28 +358,22 @@ def _verify_system_date_fields(app_token, pipeline_table_id):
     if not listed.get("ok"):
         return listed
     fields = listed["fields"]
-    stage_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
-                      if item["key"] == "status")
     entry_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
                       if item["key"] == "record_date")
     date_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
                      if item["key"] == "stage_date")
-    stage_field = _find_field(fields, stage_spec)
     entry_field = _find_field(fields, entry_spec)
     date_field = _find_field(fields, date_spec)
     problems = []
     if not entry_field or int(entry_field.get("type") or 0) != FT_CREATED_TIME:
         problems.append("Entry Date is not a Created Time system field")
-    date_property = (date_field or {}).get("property") or {}
-    tracked_fields = date_property.get("fields") or []
-    if (not date_field or int(date_field.get("type") or 0) != FT_MODIFIED_TIME
-            or not stage_field or stage_field.get("field_id") not in tracked_fields):
-        problems.append("Stage Started On is not scoped to Current Stage")
+    if date_field:
+        problems.append("Legacy editable Stage Started On field is still exposed in Lark")
     return {
         "ok": not problems,
         "errors": problems,
         "entry_field_id": (entry_field or {}).get("field_id"),
-        "stage_date_field_id": (date_field or {}).get("field_id"),
+        "stage_date_field_id": None,
     }
 
 
@@ -419,64 +420,111 @@ def configure_system_entry_date_field(app_token, pipeline_table_id):
             "cleared_invalid_values": sanitised.get("cleared", 0), "verified": True}
 
 
-def configure_system_stage_date_field(app_token, pipeline_table_id):
-    """Make Stage Started On track only Current Stage changes."""
+def remove_legacy_lark_stage_date_field(app_token, pipeline_table_id):
+    """Remove the misleading editable stage-date column from the HR surface.
+
+    Lark's Modified Time field tracks every record edit; its public field API
+    cannot scope the timestamp to ``Current Stage``.  The application already
+    keeps the authoritative stage transition date in candidate_stage_event, so
+    exposing an editable or semantically false Lark column is less safe than
+    omitting it.
+    """
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
     listed = _list_fields(app_token, pipeline_table_id)
     if not listed.get("ok"):
         return listed
-    fields = listed["fields"]
-    stage_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS if item["key"] == "status")
-    date_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS if item["key"] == "stage_date")
-    stage_field = _find_field(fields, stage_spec)
-    date_field = _find_field(fields, date_spec)
-    if not stage_field or not date_field:
-        return {"ok": False, "error": "Candidate Pipeline 缺少 Current Stage 或 Stage Started On 字段"}
-    existing_property = date_field.get("property") or {}
-    if (int(date_field.get("type") or 0) == FT_MODIFIED_TIME
-            and date_field.get("field_name") == pipeline_schema.STAGE_STARTED_ON
-            and stage_field.get("field_id") in (existing_property.get("fields") or [])):
-        return {"ok": True, "updated": False, "field_id": date_field.get("field_id"),
-                "tracking_mode": "current_stage"}
-    sanitised = _clear_invalid_legacy_date_values(
-        app_token, pipeline_table_id, date_field.get("field_name")
+    date_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                     if item["key"] == "stage_date")
+    date_field = _find_field(listed["fields"], date_spec)
+    if not date_field:
+        return {"ok": True, "removed": False}
+    response = _delete_retry(
+        "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" %
+        (app_token, pipeline_table_id, date_field.get("field_id")),
+        tok,
     )
-    if not sanitised.get("ok"):
-        return sanitised
-    path = "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" % (
-        app_token, pipeline_table_id, date_field.get("field_id")
-    )
-    scoped_body = {
-        "field_name": pipeline_schema.STAGE_STARTED_ON,
-        "type": FT_MODIFIED_TIME,
-        "description": "System-owned date when Current Stage last changed.",
-        "property": {
-            "date_formatter": "yyyy/MM/dd",
-            "fields": [stage_field.get("field_id")],
-        },
-    }
-    update = _field_update(path, tok, scoped_body)
-    if update.get("code") != 0:
-        # Ordinary record Modified Time is not a safe fallback: editing Note or
-        # HR Owner would create a false stage date. Fail closed instead.
-        return {"ok": False, "error": "配置 Stage Started On 失败：%s" %
-                (update.get("msg") or update), "raw": update}
+    if response.get("code") != 0:
+        return {
+            "ok": False,
+            "error": "Unable to remove legacy editable Stage Started On field: %s" %
+                     (response.get("msg") or response),
+            "raw": response,
+        }
     verified = _list_fields(app_token, pipeline_table_id)
     if not verified.get("ok"):
         return verified
-    actual_stage = _find_field(verified["fields"], stage_spec)
-    actual_date = _find_field(verified["fields"], date_spec)
-    actual_property = (actual_date or {}).get("property") or {}
-    if (not actual_date or int(actual_date.get("type") or 0) != FT_MODIFIED_TIME
-            or not actual_stage
-            or actual_stage.get("field_id") not in (actual_property.get("fields") or [])):
-        return {"ok": False,
-                "error": "Stage Started On migration returned success but is not scoped to Current Stage"}
-    return {"ok": True, "updated": True, "field_id": actual_date.get("field_id"),
-            "tracking_mode": "current_stage",
-            "cleared_invalid_values": sanitised.get("cleared", 0), "verified": True}
+    if _find_field(verified["fields"], date_spec):
+        return {"ok": False, "error": "Legacy Stage Started On field still exists after deletion"}
+    return {"ok": True, "removed": True, "field_id": date_field.get("field_id")}
+
+
+def delete_known_unsynced_test_rows(app_token, pipeline_table_id):
+    """Delete only the exact disposable row identified for this migration.
+
+    This is not a heuristic or a general clear-table operation.  It can never
+    delete a row with a System ID.  The caller also gates it on an empty
+    last-sync marker.
+    """
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err, "removed": []}
+    response = _req(
+        "GET",
+        "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" %
+        (app_token, pipeline_table_id),
+        token=tok,
+    )
+    if response.get("code") != 0:
+        return {
+            "ok": False,
+            "error": "Unable to inspect unsynchronised test rows: %s" %
+                     (response.get("msg") or response),
+            "raw": response,
+            "removed": [],
+        }
+    removed = []
+    candidate_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                          if item["key"] == "name")
+    channel_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                        if item["key"] == "channel")
+    detail_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                       if item["key"] == "source_detail")
+    system_id_spec = next(item for item in pipeline_schema.PIPELINE_COLUMNS
+                          if item["key"] == "cand_id")
+
+    def value_for(fields, spec):
+        for name in (spec["header"], *spec.get("aliases", ())):
+            if name in fields:
+                return _flatten(fields.get(name))
+        return ""
+
+    for record in (response.get("data") or {}).get("items") or []:
+        fields = record.get("fields") or {}
+        fingerprint = (
+            value_for(fields, candidate_spec),
+            value_for(fields, channel_spec),
+            value_for(fields, detail_spec),
+            value_for(fields, system_id_spec),
+        )
+        if fingerprint != ("hhb", "Talent Discovery", "dvvzvz", ""):
+            continue
+        deleted = _delete_retry(
+            "/open-apis/bitable/v1/apps/%s/tables/%s/records/%s" %
+            (app_token, pipeline_table_id, record.get("record_id")),
+            tok,
+        )
+        if deleted.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Unable to delete the disposable test row: %s" %
+                         (deleted.get("msg") or deleted),
+                "raw": deleted,
+                "removed": removed,
+            }
+        removed.append(record.get("record_id"))
+    return {"ok": True, "removed": removed}
 
 
 def normalize_table_field_names(app_token, table_id, specs, skip_keys=()):
@@ -586,7 +634,7 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
         app_token, manual_table_id, pipeline_schema.MANUAL_COLUMNS,
     )
     entry_date = configure_system_entry_date_field(app_token, pipeline_table_id)
-    stage_date = configure_system_stage_date_field(app_token, pipeline_table_id)
+    stage_date = remove_legacy_lark_stage_date_field(app_token, pipeline_table_id)
     verification = _verify_system_date_fields(app_token, pipeline_table_id)
     cleanup = cleanup_empty_default_tables(
         app_token,
@@ -663,9 +711,9 @@ def cleanup_empty_default_tables(app_token, protected_table_ids=()):
         if (records.get("data") or {}).get("items"):
             retained.append({"table_id": table_id, "name": name, "reason": "not_empty"})
             continue
-        deleted = _req(
-            "DELETE", "/open-apis/bitable/v1/apps/%s/tables/%s" % (app_token, table_id),
-            token=tok,
+        deleted = _delete_retry(
+            "/open-apis/bitable/v1/apps/%s/tables/%s" % (app_token, table_id),
+            tok,
         )
         if deleted.get("code") == 0:
             removed.append({"table_id": table_id, "name": name})
