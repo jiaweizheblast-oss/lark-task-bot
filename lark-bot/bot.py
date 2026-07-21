@@ -832,7 +832,7 @@ def _channel_go_live():
         except ValueError:
             pass
     try:
-        e = db.earliest_channel_date()
+        e = db.earliest_candidate_date()
     except Exception:
         e = None
     return e.isoformat() if e else _kolkata_today().isoformat()
@@ -844,6 +844,14 @@ def _chan_json(r):
         if r.get(k) is not None:
             r[k] = r[k].isoformat() if hasattr(r[k], "isoformat") else str(r[k])
     return r
+
+
+def _cand_json(c):
+    c = dict(c)
+    for k in ("apply_date", "created_at", "updated_at"):
+        if c.get(k) is not None:
+            c[k] = c[k].isoformat() if hasattr(c[k], "isoformat") else str(c[k])
+    return c
 
 
 @app.route("/api/channel/meta")
@@ -858,7 +866,8 @@ def api_channel_meta():
         "today": _kolkata_today().isoformat(),
         "timezone": "Asia/Kolkata",
         "go_live": _channel_go_live(),
-        "data_days": db.channel_data_days(),
+        "statuses": channel_report.PIPELINE_STATUS,
+        "data_days": db.candidate_data_days(),
     })
 
 
@@ -899,71 +908,72 @@ def api_channel_roster_set():
     return jsonify({"ok": True, "roster": _channel_roster()})
 
 
-@app.route("/api/channel/records", methods=["GET"])
-def api_channel_records():
+@app.route("/api/candidates", methods=["GET"])
+def api_candidates():
+    """候选人列表（每行一个候选人）。?d=YYYY-MM-DD 只看当天进入的。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify([_chan_json(r) for r in db.list_channel_records(request.args.get("d"))])
+    return jsonify([_cand_json(c) for c in db.list_candidates(request.args.get("d"))])
 
 
-@app.route("/api/channel/records", methods=["POST"])
-def api_channel_create():
+@app.route("/api/candidates", methods=["POST"])
+def api_candidate_create():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     d = request.get_json(silent=True) or {}
-    errors, warnings = channel_report.validate(d)
+    errors, warnings = channel_report.validate_candidate(d)
     if errors:
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
-    if not db.get_job_request(int(d["job_request_id"])):
+    jid = d.get("job_request_id")
+    jid = int(jid) if str(jid or "").strip().isdigit() else None
+    if jid is not None and not db.get_job_request(jid):
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
-    rd = (d.get("record_date") or _kolkata_today().isoformat())[:10]
+    rd = (d.get("apply_date") or _kolkata_today().isoformat())[:10]
     if not _valid_date(rd):
         return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
-    # 单一 owner：同职位+同报告日+同渠道 upsert（填报人受控、非唯一键）
-    db.upsert_channel_record(
-        rd, d["channel"], int(d["job_request_id"]), (d.get("filled_by") or "").strip(),
-        int(d.get("new_resumes") or 0), int(d.get("passed_screening") or 0),
-        int(d.get("recommended") or 0), int(d.get("rejected") or 0),
-        (d.get("note") or "").strip())
-    return jsonify({"ok": True, "warnings": warnings})
+    cid = db.create_candidate(
+        rd, (d.get("name") or "").strip(), d["channel"], jid,
+        d.get("status") or "新简历", (d.get("note") or "").strip(),
+        (d.get("filled_by") or "").strip(), d.get("source") or "手动",
+        (d.get("ext_ref") or "").strip())
+    return jsonify({"ok": True, "id": cid, "warnings": warnings})
 
 
-@app.route("/api/channel/records/<int:rid>", methods=["PATCH", "PUT"])
-def api_channel_update(rid):
+@app.route("/api/candidates/<int:cid>", methods=["PATCH", "PUT"])
+def api_candidate_update(cid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    if not db.get_channel_record(rid):
-        return jsonify({"error": "记录不存在"}), 404
+    if not db.get_candidate(cid):
+        return jsonify({"error": "候选人不存在"}), 404
     d = request.get_json(silent=True) or {}
-    errors, warnings = channel_report.validate(d)
+    errors, warnings = channel_report.validate_candidate(d)
     if errors:
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
-    if not db.get_job_request(int(d["job_request_id"])):
+    jid = d.get("job_request_id")
+    jid = int(jid) if str(jid or "").strip().isdigit() else None
+    if jid is not None and not db.get_job_request(jid):
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
     fields = dict(
-        channel=d["channel"], job_request_id=int(d["job_request_id"]),
-        filled_by=(d.get("filled_by") or "").strip(),
-        new_resumes=int(d.get("new_resumes") or 0),
-        passed_screening=int(d.get("passed_screening") or 0),
-        recommended=int(d.get("recommended") or 0),
-        rejected=int(d.get("rejected") or 0),
-        note=(d.get("note") or "").strip())
-    if d.get("record_date"):
-        if not _valid_date(d["record_date"]):
+        name=(d.get("name") or "").strip(), channel=d["channel"], job_request_id=jid,
+        status=d.get("status") or "新简历", note=(d.get("note") or "").strip(),
+        filled_by=(d.get("filled_by") or "").strip())
+    if d.get("source"):
+        fields["source"] = d["source"]
+    if d.get("ext_ref") is not None:
+        fields["ext_ref"] = (d.get("ext_ref") or "").strip()
+    if d.get("apply_date"):
+        if not _valid_date(d["apply_date"]):
             return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
-        fields["record_date"] = d["record_date"][:10]
-    try:
-        db.update_channel_record(rid, **fields)
-    except psycopg2.IntegrityError:
-        return jsonify({"error": "改动后与已有记录冲突（同职位+同报告日+同渠道已存在）。", "errors": ["冲突"]}), 409
+        fields["apply_date"] = d["apply_date"][:10]
+    db.update_candidate(cid, **fields)
     return jsonify({"ok": True, "warnings": warnings})
 
 
-@app.route("/api/channel/records/<int:rid>", methods=["DELETE"])
-def api_channel_delete(rid):
+@app.route("/api/candidates/<int:cid>", methods=["DELETE"])
+def api_candidate_delete(cid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    db.delete_channel_record(rid)
+    db.delete_candidate(cid)
     return jsonify({"ok": True})
 
 
@@ -1150,7 +1160,8 @@ def api_channel_analytics():
     job_id = int(jid) if jid.isdigit() else None
     span = (dto - dfrom).days + 1
     prev_from = dfrom - datetime.timedelta(days=span)          # 上一周期（同长度、紧邻在前）
-    rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
+    cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
+    rows = channel_report.candidates_to_daily(cands)           # 候选人行 -> 日聚合，喂同一分析引擎
     jobs = db.list_job_requests(only_open=False)
     costs = db.list_channel_costs()
     return jsonify(channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs))
@@ -1173,7 +1184,8 @@ def api_channel_export():
     job_id = int(jid) if jid.isdigit() else None
     span = (dto - dfrom).days + 1
     prev_from = dfrom - datetime.timedelta(days=span)
-    rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
+    cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
+    rows = channel_report.candidates_to_daily(cands)
     jobs = db.list_job_requests(only_open=False)
     costs = db.list_channel_costs()
     a = channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs)
@@ -1384,23 +1396,26 @@ def api_checkin_submit(token):
 
 @app.route("/api/channel/template")
 def api_channel_template():
-    """下载当天空表（.xlsx，渠道/职位下拉、日期+填报人预填）发给 HR 填。"""
+    """下载候选人跟进表（.xlsx）：在跟进中的候选人带「记录ID」+当前状态预填好，HR 直接改状态；
+    末尾留空行给新候选人。上传时按记录ID更新、无ID新增，系统自动分辨。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     day = (request.args.get("d") or _kolkata_today().isoformat())[:10]
     by = request.args.get("by", "")
     jobs = db.list_job_requests(only_open=True)
-    data = sheet_io.build_template_xlsx(jobs, day, by)
+    cands = db.list_candidates_active()
+    data = sheet_io.build_pipeline_template_xlsx(jobs, day, by, cands)
     return Response(
         data,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="channel_%s.xlsx"' % day},
+        headers={"Content-Disposition": 'attachment; filename="candidates_%s.xlsx"' % day},
     )
 
 
 @app.route("/api/channel/upload", methods=["POST"])
 def api_channel_upload():
-    """HR 填好的表（.xlsx/.csv）上传 -> 解析 -> 按 (报告日,渠道,职位) 单一 owner upsert。
+    """HR 填好的候选人表（.xlsx/.csv）上传 -> 解析 -> 每行一个候选人 upsert
+    （按 ext_ref 或 姓名+渠道+职位 去重，重传更新不重复建行）。
     填报人以上传时选定的受控 owner 为准（表内声明仅作展示）。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
@@ -1411,20 +1426,30 @@ def api_channel_upload():
     default_date = (request.form.get("d") or "").strip() or _kolkata_today().isoformat()
     jobs = db.list_job_requests(only_open=False)
     try:
-        parsed = sheet_io.parse_sheet(f.read(), f.filename or "", jobs, owner, default_date)
+        parsed = sheet_io.parse_pipeline_sheet(f.read(), f.filename or "", jobs, owner, default_date)
     except Exception as e:
         return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx 或 .csv）：%s" % e}), 400
     imported = 0
+    updated = 0
     for r in parsed["rows"]:
         try:
-            db.upsert_channel_record(r["record_date"], r["channel"], r["job_request_id"],
-                                     owner or r.get("filled_by", ""),
-                                     r["new_resumes"], r["passed_screening"], r["recommended"],
-                                     r["rejected"], r["note"])
-            imported += 1
+            cid = (r.get("cand_id") or "").strip()
+            if cid.isdigit() and db.get_candidate(int(cid)):
+                # 有记录ID 且存在 -> 原地更新（HR 在跟进表里改了状态等）
+                db.update_candidate(int(cid), apply_date=r["record_date"], name=r.get("name", ""),
+                                    channel=r["channel"], job_request_id=r.get("job_request_id"),
+                                    status=r.get("status") or "新简历", note=r.get("note", ""),
+                                    filled_by=owner or r.get("filled_by", ""))
+                updated += 1
+            else:
+                # 无ID（或ID已不存在）-> 新候选人；再按 姓名+渠道+职位 兜底去重
+                db.upsert_candidate(r["record_date"], r.get("name", ""), r["channel"],
+                                    r.get("job_request_id"), r.get("status") or "新简历",
+                                    r.get("note", ""), owner or r.get("filled_by", ""), "手动", "")
+                imported += 1
         except Exception as e:
-            parsed["errors"].append("入库失败（%s/%s）：%s" % (r["channel"], r["record_date"], e))
-    return jsonify({"ok": True, "imported": imported,
+            parsed["errors"].append("入库失败（%s/%s）：%s" % (r.get("channel"), r.get("record_date"), e))
+    return jsonify({"ok": True, "imported": imported, "updated": updated,
                     "skipped": parsed["skipped"], "errors": parsed["errors"]})
 
 

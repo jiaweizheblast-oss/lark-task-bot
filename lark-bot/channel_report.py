@@ -14,6 +14,56 @@ from datetime import date, timedelta
 
 CHANNELS = ["BOSS直聘", "猎聘", "内推", "LinkedIn", "招聘会", "其他"]
 
+# 招聘流水线状态（每个候选人一个状态）。顺序即漏斗层级：越靠后越深。
+# 用于把「每行一个候选人」折算成 channel_daily 同形的日聚合行（candidates_to_daily），
+# 这样整套 analytics()/build_report() 一行都不用改就能吃候选人数据（单一分析引擎）。
+PIPELINE_STATUS = ["新简历", "初筛通过", "已推荐面试", "已录用", "已拒绝"]
+_ST_PASSED = {"初筛通过", "已推荐面试", "已录用"}   # 达到即视为「已过初筛」
+_ST_RECO = {"已推荐面试", "已录用"}                 # 达到即视为「已推荐」
+_ST_REJECT = "已拒绝"
+
+
+def candidates_to_daily(cands):
+    """候选人行（每行一个候选人）→ channel_daily 同形聚合行（每 日×渠道×职位 一行）。
+    每个候选人计 1 份 new_resumes；按其当前状态在漏斗里「达到即累计」：
+      状态∈{初筛通过,已推荐面试,已录用} → passed_screening+1；
+      状态∈{已推荐面试,已录用}          → recommended+1；
+      状态=已拒绝                       → rejected+1。
+    候选人 dict 需含：record_date(或 apply_date)、channel、job_request_id、status。"""
+    agg = {}
+    for c in cands:
+        rd = c.get("record_date", c.get("apply_date"))
+        ch = c.get("channel") or ""
+        jid = c.get("job_request_id")
+        key = (rd, ch, jid)
+        cell = agg.get(key)
+        if cell is None:
+            cell = agg[key] = {"record_date": rd, "channel": ch, "job_request_id": jid,
+                               "new_resumes": 0, "passed_screening": 0,
+                               "recommended": 0, "rejected": 0}
+        cell["new_resumes"] += 1
+        st = c.get("status") or "新简历"
+        if st in _ST_PASSED:
+            cell["passed_screening"] += 1
+        if st in _ST_RECO:
+            cell["recommended"] += 1
+        if st == _ST_REJECT:
+            cell["rejected"] += 1
+    return list(agg.values())
+
+
+def validate_candidate(payload):
+    """候选人行校验。返回 (errors, warnings)。errors 非空 -> 拒收。"""
+    errors, warnings = [], []
+    if payload.get("channel") not in CHANNELS:
+        errors.append("渠道「%s」不在预设项内" % payload.get("channel"))
+    st = payload.get("status") or "新简历"
+    if st not in PIPELINE_STATUS:
+        errors.append("状态「%s」不在预设项内" % st)
+    if not (payload.get("name") or "").strip():
+        warnings.append("未填候选人姓名（允许，但建议填，便于去重与追踪）")
+    return errors, warnings
+
 
 # ---------------- 校验 ----------------
 def validate(payload):

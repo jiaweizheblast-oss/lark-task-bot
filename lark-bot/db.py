@@ -454,6 +454,116 @@ def upsert_channel_record(record_date, channel, job_request_id, filled_by,
              new_resumes, passed_screening, recommended, rejected, note))
 
 
+# ================= Nexus：候选人级招聘跟踪（每行一个候选人；渠道/漏斗/速度由此派生） =================
+def list_candidates(day=None, limit=500):
+    """候选人列表（带职位名）。给定 day 只看当天进入的，否则最近 limit 条。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        if day:
+            cur.execute("""SELECT c.*, j.title AS job_title FROM candidate c
+                           LEFT JOIN job_requests j ON j.id = c.job_request_id
+                           WHERE c.apply_date=%s ORDER BY c.id DESC""", (day,))
+        else:
+            cur.execute("""SELECT c.*, j.title AS job_title FROM candidate c
+                           LEFT JOIN job_requests j ON j.id = c.job_request_id
+                           ORDER BY c.apply_date DESC, c.id DESC LIMIT %s""", (limit,))
+        return cur.fetchall()
+
+
+def list_candidates_active():
+    """在跟进中的候选人（状态未到终态：非 已录用/已拒绝），供下发「跟进表」预填。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT c.*, j.title AS job_title FROM candidate c
+                       LEFT JOIN job_requests j ON j.id = c.job_request_id
+                       WHERE c.status NOT IN ('已录用','已拒绝')
+                       ORDER BY c.apply_date DESC, c.id DESC""")
+        return cur.fetchall()
+
+
+def list_candidates_range(dfrom, dto):
+    """[dfrom,dto] 内候选人（apply_date 取别名 record_date，直接喂 candidates_to_daily→analytics）。"""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT id, apply_date AS record_date, channel, job_request_id, status
+                       FROM candidate WHERE apply_date BETWEEN %s AND %s
+                       ORDER BY apply_date""", (dfrom, dto))
+        return cur.fetchall()
+
+
+def earliest_candidate_date():
+    """最早候选人进入日（无数据返回 None）；用于推断上线日默认值。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT MIN(apply_date) FROM candidate")
+        return cur.fetchone()[0]
+
+
+def candidate_data_days():
+    """所有有候选人的日期（ISO 字符串列表），供日历标注。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT apply_date FROM candidate ORDER BY 1")
+        return [r[0].isoformat() for r in cur.fetchall()]
+
+
+def get_candidate(cid):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM candidate WHERE id=%s", (cid,))
+        return cur.fetchone()
+
+
+def create_candidate(apply_date, name, channel, job_request_id=None,
+                     status="新简历", note="", filled_by="", source="手动", ext_ref=""):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO candidate
+            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref))
+        return cur.fetchone()[0]
+
+
+def update_candidate(cid, **fields):
+    allowed = {"apply_date", "name", "channel", "job_request_id",
+               "status", "note", "filled_by", "source", "ext_ref"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k}=%s" for k in sets)
+    vals = list(sets.values()) + [cid]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE candidate SET {cols}, updated_at=now() WHERE id=%s", vals)
+
+
+def delete_candidate(cid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM candidate WHERE id=%s", (cid,))
+        return cur.rowcount > 0
+
+
+def upsert_candidate(apply_date, name, channel, job_request_id=None,
+                     status="新简历", note="", filled_by="", source="手动", ext_ref=""):
+    """上传去重：优先按 ext_ref，其次按 (name,channel,职位) 命中则更新、否则新增；
+    name 为空且无 ext_ref 一律新增（无法可靠去重）。返回 id。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        found = None
+        if (ext_ref or "").strip():
+            cur.execute("SELECT id FROM candidate WHERE ext_ref=%s LIMIT 1", (ext_ref,))
+            found = cur.fetchone()
+        elif (name or "").strip():
+            cur.execute("""SELECT id FROM candidate
+                           WHERE name=%s AND channel=%s AND COALESCE(job_request_id,0)=COALESCE(%s,0)
+                           ORDER BY id LIMIT 1""", (name, channel, job_request_id))
+            found = cur.fetchone()
+        if found:
+            cur.execute("""UPDATE candidate SET apply_date=%s, name=%s, channel=%s, job_request_id=%s,
+                             status=%s, note=%s, filled_by=%s, source=%s, ext_ref=%s, updated_at=now()
+                           WHERE id=%s""",
+                        (apply_date, name, channel, job_request_id, status, note,
+                         filled_by, source, ext_ref, found[0]))
+            return found[0]
+        cur.execute("""INSERT INTO candidate
+            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (apply_date, name, channel, job_request_id, status, note, filled_by, source, ext_ref))
+        return cur.fetchone()[0]
+
+
 # ================= Nexus：文档/模板库 =================
 def list_templates():
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:

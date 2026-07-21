@@ -174,6 +174,31 @@ DO $$ BEGIN
 END $$;
 
 -- ============================================================
+--  候选人级招聘跟踪表（每行 = 一个候选人；渠道汇总/漏斗/速度由此自动统计）
+--  · 取代"人工填汇总数字"：new/passed/recommended/rejected 改成数候选人行的状态。
+--  · 独立于 CODEX(AI-TD)：ext_ref 只存对方不透明 token，两库永不合并、永不相加。
+--  · channel_daily 汇总表保留（不删数据），但前端不再录入，分析改由本表派生。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS candidate (
+    id             SERIAL PRIMARY KEY,
+    apply_date     DATE NOT NULL,                    -- 进入日期（简历到达/首次接触）
+    name           TEXT NOT NULL DEFAULT '',         -- 候选人姓名
+    channel        TEXT NOT NULL,                    -- 来源渠道（运营侧受控命名）
+    job_request_id INTEGER REFERENCES job_requests(id) ON DELETE SET NULL,  -- 关联职位（可空）
+    status         TEXT NOT NULL DEFAULT '新简历',    -- 新简历/初筛通过/已推荐面试/已录用/已拒绝
+    note           TEXT NOT NULL DEFAULT '',
+    filled_by      TEXT NOT NULL DEFAULT '',          -- 填报人（受控 roster；仅展示）
+    source         TEXT NOT NULL DEFAULT '手动',       -- 手动 / CODEX（来源系统）
+    ext_ref        TEXT NOT NULL DEFAULT '',           -- 外部关联：CODEX 候选人不透明 token（可空）
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_date ON candidate (apply_date);
+CREATE INDEX IF NOT EXISTS idx_candidate_ch ON candidate (channel, apply_date);
+CREATE INDEX IF NOT EXISTS idx_candidate_job ON candidate (job_request_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_extref ON candidate (ext_ref);
+
+-- ============================================================
 --  Nexus 运营模块（纯增量：职位 owner、文档模板库、渠道成本）
 -- ============================================================
 

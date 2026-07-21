@@ -26,7 +26,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-from channel_report import CHANNELS
+from channel_report import CHANNELS, PIPELINE_STATUS
 
 # 候选人联系表用到的下拉
 CANDIDATE_STATUS = ["未联系", "已联系", "无法联系", "不合适"]
@@ -279,6 +279,70 @@ def parse_candidate_sheet(data, filename, jobs, sources=None):
         return not (r.get("candidate_ref") or r.get("name"))
 
     return parse_rows(cols, data, filename, required=["name"], skip=skip)
+
+
+# ---------------- 招聘流水线候选人表（运营口径：每行一个候选人，状态走漏斗） ----------------
+def pipeline_columns(job_titles):
+    return [
+        _col("record_date", "日期", "date"),
+        _col("name", "候选人", "text"),
+        _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道", "来源渠道"]),
+        _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
+        _col("status", "状态", "choice", choices=PIPELINE_STATUS, aliases=["招聘状态", "阶段"]),
+        _col("note", "备注", "text"),
+        _col("filled_by", "填写人", "text"),
+        _col("cand_id", "记录ID", "text", aliases=["系统ID"]),   # 系统列：已有候选人预填，HR 勿改；新候选人留空
+    ]
+
+
+def build_pipeline_template_xlsx(jobs, day, by="", candidates=None):
+    """候选人跟进表：把在跟进中的候选人（带「记录ID」+当前状态）预填进去，HR 直接在「状态」列往前改；
+    末尾留空行给新候选人（记录ID 留空）。上传时——有记录ID 的按 ID 原地更新，没 ID 的当新增，系统自动分辨。"""
+    cols = pipeline_columns([j["title"] for j in jobs])
+    id2title = {j["id"]: j["title"] for j in jobs}
+    prefill = []
+    for c in (candidates or []):
+        prefill.append({
+            "cand_id": str(c.get("id") or ""),
+            "record_date": (str(c.get("apply_date") or "")[:10]) or day,
+            "name": c.get("name") or "",
+            "channel": c.get("channel") or "",
+            "job": c.get("job_title") or id2title.get(c.get("job_request_id"), ""),
+            "status": c.get("status") or "新简历",
+            "note": c.get("note") or "",
+            "filled_by": c.get("filled_by") or "",
+        })
+    return build_xlsx(cols, prefill_rows=prefill, sheet_title="候选人跟进",
+                      extra_blank=(30 if prefill else 60),
+                      blank_defaults={"record_date": day, "filled_by": by, "status": "新简历"})
+
+
+def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None):
+    """解析 HR 交回的候选人跟进表 → 候选人行。带「记录ID」= 已有候选人（更新），无 ID = 新候选人（新增）。"""
+    title2id = {_s(j["title"]): j["id"] for j in jobs}
+    cols = pipeline_columns([j["title"] for j in jobs])
+
+    def skip(r):
+        return not (r.get("channel") or r.get("name"))  # 渠道和姓名都空 -> 空行
+
+    res = parse_rows(cols, data, filename, required=["channel"], skip=skip)
+    out, errors = [], list(res["errors"])
+    for r in res["rows"]:
+        jid = title2id.get(r.get("job"))  # 职位可空 -> None
+        rd = (r.get("record_date") or (default_date or "")).strip()[:10]
+        if not rd:
+            errors.append("第%d行：缺日期" % r.get("__line__", 0))
+            continue
+        try:
+            date.fromisoformat(rd)
+        except ValueError:
+            errors.append("第%d行：日期格式非法「%s」（应为 YYYY-MM-DD）" % (r.get("__line__", 0), rd))
+            continue
+        out.append({"cand_id": (r.get("cand_id") or "").strip(), "record_date": rd,
+                    "name": r.get("name", ""), "channel": r["channel"],
+                    "job_request_id": jid, "status": r.get("status") or "新简历",
+                    "note": r.get("note", ""), "filled_by": r.get("filled_by") or default_by})
+    return {"rows": out, "skipped": res["skipped"], "errors": errors}
 
 
 # ================= 招聘分析导出（汇报用 xlsx；供 /api/channel/export.xlsx） =================
