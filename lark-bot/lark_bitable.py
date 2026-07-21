@@ -31,6 +31,7 @@ APP_SECRET = os.environ.get("RECRUITMENT_LARK_APP_SECRET", "")
 
 # 字段类型（Bitable）：1=多行文本 3=单选
 FT_TEXT = 1
+FT_DATE = 5
 FT_SINGLE = 3
 FT_CREATED_TIME = 1001
 FT_MODIFIED_TIME = 1002
@@ -157,6 +158,9 @@ def _channel_fields_spec(job_titles, channels):
                 field["property"] = {"options": [{"name": value} for value in options]}
         elif spec["kind"] == "int":
             field["type"] = 2
+        elif spec["kind"] == "date":
+            field["type"] = FT_DATE
+            field["property"] = {"date_formatter": "yyyy-MM-dd"}
         fields.append(field)
     return fields
 
@@ -230,15 +234,102 @@ def create_channel_base(name, job_titles, channels, stages, folder_token=""):
     pipeline_table_id = (pipeline_response.get("data") or {}).get("table_id")
     manual_table_id = (manual_response.get("data") or {}).get("table_id")
     schema = ensure_channel_base_schema(
-        app_token,
-        pipeline_table_id,
-        manual_table_id,
+        app_token, pipeline_table_id, manual_table_id,
+        job_titles=job_titles, channels=channels, stages=stages,
     )
     return {"ok": True, "app_token": app_token,
             "pipeline_table_id": pipeline_table_id,
             "manual_table_id": manual_table_id,
             "url": table_url(url, pipeline_table_id),
             "schema": schema}
+
+
+def _meaningful_lark_value(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_meaningful_lark_value(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_meaningful_lark_value(item) for item in value)
+    return True
+
+
+def prepare_canonical_manual_table(app_token, manual_table_id, job_titles, channels):
+    """Create the English manual table only when the legacy table has no data.
+
+    Lark exposes create/list/delete table APIs but no data-table rename API.  A
+    populated legacy table is therefore retained fail-closed; an empty one can
+    be replaced without losing recruitment data.
+    """
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _req(
+        "GET", "/open-apis/bitable/v1/apps/%s/tables?page_size=100" % app_token,
+        token=tok,
+    )
+    if listed.get("code") != 0:
+        return {"ok": False, "error": "Unable to list Lark tables: %s" %
+                (listed.get("msg") or listed), "raw": listed}
+    tables = (listed.get("data") or {}).get("items") or []
+    current = next((item for item in tables
+                    if str(item.get("table_id") or "") == str(manual_table_id)), None)
+    if not current:
+        return {"ok": False, "error": "Configured manual table was not found"}
+    if str(current.get("name") or "") == pipeline_schema.MANUAL_TABLE_NAME:
+        return {"ok": True, "changed": False, "table_id": manual_table_id}
+    records = _req(
+        "GET", "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" %
+        (app_token, manual_table_id), token=tok,
+    )
+    if records.get("code") != 0:
+        return {"ok": False, "error": "Unable to inspect the legacy manual table: %s" %
+                (records.get("msg") or records), "raw": records}
+    has_data = any(
+        _meaningful_lark_value(record.get("fields") or {})
+        for record in (records.get("data") or {}).get("items") or []
+    )
+    if has_data:
+        return {
+            "ok": False,
+            "error": "Legacy manual table contains data; it was retained to prevent data loss",
+        }
+    canonical = next((item for item in tables
+                      if str(item.get("name") or "") == pipeline_schema.MANUAL_TABLE_NAME), None)
+    if canonical:
+        new_table_id = canonical.get("table_id")
+    else:
+        created = _req(
+            "POST", "/open-apis/bitable/v1/apps/%s/tables" % app_token,
+            token=tok,
+            body={"table": {
+                "name": pipeline_schema.MANUAL_TABLE_NAME,
+                "default_view_name": pipeline_schema.MANUAL_VIEW_NAME,
+                "fields": _channel_fields_spec(job_titles, channels),
+            }},
+        )
+        if created.get("code") != 0:
+            return {"ok": False, "error": "Unable to create the English manual table: %s" %
+                    (created.get("msg") or created), "raw": created}
+        new_table_id = (created.get("data") or {}).get("table_id")
+    if not new_table_id:
+        return {"ok": False, "error": "English manual table creation returned no table_id"}
+    return {
+        "ok": True, "changed": True, "table_id": str(new_table_id),
+        "old_table_id": str(manual_table_id),
+    }
+
+
+def delete_table(app_token, table_id):
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    response = _delete_retry(
+        "/open-apis/bitable/v1/apps/%s/tables/%s" % (app_token, table_id), tok)
+    return {"ok": response.get("code") == 0,
+            "error": "" if response.get("code") == 0 else (response.get("msg") or str(response))}
 
 
 def _list_fields(app_token, table_id):
@@ -745,6 +836,47 @@ def normalize_table_field_names(app_token, table_id, specs, skip_keys=()):
     return {"ok": True, "updated": updated}
 
 
+def synchronize_choice_field_options(
+    app_token, table_id, specs, *, job_titles=(), channels=(), stages=(),
+):
+    """Keep website, XLSX, Pipeline, and manual-table dropdowns identical."""
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, table_id)
+    if not listed.get("ok"):
+        return listed
+    desired_by_key = {
+        "channel": list(channels),
+        "job": list(job_titles),
+        "status": list(stages),
+    }
+    updated = []
+    for spec in specs:
+        desired = desired_by_key.get(spec.get("key"))
+        if spec.get("kind") != "choice" or not desired:
+            continue
+        field = _find_field(listed["fields"], spec)
+        if not field:
+            return {"ok": False, "error": "Missing choice field: %s" % spec["header"]}
+        current = [str(option.get("name") or "")
+                   for option in (field.get("property") or {}).get("options") or []]
+        if current == desired:
+            continue
+        response = _field_update(
+            "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" %
+            (app_token, table_id, field.get("field_id")),
+            tok,
+            {"field_name": spec["header"], "type": FT_SINGLE,
+             "property": {"options": [{"name": value} for value in desired]}},
+        )
+        if response.get("code") != 0:
+            return {"ok": False, "error": "Unable to synchronize %s options: %s" %
+                    (spec["header"], response.get("msg") or response), "raw": response}
+        updated.append(spec["header"])
+    return {"ok": True, "updated": updated}
+
+
 def normalize_other_source_field(app_token, table_id):
     """Give the conditional Other detail field one unambiguous shared label."""
     tok, err = tenant_token()
@@ -795,7 +927,10 @@ def normalize_other_source_field(app_token, table_id):
     return {"ok": True, "updated": True}
 
 
-def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
+def ensure_channel_base_schema(
+    app_token, pipeline_table_id, manual_table_id,
+    *, job_titles=(), channels=(), stages=(),
+):
     """Enforce business-table invariants without exposing repair controls to HR."""
     if not app_token or not pipeline_table_id or not manual_table_id:
         return {"ok": False, "error": "Channel Analytics Base 配置不完整"}
@@ -805,6 +940,14 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     )
     manual_names = normalize_table_field_names(
         app_token, manual_table_id, pipeline_schema.MANUAL_COLUMNS,
+    )
+    pipeline_choices = synchronize_choice_field_options(
+        app_token, pipeline_table_id, pipeline_schema.columns_for("lark"),
+        job_titles=job_titles, channels=channels, stages=stages,
+    )
+    manual_choices = synchronize_choice_field_options(
+        app_token, manual_table_id, pipeline_schema.MANUAL_COLUMNS,
+        job_titles=job_titles, channels=channels,
     )
     entry_date = remove_legacy_lark_entry_date_field(app_token, pipeline_table_id)
     stage_date = remove_legacy_lark_stage_date_field(app_token, pipeline_table_id)
@@ -816,11 +959,14 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     )
     return {
         "ok": bool(pipeline_names.get("ok") and manual_names.get("ok")
+                   and pipeline_choices.get("ok") and manual_choices.get("ok")
                    and entry_date.get("ok") and stage_date.get("ok")
                    and system_id.get("ok")
                    and verification.get("ok") and cleanup.get("ok")),
         "pipeline_field_names": pipeline_names,
         "manual_field_names": manual_names,
+        "pipeline_choices": pipeline_choices,
+        "manual_choices": manual_choices,
         "entry_date": entry_date,
         "stage_date": stage_date,
         "system_id": system_id,
@@ -829,7 +975,10 @@ def ensure_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
     }
 
 
-def verify_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
+def verify_channel_base_schema(
+    app_token, pipeline_table_id, manual_table_id,
+    *, job_titles=(), channels=(), stages=(),
+):
     """Read current Lark metadata and prove the schema, without trusting a marker."""
     if not app_token or not pipeline_table_id or not manual_table_id:
         return {"ok": False, "error": "Channel Analytics Base configuration is incomplete"}
@@ -851,6 +1000,24 @@ def verify_channel_base_schema(app_token, pipeline_table_id, manual_table_id):
         problems.append("Missing Pipeline fields: %s" % ", ".join(missing_pipeline))
     if missing_manual:
         problems.append("Missing manual fields: %s" % ", ".join(missing_manual))
+    desired_sets = (
+        (pipeline["fields"], pipeline_schema.columns_for("lark"),
+         {"channel": list(channels), "job": list(job_titles), "status": list(stages)}),
+        (manual["fields"], pipeline_schema.MANUAL_COLUMNS,
+         {"channel": list(channels), "job": list(job_titles)}),
+    )
+    for fields, specs, desired_by_key in desired_sets:
+        for spec in specs:
+            desired = desired_by_key.get(spec.get("key"))
+            if not desired:
+                continue
+            field = _find_field(fields, spec)
+            if not field:
+                continue
+            current = [str(option.get("name") or "")
+                       for option in (field.get("property") or {}).get("options") or []]
+            if current != desired:
+                problems.append("Out-of-sync options: %s" % spec["header"])
     problems.extend(dates.get("errors") or ([] if dates.get("ok") else [dates.get("error") or "Date verification failed"]))
     return {"ok": not problems, "errors": problems, "dates": dates}
 
@@ -884,7 +1051,11 @@ def cleanup_empty_default_tables(app_token, protected_table_ids=()):
         if records.get("code") != 0:
             retained.append({"table_id": table_id, "name": name, "reason": "record_check_failed"})
             continue
-        if (records.get("data") or {}).get("items"):
+        meaningful = any(
+            _meaningful_lark_value(record.get("fields") or {})
+            for record in (records.get("data") or {}).get("items") or []
+        )
+        if meaningful:
             retained.append({"table_id": table_id, "name": name, "reason": "not_empty"})
             continue
         deleted = _delete_retry(

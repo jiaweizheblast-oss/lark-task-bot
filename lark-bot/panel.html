@@ -340,7 +340,7 @@
         <div style="font-weight:750;font-size:16px">📊 招聘分析</div>
         <select id="cSpace" onchange="CSPACE=this.value;loadAnalytics()" title="候选人明细为主要口径；未建档批量数字单独查看、不相加">
           <option value="derived">候选人明细统计（推荐）</option>
-          <option value="manual">未建档批量统计（特殊情况）</option>
+          <option value="manual">Unidentified Batch Counts (Special Cases)</option>
         </select>
         <span style="font-size:12px;color:var(--soft)">窗口</span>
         <span class="rcal-wrap">
@@ -949,7 +949,7 @@ async function larkRefreshStatus(){
       }
       s=await(await api('/api/lark/status')).json();
     }
-    if(s.configured){el.innerHTML='🟢 Lark 已连接'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · 上次提交 '+esc(s.last_sync)):' · 尚无提交记录（正常）');}
+    if(s.configured){el.innerHTML='🟢 Lark connected'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · Last submitted '+esc(s.last_sync)):' · No submissions yet (normal)');}
     else{el.textContent='🟠 Lark 在线表未配置（不影响网站 Excel）';}
   }catch(e){}
 }
@@ -965,7 +965,7 @@ async function larkPing(){
   }catch(e){toast('自检失败',true);}
 }
 async function larkCreateTable(){
-  if(!confirm('创建 Lark 在线协作表（只需一次）？主要页签是 Candidate Pipeline；另有“未建档批量统计（特殊情况）”备用页签。创建后不要重复操作。'))return;
+  if(!confirm('Create the Lark workspace once? It contains Candidate Pipeline and Unidentified Batch Counts (Special Cases).'))return;
   const email=(prompt('分享给哪个管理员的 Lark 邮箱？（留空=先只归机器人，之后再分享）','')||'').trim();
   toast('建表中…（首次几秒）');
   try{const r=await(await api('/api/lark/table',{method:'POST',body:JSON.stringify({share_email:email})})).json();
@@ -983,7 +983,7 @@ async function larkShareExisting(){
   }catch(e){toast('授权失败',true);}
 }
 async function larkReconnect(){
-  if(!confirm('仅当当前表“尚未同步”且确实由错误机器人创建时使用。此操作只清除网站连接，不删除 Lark 文档、候选人或历史。继续？'))return;
+  if(!confirm('Use only when there have been no submissions and the workspace was created by the wrong bot. This clears the website link only; it does not delete Lark documents, candidates, or history. Continue?'))return;
   const typed=prompt('请输入 RESET 继续：','')||'';
   if(typed.trim()!=='RESET'){toast('已取消');return;}
   try{const r=await(await api('/api/lark/reconnect',{method:'POST',body:JSON.stringify({confirmation:'RESET_UNSYNCED_CHANNEL_LINK'})})).json();
@@ -1180,12 +1180,12 @@ function renderJobsList(){
   const list=JOBS.filter(j=>showClosed||j.status==='open');
   const box=document.getElementById('jobList');
   if(!list.length){box.innerHTML='<div class="muted">还没有职位。点「新建职位」添加。</div>';return;}
-  box.innerHTML=`<table class="rtable"><thead><tr><th>职位</th><th>负责人</th><th>正式配额</th><th>目标简历量</th><th>目标人数</th><th>状态</th><th></th></tr></thead><tbody>${list.map(j=>`<tr><td class="name">${esc(j.title)}${j.core_job_ref?' <span class="muted" style="padding:0;font-size:10px">Core synced</span>':''}</td><td>${esc(j.owner||'—')}</td><td>${j.core_requested_contact_count||'—'}</td><td>${j.target_resume_count||'—'}</td><td>${j.target_headcount||'—'}</td><td><span class="jstat ${j.status}">${j.status==='open'?'在招':'已关闭'}</span></td><td style="white-space:nowrap"><span class="dact" onclick="editJob(${j.id})">${j.core_job_ref?'运营设置':'编辑'}</span>${j.core_job_ref?'':' · <span class="dact" onclick="toggleJob('+j.id+')">'+(j.status==='open'?'关闭':'重开')+'</span>'}</td></tr>`).join('')}</tbody></table>`;
+  box.innerHTML=`<table class="rtable"><thead><tr><th>职位</th><th>负责人</th><th>正式配额</th><th>目标简历量</th><th>目标人数</th><th>状态</th><th></th></tr></thead><tbody>${list.map(j=>`<tr><td class="name">${esc(j.title)}${j.core_job_ref?' <span class="muted" style="padding:0;font-size:10px">Core managed</span>':''}</td><td>${esc(j.owner||'—')}</td><td>${j.core_requested_contact_count||'—'}</td><td>${j.target_resume_count||'—'}</td><td>${j.target_headcount||'—'}</td><td><span class="jstat ${j.status}">${j.status==='open'?'在招':'已关闭'}</span></td><td style="white-space:nowrap"><span class="dact" onclick="editJob(${j.id})">${j.core_job_ref?'设置运营目标':'编辑'}</span>${j.core_job_ref?'':' · <span class="dact" onclick="toggleJob('+j.id+')">'+(j.status==='open'?'关闭':'重开')+'</span>'}</td></tr>`).join('')}</tbody></table>`;
 }
 function jobModal(j){
   const core=!!(j&&j.core_job_ref);
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${j?'编辑职位':'新建职位'}</h3>`
-    +(core?`<div class="muted" style="text-align:left;padding:0 0 10px">职位名、状态和正式配额由 Talent Discovery 核心同步；这里仅编辑运营目标。</div>`:'')
+    +(core?`<div class="muted" style="text-align:left;padding:0 0 10px">职位名、状态和正式配额由 Talent Discovery 核心同步；这里仅设置负责人、目标简历量和目标招聘人数。关闭或归档请在 Talent Discovery 操作，避免破坏候选人历史。</div>`:'')
     +`<div class="field"><label>职位名 *</label><input id="jmTitle" ${core?'readonly':''} value="${j?esc(j.title):''}"></div>`
     +`<div class="field"><label>负责人</label><input id="jmOwner" value="${j?esc(j.owner||''):''}"></div>`
     +`<div class="row2"><div class="field"><label>目标简历量</label><input id="jmRes" type="number" min="0" value="${j?j.target_resume_count:0}"></div>`

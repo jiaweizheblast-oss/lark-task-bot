@@ -335,25 +335,29 @@ def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
     elements = []
     if configured and url:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-            "HR 直接在这张 **渠道跟进表** 更新状态或补充新候选人。填完后由管理员发送 "
-            "`/submit_channel_sheet`，结果会立即同步到网站 Channel Analytics。"}})
+            "HR updates Candidate Pipeline or Unidentified Batch Counts here. "
+            "Editing the Base does not write to the website until an administrator sends "
+            "`/submit_channel_sheet`."}})
         elements.append({"tag": "action", "actions": [{
             "tag": "button", "type": "primary",
-            "text": {"tag": "plain_text", "content": "打开在线渠道表"}, "url": url,
+            "text": {"tag": "plain_text", "content": "Open Channel Analytics Workspace"}, "url": url,
         }]})
         if last_sync:
-            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "上次同步：" + last_sync}]})
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "Last submitted: " + last_sync}]})
+        else:
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "No submissions yet (normal)."}]})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-            "在线渠道表尚未完成首次配置。请管理员在网站的 **Channel Analytics → Lark 连接设置** 中创建。"}})
+            "The online workspace is not configured. An administrator must create it from "
+            "**Channel Analytics → Lark connection settings**."}})
     if panel_url:
         elements.append({"tag": "action", "actions": [{
-            "tag": "button", "text": {"tag": "plain_text", "content": "打开 Channel Analytics"},
+            "tag": "button", "text": {"tag": "plain_text", "content": "Open Channel Analytics"},
             "url": panel_url,
         }]})
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "Channel Analytics · 获取渠道表"}},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "Channel Analytics Workspace"}},
         "elements": elements,
     }
 

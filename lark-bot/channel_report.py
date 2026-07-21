@@ -16,14 +16,13 @@ CHANNELS = [
     # System and owned channels
     "Talent Discovery", "Company Careers", "Direct Application",
     "Employee Referral", "Internal Mobility", "Historical Talent Pool",
-    # India / general job platforms
-    "LinkedIn", "Naukri", "Indeed", "Foundit / Monster", "Shine",
-    "Apna", "WorkIndia", "Job Hai", "Internshala", "Wellfound", "Glassdoor",
+    # Primary job platforms
+    "LinkedIn", "Naukri", "Indeed",
     # Community and messaging channels
     "Telegram", "WhatsApp", "Facebook", "Instagram", "X / Twitter",
-    "Discord", "GitHub", "Stack Overflow",
+    "Discord", "GitHub",
     # iGaming-focused channels and partners
-    "iGamingJobs", "SiGMA Careers", "BettingJobs / iGaming Agency",
+    "iGamingJobs", "BettingJobs / iGaming Agency",
     "iGaming Community / Affiliate Network",
     # Offline / partner channels
     "Recruitment Agency", "Recruitment Event / Job Fair", "University / Campus",

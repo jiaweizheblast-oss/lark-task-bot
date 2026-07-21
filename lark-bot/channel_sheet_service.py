@@ -13,6 +13,9 @@ from typing import Any, Mapping, Sequence
 import channel_pipeline_schema as pipeline_schema
 
 
+INDIA_TIMEZONE = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+
 def _text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -33,6 +36,18 @@ def _valid_date(value: str) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _lark_date(value: Any, default_date: str) -> str:
+    """Normalize either an ISO date or Lark's millisecond Date value."""
+    text = _text(value)
+    if not text:
+        return default_date
+    if text.isdigit() and len(text) >= 10:
+        seconds = int(text) / (1000 if len(text) >= 13 else 1)
+        return datetime.datetime.fromtimestamp(
+            seconds, tz=INDIA_TIMEZONE).date().isoformat()
+    return text[:10]
 
 
 def _field(fields: Mapping[str, Any], key: str, *, manual: bool = False) -> Any:
@@ -150,7 +165,7 @@ def import_lark_channel_records(
         if not channel and not job_title and not any(_text(value) for value in counts):
             skipped += 1
             continue
-        date_value = _text(_field(fields, "record_date", manual=True))[:10] or default_date
+        date_value = _lark_date(_field(fields, "record_date", manual=True), default_date)
         if not _valid_date(date_value):
             errors.append("Lark 第%d条：日期格式非法（应为 YYYY-MM-DD）" % index)
             continue

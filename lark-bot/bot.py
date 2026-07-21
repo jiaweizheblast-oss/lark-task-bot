@@ -1752,9 +1752,13 @@ def _lark_cfg():
 def _ensure_lark_channel_schema(cfg=None):
     """Run the one-time, idempotent Base repair before any operational use."""
     cfg = cfg or _lark_cfg()
+    jobs = db.list_job_requests(only_open=True)
+    job_titles = [job["title"] for job in jobs]
     if db.get_settings().get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION:
         verified = lark_bitable.verify_channel_base_schema(
-            cfg.get("app_token"), cfg.get("pipeline_table_id"), cfg.get("manual_table_id")
+            cfg.get("app_token"), cfg.get("pipeline_table_id"), cfg.get("manual_table_id"),
+            job_titles=job_titles, channels=channel_report.CHANNELS,
+            stages=channel_report.PIPELINE_STATUS,
         )
         if verified.get("ok"):
             return {"ok": True, "already_ensured": True, "verification": verified}
@@ -1763,6 +1767,21 @@ def _ensure_lark_channel_schema(cfg=None):
         db.set_setting("lark_channel_schema_ensured", "")
     if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
         return {"ok": False, "error": "在线渠道表尚未完整配置"}
+    manual_migration = None
+    if not cfg.get("last_sync"):
+        manual_migration = lark_bitable.prepare_canonical_manual_table(
+            cfg["app_token"], cfg["manual_table_id"], job_titles, channel_report.CHANNELS)
+        if not manual_migration.get("ok"):
+            return {"ok": False, "error": manual_migration.get("error"),
+                    "manual_table_migration": manual_migration}
+        if manual_migration.get("changed"):
+            old_table_id = manual_migration["old_table_id"]
+            new_table_id = manual_migration["table_id"]
+            db.set_setting("lark_channel_manual_table_id", new_table_id)
+            cfg = dict(cfg)
+            cfg["manual_table_id"] = new_table_id
+            manual_migration["old_table_cleanup"] = lark_bitable.delete_table(
+                cfg["app_token"], old_table_id)
     test_cleanup = None
     if not cfg.get("last_sync"):
         # Run this before removing the legacy System ID column so an existing
@@ -1774,8 +1793,12 @@ def _ensure_lark_channel_schema(cfg=None):
             return {"ok": False, "discarded_test_rows": test_cleanup,
                     "error": test_cleanup.get("error") or "Test-row cleanup failed"}
     result = lark_bitable.ensure_channel_base_schema(
-        cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"]
+        cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"],
+        job_titles=job_titles, channels=channel_report.CHANNELS,
+        stages=channel_report.PIPELINE_STATUS,
     )
+    if manual_migration is not None:
+        result["manual_table_migration"] = manual_migration
     if test_cleanup is not None:
         result["discarded_test_rows"] = test_cleanup
     if result.get("ok"):

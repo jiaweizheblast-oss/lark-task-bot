@@ -6,11 +6,11 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v11"
+SCHEMA_VERSION = "channel-pipeline-v12"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
-MANUAL_TABLE_NAME = "Manual Batch Counts (Special Cases)"
+MANUAL_TABLE_NAME = "Unidentified Batch Counts (Special Cases)"
 MANUAL_VIEW_NAME = "Batch Counts"
 EXPORT_FILENAME_PREFIX = "ChannelAnalytics"
 
