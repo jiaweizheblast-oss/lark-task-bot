@@ -685,16 +685,14 @@ def normalize_table_field_names(app_token, table_id, specs, skip_keys=()):
             continue
         if str(field.get("field_name") or "") == spec["header"]:
             continue
-        body = {
-            "field_name": spec["header"],
-            "type": int(field.get("type") or FT_TEXT),
-        }
-        if field.get("property") is not None:
+        field_type = int(field.get("type") or FT_TEXT)
+        body = {"field_name": spec["header"], "type": field_type}
+        # Update-field is a full replacement in Lark. Preserve structured
+        # properties for choice/number fields, but never send text-field
+        # property, ui_type, or a plain-string description: those combinations
+        # are rejected by the live API as WrongRequestBody.
+        if field_type != FT_TEXT and field.get("property") is not None:
             body["property"] = field.get("property")
-        if field.get("ui_type"):
-            body["ui_type"] = field.get("ui_type")
-        if spec["key"] == "source_detail":
-            body["description"] = "Fill only when Source Channel is Other; otherwise leave blank."
         response = _field_update(
             "/open-apis/bitable/v1/apps/%s/tables/%s/fields/%s" %
             (app_token, table_id, field.get("field_id")),
