@@ -1174,20 +1174,19 @@ def api_candidate_create():
     rd = (d.get("apply_date") or _kolkata_today().isoformat())[:10]
     if not _valid_date(rd):
         return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
-    stage_date = (d.get("stage_date") or rd)[:10]
-    if not _valid_date(stage_date):
-        return jsonify({"error": "阶段日期格式非法（应为 YYYY-MM-DD）", "errors": ["阶段日期非法"]}), 422
+    stage_date = _kolkata_today().isoformat()
     cid = db.create_candidate(
         rd, (d.get("name") or "").strip(), d["channel"], jid,
         "New Lead", (d.get("note") or "").strip(),
         (d.get("filled_by") or "").strip(), d.get("source") or "手动",
         (d.get("ext_ref") or "").strip(), "", (d.get("source_detail") or "").strip())
     requested_stage = d.get("status") or "New Lead"
-    if requested_stage != "New Lead":
-        db.transition_candidate_stage(
-            cid, requested_stage, stage_date, (d.get("filled_by") or "").strip(),
-            (d.get("rejection_reason") or "").strip(), (d.get("note") or "").strip(),
-            (d.get("event_ref") or "").strip())
+    # Every candidate receives an initial immutable stage event. Stage Date is
+    # system-owned and never accepted from website/Lark/Excel HR input.
+    db.transition_candidate_stage(
+        cid, requested_stage, stage_date, (d.get("filled_by") or "").strip(),
+        (d.get("rejection_reason") or "").strip(), (d.get("note") or "").strip(),
+        (d.get("event_ref") or "").strip())
     return jsonify({"ok": True, "id": cid, "warnings": warnings})
 
 
@@ -1218,9 +1217,7 @@ def api_candidate_update(cid):
         if not _valid_date(d["apply_date"]):
             return jsonify({"error": "日期格式非法（应为 YYYY-MM-DD）", "errors": ["日期非法"]}), 422
         fields["apply_date"] = d["apply_date"][:10]
-    stage_date = (d.get("stage_date") or d.get("apply_date") or _kolkata_today().isoformat())[:10]
-    if not _valid_date(stage_date):
-        return jsonify({"error": "阶段日期格式非法（应为 YYYY-MM-DD）", "errors": ["阶段日期非法"]}), 422
+    stage_date = _kolkata_today().isoformat()
     db.update_candidate(cid, **fields)
     transition = None
     requested_stage = d.get("status") or "New Lead"
@@ -1723,7 +1720,9 @@ def api_channel_upload():
         parsed = sheet_io.parse_pipeline_sheet(f.read(), f.filename or "", jobs, owner, default_date)
     except Exception as e:
         return jsonify({"error": "无法解析文件（请上传系统生成的 .xlsx）：%s" % e}), 400
-    return jsonify(channel_sheet_service.import_pipeline_rows(db, parsed, owner=owner))
+    return jsonify(channel_sheet_service.import_pipeline_rows(
+        db, parsed, owner=owner, default_date=default_date
+    ))
 
 
 # ==================== Lark 多维表格同步（机器人自己的表；只对管理员开放） ====================
@@ -1732,12 +1731,28 @@ def _lark_cfg():
         s = db.get_settings()
     except Exception:
         s = {}
+    pipeline_table_id = s.get("lark_channel_pipeline_table_id", "")
     return {"app_token": s.get("lark_channel_app_token", ""),
-            "pipeline_table_id": s.get("lark_channel_pipeline_table_id", ""),
+            "pipeline_table_id": pipeline_table_id,
             "manual_table_id": s.get("lark_channel_manual_table_id", ""),
-            "url": s.get("lark_channel_url", ""),
+            "url": lark_bitable.table_url(s.get("lark_channel_url", ""), pipeline_table_id),
             "last_sync": s.get("lark_channel_last_sync", ""),
             "schema_version": s.get("lark_channel_schema_version", "")}
+
+
+def _ensure_lark_channel_schema(cfg=None):
+    """Run the one-time, idempotent Base repair before any operational use."""
+    cfg = cfg or _lark_cfg()
+    if db.get_settings().get("lark_channel_schema_ensured") == "candidate-pipeline-v3":
+        return {"ok": True, "already_ensured": True}
+    if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
+        return {"ok": False, "error": "在线渠道表尚未完整配置"}
+    result = lark_bitable.ensure_channel_base_schema(
+        cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"]
+    )
+    if result.get("ok"):
+        db.set_setting("lark_channel_schema_ensured", "candidate-pipeline-v3")
+    return result
 
 
 @app.route("/api/lark/ping", methods=["POST", "GET"])
@@ -1753,11 +1768,13 @@ def api_lark_status():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     c = _lark_cfg()
+    settings = db.get_settings()
     return jsonify({"configured": bool(c["app_token"] and c["pipeline_table_id"]
                                        and c["manual_table_id"]
                                        and c["schema_version"] == "channel-analytics-v2"),
                     "url": c["url"], "last_sync": c["last_sync"],
                     "schema_version": c["schema_version"],
+                    "schema_ensured": settings.get("lark_channel_schema_ensured") == "candidate-pipeline-v3",
                     "bot_name": RECRUITMENT_BOT_NAME,
                     "app_id_tail": lark_bitable.APP_ID[-8:] if lark_bitable.APP_ID else ""})
 
@@ -1800,6 +1817,7 @@ def api_lark_reconnect():
         "lark_channel_app_token", "lark_channel_pipeline_table_id",
         "lark_channel_manual_table_id", "lark_channel_url",
         "lark_channel_last_sync", "lark_channel_schema_version",
+        "lark_channel_schema_ensured",
     ):
         db.set_setting(key, "")
     return jsonify({
@@ -1808,6 +1826,18 @@ def api_lark_reconnect():
         "document_deleted": False,
         "candidate_data_changed": False,
     })
+
+
+@app.route("/api/lark/ensure-schema", methods=["POST"])
+def api_lark_ensure_schema():
+    """Automatically enforce the Channel Base schema; there is no repair button."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    cfg = _lark_cfg()
+    if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
+        return jsonify({"error": "在线渠道表尚未完整配置"}), 409
+    result = _ensure_lark_channel_schema(cfg)
+    return jsonify(result), 200 if result.get("ok") else 502
 
 
 @app.route("/api/integration/v1/channel/status")
@@ -1821,10 +1851,12 @@ def api_channel_bot_status():
         and cfg.get("manual_table_id")
         and cfg.get("schema_version") == "channel-analytics-v2"
     )
+    schema = _ensure_lark_channel_schema(cfg) if configured else {"ok": False}
     return jsonify({
         "ok": True, "configured": configured,
         "url": cfg.get("url") or "", "last_sync": cfg.get("last_sync") or "",
         "schema_version": cfg.get("schema_version") or "",
+        "schema_ensured": bool(schema.get("ok")),
     })
 
 
@@ -1833,6 +1865,9 @@ def api_channel_bot_submit():
     """Authenticated Recruitment Bot submission using the shared service."""
     if not _talent_worker_auth():
         return jsonify({"error": "unauthorized"}), 401
+    schema = _ensure_lark_channel_schema()
+    if not schema.get("ok"):
+        return jsonify(schema), 409
     result = channel_sheet_service.sync_lark_table(
         db, lark_bitable, _lark_cfg(),
         jobs=db.list_job_requests(only_open=False),
@@ -1868,6 +1903,8 @@ def api_lark_create_table():
     db.set_setting("lark_channel_manual_table_id", res.get("manual_table_id") or "")
     db.set_setting("lark_channel_url", res.get("url") or "")
     db.set_setting("lark_channel_schema_version", "channel-analytics-v2")
+    if (res.get("schema") or {}).get("ok"):
+        db.set_setting("lark_channel_schema_ensured", "candidate-pipeline-v3")
     shared = None
     share = (d.get("share_email") or "").strip()
     if share:
@@ -1888,6 +1925,9 @@ def api_lark_pull():
     """从 Lark 在线渠道表提交；网站按钮和 Bot 命令共用同一 application service。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    schema = _ensure_lark_channel_schema()
+    if not schema.get("ok"):
+        return jsonify(schema), 409
     result = channel_sheet_service.sync_lark_table(
         db,
         lark_bitable,

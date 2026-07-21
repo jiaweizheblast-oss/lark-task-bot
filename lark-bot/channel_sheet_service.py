@@ -54,7 +54,9 @@ def import_channel_rows(database, parsed: Mapping[str, Any], *, owner: str = "")
             "skipped": int(parsed.get("skipped") or 0), "errors": errors}
 
 
-def import_pipeline_rows(database, parsed: Mapping[str, Any], *, owner: str = "") -> dict[str, Any]:
+def import_pipeline_rows(
+    database, parsed: Mapping[str, Any], *, owner: str = "", default_date: str = "",
+) -> dict[str, Any]:
     """Apply website Pipeline workbook rows without guessing candidate identity."""
     created = updated = 0
     errors = list(parsed.get("errors") or [])
@@ -78,6 +80,7 @@ def import_pipeline_rows(database, parsed: Mapping[str, Any], *, owner: str = ""
                 existing = database.get_candidate_by_ext_ref(row_ref)
             if not existing and not row_ref:
                 raise ValueError("新候选人缺少系统 Row Ref；请使用系统生成的表")
+            created_now = existing is None
             if existing:
                 candidate_id = existing["id"]
                 database.update_candidate(candidate_id, apply_date=record_date, name=name,
@@ -91,8 +94,8 @@ def import_pipeline_rows(database, parsed: Mapping[str, Any], *, owner: str = ""
                 existing = {"status": "New Lead"}
                 created += 1
             current_stage = _text(existing.get("status")) or "New Lead"
-            if stage != current_stage:
-                stage_date = _text(row.get("stage_date"))[:10] or record_date
+            if created_now or stage != current_stage:
+                stage_date = default_date or record_date
                 reason = _text(row.get("rejection_reason"))
                 event_material = "|".join(("xlsx", str(candidate_id), stage, stage_date, reason))
                 event_ref = "xlsx-" + hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:32]
@@ -119,7 +122,9 @@ def import_lark_channel_records(
     for index, record in enumerate(records, start=1):
         fields = record.get("fields") or {}
         channel = _text(fields.get("招聘渠道"))
-        source_detail = _text(fields.get("其他来源说明（选 Other 时必填）") or fields.get("Source Detail"))
+        source_detail = _text(fields.get("其他来源说明（选择 Other 时填写）") or
+                              fields.get("其他来源说明（选 Other 时必填）") or
+                              fields.get("Source Detail"))
         job_title = _text(fields.get("关联职位"))
         counts = [fields.get("今日新增简历数"), fields.get("初筛通过数"),
                   fields.get("已推荐面试数"), fields.get("已拒绝数")]
@@ -172,6 +177,7 @@ def import_lark_pipeline_records(
     channel_set, stage_set = set(channels), set(stages)
     created = updated = skipped = 0
     errors = []
+    writebacks = []
     for index, record in enumerate(records, start=1):
         fields = record.get("fields") or {}
         name = _text(fields.get("Candidate"))
@@ -179,11 +185,13 @@ def import_lark_pipeline_records(
             skipped += 1
             continue
         channel = _text(fields.get("Source Channel"))
-        detail = _text(fields.get("其他来源说明（选 Other 时必填）") or fields.get("Source Detail"))
+        detail = _text(fields.get("其他来源说明（选择 Other 时填写）") or
+                       fields.get("Other Source (if Other)") or
+                       fields.get("其他来源说明（选 Other 时必填）") or
+                       fields.get("Source Detail"))
         job_id = title_to_id.get(_text(fields.get("Job")))
         stage = _text(fields.get("Current Stage")) or "New Lead"
         entry_date = _text(fields.get("Entry Date"))[:10] or default_date
-        stage_date = _text(fields.get("Stage Date"))[:10] or entry_date
         reason = _text(fields.get("Rejection Reason"))
         if not name:
             errors.append("Pipeline 第%d条：Candidate 必填" % index); continue
@@ -195,8 +203,8 @@ def import_lark_pipeline_records(
             errors.append("Pipeline 第%d条：Job 不存在或已停用" % index); continue
         if stage not in stage_set:
             errors.append("Pipeline 第%d条：Current Stage 非法" % index); continue
-        if not _valid_date(entry_date) or not _valid_date(stage_date):
-            errors.append("Pipeline 第%d条：日期必须是 YYYY-MM-DD" % index); continue
+        if not _valid_date(entry_date):
+            errors.append("Pipeline 第%d条：Entry Date 必须是 YYYY-MM-DD" % index); continue
         if stage == "Rejected" and not reason:
             errors.append("Pipeline 第%d条：Rejected 必须填写 Rejection Reason" % index); continue
         record_id = _text(record.get("record_id"))
@@ -205,6 +213,7 @@ def import_lark_pipeline_records(
             system_id = _text(fields.get("System ID"))
             if not existing and system_id.isdigit():
                 existing = database.get_candidate(int(system_id))
+            created_now = existing is None
             if existing:
                 candidate_id = existing["id"]
                 database.update_candidate(candidate_id, apply_date=entry_date, name=name,
@@ -218,15 +227,25 @@ def import_lark_pipeline_records(
                     _text(fields.get("HR Owner")), "Lark", "", record_id, detail)
                 existing = {"status": "New Lead"}
                 created += 1
+            row_writeback = {}
+            if system_id != str(candidate_id):
+                row_writeback["System ID"] = str(candidate_id)
             current_stage = _text(existing.get("status")) or "New Lead"
-            if stage != current_stage:
+            if created_now or stage != current_stage:
+                # Stage Date is system-owned. Lark displays a read-only field
+                # tracking Current Stage; the database records the canonical
+                # Kolkata processing date and never accepts an HR-supplied date.
+                stage_date = default_date
                 event_material = "|".join((record_id, str(candidate_id), stage, stage_date, reason))
                 event_ref = "lark-" + hashlib.sha256(event_material.encode("utf-8")).hexdigest()[:32]
                 database.transition_candidate_stage(candidate_id, stage, stage_date,
                     _text(fields.get("HR Owner")), reason, _text(fields.get("Note")), event_ref)
+            if record_id and row_writeback:
+                writebacks.append({"record_id": record_id, "fields": row_writeback})
         except Exception as error:
             errors.append("Pipeline 第%d条：%s" % (index, error))
-    return {"ok": True, "created": created, "updated": updated, "skipped": skipped, "errors": errors}
+    return {"ok": True, "created": created, "updated": updated, "skipped": skipped,
+            "errors": errors, "_writebacks": writebacks}
 
 
 def sync_lark_table(
@@ -258,6 +277,16 @@ def sync_lark_table(
                 "Interview 2 / Final", "Offer", "Hired", "On Hold", "Rejected", "Withdrawn"),
         default_date=default_date,
     )
+    writebacks = list(pipeline_result.pop("_writebacks", []))
+    writeback_count = 0
+    writeback_errors = []
+    for item in writebacks:
+        response = lark_client.update_pipeline_record_fields(
+            app_token, pipeline_table_id, item["record_id"], item["fields"])
+        if response.get("ok"):
+            writeback_count += 1
+        else:
+            writeback_errors.append(response.get("error") or "Stage Date 回写失败")
     manual_result = import_lark_channel_records(
         database, manual_response.get("records") or [], jobs=jobs,
         default_date=default_date, channels=channels)
@@ -265,6 +294,8 @@ def sync_lark_table(
               "created": pipeline_result["created"], "updated": pipeline_result["updated"],
               "applied": manual_result["applied"],
               "skipped": pipeline_result["skipped"] + manual_result["skipped"],
-              "errors": pipeline_result["errors"] + manual_result["errors"]}
+              "system_field_writebacks": writeback_count,
+              "stage_date_writebacks": 0,
+              "errors": pipeline_result["errors"] + manual_result["errors"] + writeback_errors}
     database.set_setting("lark_channel_last_sync", synced_at)
     return result

@@ -24,7 +24,7 @@ from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Protection
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
@@ -46,7 +46,7 @@ def channel_columns(job_titles):
     return [
         _col("record_date", "日期", "date"),
         _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道"]),
-        _col("source_detail", "其他来源说明（选 Other 时必填）", "text",
+        _col("source_detail", "其他来源说明（选择 Other 时填写）", "text",
              aliases=["Source Detail", "其他来源", "来源详情", "其他来源说明"]),
         _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
         _col("new_resumes", "今日新增简历数", "int", aliases=["新增", "新增简历数"], minv=0),
@@ -126,6 +126,15 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
     for ci, dv in dv_map.items():
         letter = get_column_letter(ci + 1)
         dv.add("%s2:%s%d" % (letter, letter, last))
+
+    # System columns are visible for audit but not editable by HR. All normal
+    # input cells remain unlocked, so protection does not hinder daily work.
+    for row_index in range(2, last + 1):
+        for column_index, column in enumerate(columns, 1):
+            ws.cell(row=row_index, column=column_index).protection = Protection(
+                locked=bool(column.get("sys"))
+            )
+    ws.protection.sheet = True
 
     for i, c in enumerate(columns, 1):
         ws.column_dimensions[get_column_letter(i)].width = 20 if c["kind"] == "text" else 15
@@ -295,11 +304,12 @@ def pipeline_columns(job_titles):
         _col("record_date", "日期", "date"),
         _col("name", "候选人", "text"),
         _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道", "来源渠道"]),
-        _col("source_detail", "其他来源说明（选 Other 时必填）", "text",
+        _col("source_detail", "其他来源说明（选择 Other 时填写）", "text",
              aliases=["Source Detail", "其他来源", "来源详情", "其他来源说明"]),
         _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
         _col("status", "Current Stage", "choice", choices=PIPELINE_STATUS, aliases=["状态", "招聘状态", "阶段"]),
-        _col("stage_date", "Stage Date", "date", aliases=["阶段日期"]),
+        _col("stage_date", "Stage Date（系统自动）", "date",
+             aliases=["Stage Date", "阶段日期"], sys=True),
         _col("rejection_reason", "Rejection Reason", "text", aliases=["拒绝原因"]),
         _col("note", "备注", "text"),
         _col("filled_by", "填写人", "text"),
@@ -361,12 +371,6 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None)
         if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
             errors.append("第%d行：选择 Other 时必须填写其他来源说明" % r.get("__line__", 0))
             continue
-        stage_date = (r.get("stage_date") or rd).strip()[:10]
-        try:
-            date.fromisoformat(stage_date)
-        except ValueError:
-            errors.append("第%d行：Stage Date 格式非法" % r.get("__line__", 0))
-            continue
         if (r.get("status") or "New Lead") == "Rejected" and not (r.get("rejection_reason") or "").strip():
             errors.append("第%d行：Rejected 必须填写 Rejection Reason" % r.get("__line__", 0))
             continue
@@ -375,7 +379,7 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None)
                     "name": r.get("name", ""), "channel": r["channel"],
                     "source_detail": r.get("source_detail", ""),
                     "job_request_id": jid, "status": r.get("status") or "New Lead",
-                    "stage_date": stage_date, "rejection_reason": r.get("rejection_reason", ""),
+                    "stage_date": "", "rejection_reason": r.get("rejection_reason", ""),
                     "note": r.get("note", ""), "filled_by": r.get("filled_by") or default_by})
     return {"rows": out, "skipped": res["skipped"], "errors": errors}
 
