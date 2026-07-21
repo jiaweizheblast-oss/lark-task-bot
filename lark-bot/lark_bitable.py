@@ -79,7 +79,7 @@ def _fields_spec(job_titles, channels, statuses):
         {"field_name": "日期", "type": FT_TEXT},
         {"field_name": "招聘渠道", "type": FT_SINGLE,
          "property": {"options": [{"name": c} for c in channels]}},
-        {"field_name": "Source Detail", "type": FT_TEXT},
+        {"field_name": "其他来源说明（选 Other 时必填）", "type": FT_TEXT},
         {"field_name": "关联职位", "type": FT_SINGLE,
          "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
         {"field_name": "关联职位", "type": FT_TEXT},
@@ -123,7 +123,7 @@ def _channel_fields_spec(job_titles, channels):
         {"field_name": "日期", "type": FT_TEXT},
         {"field_name": "招聘渠道", "type": FT_SINGLE,
          "property": {"options": [{"name": c} for c in channels]}},
-        {"field_name": "Source Detail", "type": FT_TEXT},
+        {"field_name": "其他来源说明（选 Other 时必填）", "type": FT_TEXT},
         {"field_name": "关联职位", "type": FT_SINGLE,
          "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
         {"field_name": "关联职位", "type": FT_TEXT},
@@ -142,7 +142,7 @@ def _pipeline_fields_spec(job_titles, channels, stages):
         {"field_name": "Entry Date", "type": FT_TEXT},
         {"field_name": "Source Channel", "type": FT_SINGLE,
          "property": {"options": [{"name": c} for c in channels]}},
-        {"field_name": "Source Detail", "type": FT_TEXT},
+        {"field_name": "其他来源说明（选 Other 时必填）", "type": FT_TEXT},
         {"field_name": "Job", "type": FT_SINGLE,
          "property": {"options": [{"name": t} for t in job_titles]}} if job_titles else
         {"field_name": "Job", "type": FT_TEXT},
@@ -184,7 +184,7 @@ def create_channel_base(name, job_titles, channels, stages, folder_token=""):
                 "app_token": app_token, "url": url, "raw": pipeline_response}
     manual_response = _req(
         "POST", "/open-apis/bitable/v1/apps/%s/tables" % app_token, token=tok,
-        body={"table": {"name": "每日渠道录入", "default_view_name": "渠道日报",
+        body={"table": {"name": "未建档批量统计（特殊情况）", "default_view_name": "补充统计",
                          "fields": _channel_fields_spec(job_titles, channels)}},
     )
     if manual_response.get("code") != 0:
@@ -211,11 +211,11 @@ def add_member(app_token, member_id, member_type="email", perm="full_access"):
 # ---------------- 读写记录 ----------------
 FIELD_KEYS = ("候选人", "日期", "招聘渠道", "关联职位", "状态", "备注", "填写人")
 CHANNEL_FIELD_KEYS = (
-    "日期", "招聘渠道", "Source Detail", "关联职位", "今日新增简历数",
+    "日期", "招聘渠道", "其他来源说明（选 Other 时必填）", "Source Detail", "关联职位", "今日新增简历数",
     "初筛通过数", "已推荐面试数", "已拒绝数", "备注", "填写人",
 )
 PIPELINE_FIELD_KEYS = (
-    "Candidate", "Entry Date", "Source Channel", "Source Detail", "Job",
+    "Candidate", "Entry Date", "Source Channel", "其他来源说明（选 Other 时必填）", "Source Detail", "Job",
     "Current Stage", "Stage Date", "HR Owner", "Rejection Reason", "Note", "System ID",
 )
 

@@ -67,7 +67,7 @@ def main():
             "stage_date": "2026-07-21", "rejection_reason": "",
             "note": "route", "filled_by": "ignored", "cand_id": "", "row_ref": "manual-test-row",
         }],
-        sheet_title="每日渠道录入",
+        sheet_title="未建档批量统计",
     )
     client = bot.app.test_client()
     uploaded = client.post(

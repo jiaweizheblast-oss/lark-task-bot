@@ -65,7 +65,7 @@ def import_pipeline_rows(database, parsed: Mapping[str, Any], *, owner: str = ""
             if not name or not channel or not row.get("job_request_id"):
                 raise ValueError("Candidate、Source Channel 和 Job 必填")
             if channel == "Other" and not detail:
-                raise ValueError("选择 Other 时必须填写 Source Detail")
+                raise ValueError("选择 Other 时必须填写其他来源说明")
             record_date = _text(row.get("record_date"))[:10]
             if not _valid_date(record_date):
                 raise ValueError("日期必须是 YYYY-MM-DD")
@@ -119,7 +119,7 @@ def import_lark_channel_records(
     for index, record in enumerate(records, start=1):
         fields = record.get("fields") or {}
         channel = _text(fields.get("招聘渠道"))
-        source_detail = _text(fields.get("Source Detail"))
+        source_detail = _text(fields.get("其他来源说明（选 Other 时必填）") or fields.get("Source Detail"))
         job_title = _text(fields.get("关联职位"))
         counts = [fields.get("今日新增简历数"), fields.get("初筛通过数"),
                   fields.get("已推荐面试数"), fields.get("已拒绝数")]
@@ -134,7 +134,7 @@ def import_lark_channel_records(
             errors.append("Lark 第%d条：渠道「%s」不在受控词表" % (index, channel))
             continue
         if channel == "Other" and not source_detail:
-            errors.append("Lark 第%d条：选择 Other 时必须填写 Source Detail" % index)
+            errors.append("Lark 第%d条：选择 Other 时必须填写其他来源说明" % index)
             continue
         job_id = title_to_id.get(job_title)
         if not job_id:
@@ -179,7 +179,7 @@ def import_lark_pipeline_records(
             skipped += 1
             continue
         channel = _text(fields.get("Source Channel"))
-        detail = _text(fields.get("Source Detail"))
+        detail = _text(fields.get("其他来源说明（选 Other 时必填）") or fields.get("Source Detail"))
         job_id = title_to_id.get(_text(fields.get("Job")))
         stage = _text(fields.get("Current Stage")) or "New Lead"
         entry_date = _text(fields.get("Entry Date"))[:10] or default_date
@@ -190,7 +190,7 @@ def import_lark_pipeline_records(
         if channel not in channel_set:
             errors.append("Pipeline 第%d条：Source Channel 非法" % index); continue
         if channel == "Other" and not detail:
-            errors.append("Pipeline 第%d条：选择 Other 时必须填写 Source Detail" % index); continue
+            errors.append("Pipeline 第%d条：选择 Other 时必须填写其他来源说明" % index); continue
         if not job_id:
             errors.append("Pipeline 第%d条：Job 不存在或已停用" % index); continue
         if stage not in stage_set:

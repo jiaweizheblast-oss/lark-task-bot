@@ -18,7 +18,7 @@
 2. 在 Channel Analytics 的“高级设置”中运行 Lark 连接自检。
 3. 创建一次新的 `channel-analytics-v2` Lark Base。它应包含：
    - `Candidate Pipeline`
-   - `每日渠道录入`
+   - `未建档批量统计（特殊情况）`
 4. 在网站下载 Candidate Pipeline Excel，填写一条安全测试候选人后上传；再上传同一文件，确认不重复。
 5. 在 Lark Bot 使用 `/channel_sheet` 获取表；填写一条安全记录后使用 `/submit_channel_sheet`，确认网站同步。
 6. 重复提交同一内容，确认候选人和阶段事件不重复。
@@ -26,7 +26,7 @@
 ## 关键规则
 
 - Source Channel 由 HR 选择；系统明确知道来源时才预填。
-- 选择 `Other` 必须填写 `Source Detail`。
+- 选择 `Other` 必须填写“其他来源说明”；其他渠道可留空。
 - 候选人可以从任意合法招聘阶段开始；`Rejected` 必须填写原因。
 - 网站只接收 `.xlsx`，候选人路径禁用 CSV。
 - 隐藏 `Row Ref`、Lark `System ID` 和记录 ID 不得修改。

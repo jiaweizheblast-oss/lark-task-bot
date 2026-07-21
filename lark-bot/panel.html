@@ -336,9 +336,9 @@
       <!-- 分析控制条 -->
       <div class="toolbar" style="flex-wrap:wrap">
         <div style="font-weight:750;font-size:16px">📊 招聘分析</div>
-        <select id="cSpace" onchange="CSPACE=this.value;loadAnalytics()" title="两类数据分开展示，不相加">
-          <option value="manual">人工渠道汇总</option>
-          <option value="derived">逐人数据派生</option>
+        <select id="cSpace" onchange="CSPACE=this.value;loadAnalytics()" title="候选人明细为主要口径；未建档批量数字单独查看、不相加">
+          <option value="derived">候选人明细统计（推荐）</option>
+          <option value="manual">未建档批量统计（特殊情况）</option>
         </select>
         <span style="font-size:12px;color:var(--soft)">窗口</span>
         <span class="rcal-wrap">
@@ -407,7 +407,7 @@
         <ul id="cAlerts" style="list-style:none;padding:0;margin:12px 0 0"></ul>
       </div>
 
-      <div style="font-size:12px;color:var(--soft);line-height:1.6">口径：人工渠道汇总与逐人身份派生分开展示、绝不相加冒充去重候选人数 · 时区 Asia/Kolkata · 候选人状态只由 Talent Discovery 负责。</div>
+      <div style="font-size:12px;color:var(--soft);line-height:1.6">口径：默认从每名候选人的阶段历史统计；招聘会等尚未逐人建档的批量数字在“特殊情况”中单独查看，绝不与候选人数相加 · 时区 Asia/Kolkata。</div>
     </section>
     <section id="view-talent" class="hide">
       <div class="toolbar">
@@ -726,7 +726,7 @@ async function addExtGroup(){const name=val('egName'),url=val('egUrl'),err=docum
 async function delExtGroup(id){if(!confirm('Remove this external group?'))return;try{await api('/api/external-groups/'+id,{method:'DELETE'});await loadExternalGroups();await loadGroups();openExtSettings();toast('Removed');}catch(e){toast('Remove failed',true);}}
 
 // ---- 招聘分析看板模块（表格进 + 分析出；网页不手填，图表与 Bot 同一数据源） ----
-let CMETA={channels:[],jobs:[],today:''}, CGRAN='day', CSPACE='manual', CANA=null, cTrend=null, cChan=null;
+let CMETA={channels:[],jobs:[],today:''}, CGRAN='day', CSPACE='derived', CANA=null, cTrend=null, cChan=null;
 const cpct=x=>x==null?'—':Math.round(x*100)+'%';
 const cwow=x=>{if(x==null)return '<span class="muted" style="padding:0">—</span>';const s=(x>=0?'+':'')+Math.round(x*100)+'%';return `<span style="color:${x<0?'var(--danger)':'var(--ok)'};font-weight:600">${s}</span>`;};
 const rateClass=x=>x==null?'':(x>=0.5?'good':(x>=0.25?'mid':'bad'));
@@ -953,7 +953,7 @@ async function larkPing(){
   }catch(e){toast('自检失败',true);}
 }
 async function larkCreateTable(){
-  if(!confirm('首次创建 Channel Analytics 在线工作区？其中包含 Candidate Pipeline 和未建档渠道汇总两个页签。已配置时不要重复创建。'))return;
+  if(!confirm('创建 Lark 在线协作表（只需一次）？主要页签是 Candidate Pipeline；另有“未建档批量统计（特殊情况）”备用页签。创建后不要重复操作。'))return;
   const email=(prompt('分享给哪个管理员的 Lark 邮箱？（留空=先只归机器人，之后再分享）','')||'').trim();
   toast('建表中…（首次几秒）');
   try{const r=await(await api('/api/lark/table',{method:'POST',body:JSON.stringify({share_email:email})})).json();
@@ -979,7 +979,7 @@ function candModal(c){
     +`<div class="row2"><div class="field"><label>Entry Date *</label><input id="mcDate" type="date" value="${c?esc((c.apply_date||'').slice(0,10)):(CMETA.today||todayStr())}"></div>`
     +`<div class="field"><label>Candidate *</label><input id="mcName" value="${c?esc(c.name||''):''}" placeholder="Candidate name"></div></div>`
     +`<div class="row2"><div class="field"><label>Source Channel *</label><select id="mcChannel">${chans}</select></div>`
-    +`<div class="field"><label>Source Detail</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="Required when Source Channel is Other"></div></div>`
+    +`<div class="field"><label>其他来源说明</label><input id="mcSourceDetail" value="${c?esc(c.source_detail||''):''}" placeholder="仅选择 Other 时必填；其他渠道可留空"></div></div>`
     +`<div class="field"><label>Job *</label><select id="mcJob">${jobs}</select></div>`
     +`<div class="row2"><div class="field"><label>Current Stage *</label><select id="mcStatus">${sts}</select></div>`
     +`<div class="field"><label>Stage Date *</label><input id="mcStageDate" type="date" value="${c?esc((c.stage_date||c.apply_date||'').slice(0,10)):(CMETA.today||todayStr())}"></div></div>`
@@ -997,7 +997,7 @@ async function saveCandidate(id){
     stage_date:g('mcStageDate'),rejection_reason:(g('mcReject')||'').trim(),filled_by:g('mcBy'),note:(g('mcNote')||'').trim()};
   if(!body.name){toast('请填写候选人',true);return;}
   if(!body.channel){toast('请选择 Source Channel',true);return;}
-  if(body.channel==='Other'&&!body.source_detail){toast('选择 Other 时必须填写 Source Detail',true);return;}
+  if(body.channel==='Other'&&!body.source_detail){toast('选择 Other 时必须填写其他来源说明',true);return;}
   if(!body.job_request_id){toast('请选择职位',true);return;}
   if(body.status==='Rejected'&&!body.rejection_reason){toast('Rejected 必须填写 Rejection Reason',true);return;}
   try{

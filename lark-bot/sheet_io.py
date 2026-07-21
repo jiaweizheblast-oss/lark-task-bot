@@ -46,7 +46,8 @@ def channel_columns(job_titles):
     return [
         _col("record_date", "日期", "date"),
         _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道"]),
-        _col("source_detail", "Source Detail", "text", aliases=["其他来源", "来源详情"]),
+        _col("source_detail", "其他来源说明（选 Other 时必填）", "text",
+             aliases=["Source Detail", "其他来源", "来源详情", "其他来源说明"]),
         _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
         _col("new_resumes", "今日新增简历数", "int", aliases=["新增", "新增简历数"], minv=0),
         _col("passed_screening", "初筛通过数", "int", aliases=["初筛通过", "初筛"], minv=0),
@@ -219,7 +220,7 @@ def build_template_xlsx(jobs, day, by=""):
     cols = channel_columns([j["title"] for j in jobs])
     # Blank controlled rows are substantially easier than a jobs×channels zero
     # matrix. HR fills only combinations that actually had activity that day.
-    return build_xlsx(cols, prefill_rows=[], sheet_title="每日渠道录入",
+    return build_xlsx(cols, prefill_rows=[], sheet_title="未建档批量统计",
                       extra_blank=80, blank_defaults={"record_date": day, "filled_by": by})
 
 
@@ -253,7 +254,7 @@ def parse_sheet(data, filename, jobs, default_by="", default_date=None):
             errors.append("第%d行：日期格式非法「%s」（应为 YYYY-MM-DD）" % (r.get("__line__", 0), rd))
             continue
         if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
-            errors.append("第%d行：选择 Other 时必须填写 Source Detail" % r.get("__line__", 0))
+            errors.append("第%d行：选择 Other 时必须填写其他来源说明" % r.get("__line__", 0))
             continue
         out.append({"record_date": rd, "channel": r["channel"],
                     "source_detail": r.get("source_detail", ""), "job_request_id": jid,
@@ -294,7 +295,8 @@ def pipeline_columns(job_titles):
         _col("record_date", "日期", "date"),
         _col("name", "候选人", "text"),
         _col("channel", "招聘渠道", "choice", choices=CHANNELS, aliases=["渠道", "来源渠道"]),
-        _col("source_detail", "Source Detail", "text", aliases=["其他来源", "来源详情"]),
+        _col("source_detail", "其他来源说明（选 Other 时必填）", "text",
+             aliases=["Source Detail", "其他来源", "来源详情", "其他来源说明"]),
         _col("job", "关联职位", "choice", choices=job_titles, aliases=["职位"]),
         _col("status", "Current Stage", "choice", choices=PIPELINE_STATUS, aliases=["状态", "招聘状态", "阶段"]),
         _col("stage_date", "Stage Date", "date", aliases=["阶段日期"]),
@@ -357,7 +359,7 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None)
             errors.append("第%d行：日期格式非法「%s」（应为 YYYY-MM-DD）" % (r.get("__line__", 0), rd))
             continue
         if r["channel"] == "Other" and not (r.get("source_detail") or "").strip():
-            errors.append("第%d行：选择 Other 时必须填写 Source Detail" % r.get("__line__", 0))
+            errors.append("第%d行：选择 Other 时必须填写其他来源说明" % r.get("__line__", 0))
             continue
         stage_date = (r.get("stage_date") or rd).strip()[:10]
         try:

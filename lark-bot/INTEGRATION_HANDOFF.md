@@ -10,10 +10,10 @@ Channel Analytics 的主数据集是来源中立的 **Candidate Pipeline**：每
 - 网站载体是系统生成的 `.xlsx`；CSV 会被拒绝。网站下载、填写、上传与 Lark 路径使用
   同一套 `channel_sheet_service` 校验、阶段转换与幂等规则。
 - Lark Bot 持有一个 `channel-analytics-v2` Base，固定包含 `Candidate Pipeline` 和
-  `每日渠道录入` 两张表。前者保存可识别候选人，后者只保存招聘会/线下批量等尚未逐人建档的数量。
+  `未建档批量统计（特殊情况）` 两张表。前者保存可识别候选人，后者只保存招聘会/线下批量等尚未逐人建档的数量。
 - `/channel_sheet` 获取在线表，`/submit_channel_sheet` 同步两张表并刷新网站数据。
 - 受控来源包含常用招聘网站、社交/社群、iGaming 专业渠道、推荐、代理与 `Other`；选择
-  `Other` 时必须填写 `Source Detail`。系统已知来源时可预填，人工建档时由 HR 选择。
+  `Other` 时必须填写“其他来源说明”，其他渠道可留空。系统已知来源时可预填，人工建档时由 HR 选择。
 - 阶段为 `New Lead`、`Contacted / Awaiting Reply`、`HR Screening`、`Interview 1`、
   `Interview 2 / Final`、`Offer`、`Hired`、`On Hold`、`Rejected`、`Withdrawn`；允许从任意
   合法阶段开始，`Rejected` 必须填写原因。当前阶段是投影，变化追加到 `candidate_stage_event` 历史。

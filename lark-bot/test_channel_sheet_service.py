@@ -89,7 +89,7 @@ def main():
         "备注": "lark correction", "填写人": "HR-01",
     }}], pipeline_records=[{"record_id": "pipeline-1", "fields": {
         "Candidate": "Maya", "Entry Date": "2026-07-21", "Source Channel": "iGamingJobs",
-        "Source Detail": "", "Job": "Sales", "Current Stage": "Interview 1",
+        "其他来源说明（选 Other 时必填）": "", "Job": "Sales", "Current Stage": "Interview 1",
         "Stage Date": "2026-07-21", "HR Owner": "HR-01", "Rejection Reason": "",
         "Note": "direct entry", "System ID": "",
     }}])
@@ -127,7 +127,7 @@ def main():
         jobs=jobs, default_date="2026-07-21", channels=channels,
     )
     assert other_without_detail["applied"] == 0
-    assert any("Source Detail" in error for error in other_without_detail["errors"])
+    assert any("其他来源说明" in error for error in other_without_detail["errors"])
 
     legacy = channel_sheet_service.sync_lark_table(
         database, lark, {"app_token": "old", "manual_table_id": "old"},
@@ -137,7 +137,7 @@ def main():
 
     lark_headers = [item["field_name"] for item in
                     lark_bitable._channel_fields_spec(["Sales"], channels)]
-    for shared_header in ("日期", "招聘渠道", "Source Detail", "关联职位", "今日新增简历数",
+    for shared_header in ("日期", "招聘渠道", "其他来源说明（选 Other 时必填）", "关联职位", "今日新增简历数",
                           "初筛通过数", "已推荐面试数", "已拒绝数", "备注", "填写人"):
         assert shared_header in lark_headers
     for expected_source in ("Talent Discovery", "LinkedIn", "Naukri", "Telegram",
