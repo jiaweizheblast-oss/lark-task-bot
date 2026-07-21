@@ -21,7 +21,14 @@ Channel Analytics 的主数据集是来源中立的 **Candidate Pipeline**：每
   行号或模糊匹配猜身份。缺失或冲突时 fail-closed。
 - `manual_unidentified` 与 `identity_derived` 分开展示，绝不相加冒充去重候选人数。
 - Talent Discovery 继续独占搜索评分、联系任务、Review 与 ContactActivity；Channel Analytics
-  只记录招聘运营漏斗，不复制候选人联系决策。
+只记录招聘运营漏斗，不复制候选人联系决策。
+
+### 单一 RECRUITMENT BOT
+
+- 对外命令统一为 `/today_hr_sheet`、`/submit_today_hr_sheet`、`/channel_sheet`、`/submit_channel_sheet`。
+- Talent Discovery 本地长连接是唯一 Lark 消息消费者；Railway 不与它争抢事件。
+- Recruitment Bot 通过独立 Bearer token 访问 Railway 的窄范围 Channel status/submit 接口。
+- 错接到 Task Bot 且尚未同步的 Base 可通过网站安全清除连接引用，不删除任何业务数据或 Lark 文档。
 
 > 目的：把 **Nexus 运营控制台**（含网站）完整交接给 GPT，让 GPT 能读懂、部署、并与 CODEX（AI 招聘/候选人系统）整合上线。
 > 读者：GPT/CODEX 工程侧。以下技术标识符（表名、字段、路由、env）都是可直接使用的真实名字。

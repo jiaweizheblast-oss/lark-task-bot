@@ -152,6 +152,37 @@ def main():
     assert cards[-1][1]["header"]["title"]["content"] == "渠道表已同步"
     assert store.rows[key]["new_resumes"] == 11
 
+    status = client.get(
+        "/api/integration/v1/channel/status",
+        headers={"Authorization": "Bearer " + "w" * 32},
+    )
+    assert status.status_code == 401
+    bot.NEXUS_TALENT_WORKER_TOKEN = "w" * 32
+    status = client.get(
+        "/api/integration/v1/channel/status",
+        headers={"Authorization": "Bearer " + "w" * 32},
+    )
+    assert status.status_code == 200 and status.get_json()["configured"] is True
+    submitted = client.post(
+        "/api/integration/v1/channel/submit",
+        headers={"Authorization": "Bearer " + "w" * 32},
+    )
+    assert submitted.status_code == 200 and submitted.get_json()["applied"] == 1
+
+    blocked_reset = client.post(
+        "/api/lark/reconnect", headers={"X-Auth": bot.PANEL_PASSWORD},
+        json={"confirmation": "RESET_UNSYNCED_CHANNEL_LINK"},
+    )
+    assert blocked_reset.status_code == 409
+    store.settings["lark_channel_last_sync"] = ""
+    repaired = client.post(
+        "/api/lark/reconnect", headers={"X-Auth": bot.PANEL_PASSWORD},
+        json={"confirmation": "RESET_UNSYNCED_CHANNEL_LINK"},
+    )
+    assert repaired.status_code == 200
+    assert repaired.get_json()["candidate_data_changed"] is False
+    assert store.settings["lark_channel_app_token"] == ""
+
     print("Channel website upload and Lark/Bot submission routes: PASSED")
     print("XLSX-only boundary, shared upsert service, source rules, direct-stage entry, and Bot commands: PASSED")
 

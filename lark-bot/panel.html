@@ -327,6 +327,8 @@
           <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:10px">
             <button class="btn ghost sm" onclick="larkPing()">测试机器人凭证</button>
             <button class="btn ghost sm" onclick="larkCreateTable()">首次创建在线渠道表</button>
+            <button class="btn ghost sm" onclick="larkShareExisting()">重新授予管理员权限</button>
+            <button class="btn ghost sm" onclick="larkReconnect()">纠正错误机器人连接</button>
             <span class="muted" style="padding:0;font-size:12px">旧版“推进候选人”已停用：渠道分析不复制 Talent Discovery 的候选人状态。</span>
           </div>
         </details>
@@ -937,7 +939,7 @@ function setCandFilter(f){CANDFILTER=f;renderCandidates();}
 async function larkRefreshStatus(){
   const el=document.getElementById('larkStatus');if(!el)return;
   try{const s=await(await api('/api/lark/status')).json();
-    if(s.configured){el.innerHTML='🟢 Lark 已连接'+(s.last_sync?(' · 上次同步 '+esc(s.last_sync)):' · 尚未同步');}
+    if(s.configured){el.innerHTML='🟢 Lark 已连接'+(s.bot_name?(' · '+esc(s.bot_name)):'')+(s.app_id_tail?(' · app…'+esc(s.app_id_tail)):'')+(s.last_sync?(' · 上次同步 '+esc(s.last_sync)):' · 尚未同步');}
     else{el.textContent='🟠 Lark 在线表未配置（不影响网站 Excel）';}
   }catch(e){}
 }
@@ -961,6 +963,23 @@ async function larkCreateTable(){
       if(r.shared&&!r.shared.ok)toast('表建好了，但分享失败：'+(r.shared.error||'')+'（可能要加 drive 权限）',true);}
     else toast('✗ 建表失败：'+(r.error||''),true);
   }catch(e){toast('建表失败',true);}
+}
+async function larkShareExisting(){
+  const email=(prompt('把现有在线表授权给哪个 Lark 邮箱？管理员选完全管理；HR 请在 Lark 分享界面给“可编辑”。','')||'').trim();
+  if(!email)return;
+  toast('授权中…');
+  try{const r=await(await api('/api/lark/share',{method:'POST',body:JSON.stringify({email,permission:'full_access'})})).json();
+    toast(r.ok?'✅ 已重新授予管理员权限':('✗ '+(r.error||'授权失败')),!r.ok);
+  }catch(e){toast('授权失败',true);}
+}
+async function larkReconnect(){
+  if(!confirm('仅当当前表“尚未同步”且确实由错误机器人创建时使用。此操作只清除网站连接，不删除 Lark 文档、候选人或历史。继续？'))return;
+  const typed=prompt('请输入 RESET 继续：','')||'';
+  if(typed.trim()!=='RESET'){toast('已取消');return;}
+  try{const r=await(await api('/api/lark/reconnect',{method:'POST',body:JSON.stringify({confirmation:'RESET_UNSYNCED_CHANNEL_LINK'})})).json();
+    if(r.ok){toast('✅ 错误连接已安全清除；现在可用正确 Recruitment Bot 凭证重新创建');larkRefreshStatus();}
+    else toast('✗ '+(r.error||'重置失败'),true);
+  }catch(e){toast('重置失败',true);}
 }
 async function larkPull(){
   if(!confirm('提交 Lark 在线渠道表并同步到网站？系统会按 Lark 记录 ID 更新，重复提交不会新增重复记录。'))return;

@@ -1782,10 +1782,93 @@ def api_lark_status():
         return jsonify({"error": "unauthorized"}), 401
     c = _lark_cfg()
     return jsonify({"configured": bool(c["app_token"] and c["pipeline_table_id"]
-                                        and c["manual_table_id"]
-                                        and c["schema_version"] == "channel-analytics-v2"),
+                                       and c["manual_table_id"]
+                                       and c["schema_version"] == "channel-analytics-v2"),
                     "url": c["url"], "last_sync": c["last_sync"],
-                    "schema_version": c["schema_version"]})
+                    "schema_version": c["schema_version"],
+                    "bot_name": BOT_NAME or "(未命名)",
+                    "app_id_tail": APP_ID[-8:] if APP_ID else ""})
+
+
+@app.route("/api/lark/share", methods=["POST"])
+def api_lark_share_existing():
+    """Repair access to the existing Base without creating a second copy."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    cfg = _lark_cfg()
+    if not cfg.get("app_token"):
+        return jsonify({"error": "在线表尚未配置"}), 409
+    payload = request.get_json(silent=True) or {}
+    email = (payload.get("email") or "").strip()
+    permission = (payload.get("permission") or "full_access").strip()
+    if not email or "@" not in email or len(email) > 254:
+        return jsonify({"error": "请输入当前 Lark 账号实际绑定的邮箱"}), 422
+    if permission not in {"edit", "full_access"}:
+        return jsonify({"error": "permission 只能是 edit 或 full_access"}), 422
+    result = lark_bitable.add_member(
+        cfg["app_token"], email, "email", permission
+    )
+    return jsonify(result), 200 if result.get("ok") else 502
+
+
+@app.route("/api/lark/reconnect", methods=["POST"])
+def api_lark_reconnect():
+    """Forget an unsynchronised wrong-app Base link; never delete its document."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirmation") != "RESET_UNSYNCED_CHANNEL_LINK":
+        return jsonify({"error": "confirmation_required"}), 422
+    current = _lark_cfg()
+    if current.get("last_sync"):
+        return jsonify({
+            "error": "已有同步历史，禁止自动重置；请先进行数据迁移审计"
+        }), 409
+    for key in (
+        "lark_channel_app_token", "lark_channel_pipeline_table_id",
+        "lark_channel_manual_table_id", "lark_channel_url",
+        "lark_channel_last_sync", "lark_channel_schema_version",
+    ):
+        db.set_setting(key, "")
+    return jsonify({
+        "ok": True,
+        "forgotten_url": current.get("url") or "",
+        "document_deleted": False,
+        "candidate_data_changed": False,
+    })
+
+
+@app.route("/api/integration/v1/channel/status")
+def api_channel_bot_status():
+    """Authenticated Recruitment Bot lookup; returns no candidate records."""
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    cfg = _lark_cfg()
+    configured = bool(
+        cfg.get("app_token") and cfg.get("pipeline_table_id")
+        and cfg.get("manual_table_id")
+        and cfg.get("schema_version") == "channel-analytics-v2"
+    )
+    return jsonify({
+        "ok": True, "configured": configured,
+        "url": cfg.get("url") or "", "last_sync": cfg.get("last_sync") or "",
+        "schema_version": cfg.get("schema_version") or "",
+    })
+
+
+@app.route("/api/integration/v1/channel/submit", methods=["POST"])
+def api_channel_bot_submit():
+    """Authenticated Recruitment Bot submission using the shared service."""
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    result = channel_sheet_service.sync_lark_table(
+        db, lark_bitable, _lark_cfg(),
+        jobs=db.list_job_requests(only_open=False),
+        channels=channel_report.CHANNELS,
+        default_date=_kolkata_today().isoformat(),
+        synced_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+    return jsonify(result), 200 if result.get("ok") else 409
 
 
 @app.route("/api/lark/table", methods=["POST"])
