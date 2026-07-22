@@ -27,6 +27,22 @@ def main():
     workbook = sheet_io.build_pipeline_template_xlsx(
         original, "2026-07-22", "HR-01", [], signing_key=KEY)
 
+    # Every blank HR input row must retain a visible Job dropdown in both
+    # Microsoft Excel and WPS, including the common single-Open-job case.
+    dropdown_wb = load_workbook(io.BytesIO(workbook))
+    dropdown_ws = dropdown_wb[schema.PIPELINE_TABLE_NAME]
+    dropdown_headers = {cell.value: cell.column for cell in dropdown_ws[1]}
+    job_cell = dropdown_ws.cell(3, dropdown_headers["Job"])
+    job_validations = [
+        validation for validation in dropdown_ws.data_validations.dataValidation
+        if job_cell.coordinate in validation.cells
+    ]
+    assert len(job_validations) == 1
+    assert str(job_validations[0].formula1).startswith("=_nexus_choice_")
+    assert job_validations[0].showDropDown is False
+    assert job_cell.protection.locked is False
+    assert str(job_validations[0].formula1)[1:] in dropdown_wb.defined_names
+
     # A rename after download is safe because the signed catalog resolves by
     # stable job_ref, never by the current display title.
     renamed = [{"id": 1, "job_ref": "REQ-CSR", "title": "Customer Service Representative",
@@ -63,6 +79,8 @@ def main():
     assert "a.application_ref='APP-' || lpad(e.candidate_id::text,10,'0')" in sql
     html = Path("panel.html").read_text(encoding="utf-8")
     assert "Operational Job Requisitions" in html
+    assert "Advanced: link a Talent Discovery search profile" in html
+    assert "SEARCH_PROFILES.filter(p=>p.status==='open')" in html
     assert "正式配额" not in html[html.index('id="view-jobs"'):html.index('id="view-docs"')]
     print("Operational/Search Profile separation and application migration: PASSED")
     print("Frozen job catalog, rename compatibility, closure guard, row HMAC: PASSED")

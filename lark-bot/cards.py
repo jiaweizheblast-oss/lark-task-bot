@@ -331,7 +331,7 @@ def help_text():
 
 
 def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
-    """One clear Bot entry for the Channel Analytics daily workflow."""
+    """One clear, English-only Bot entry for Channel Analytics."""
     elements = []
     if configured and url:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
@@ -342,12 +342,12 @@ def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
             "tag": "button", "type": "primary",
             "text": {"tag": "plain_text", "content": "Open Channel Analytics Workspace"}, "url": url,
         }]})
-        if last_sync:
-            status_text = "Status snapshot — last submitted: " + last_sync
-        else:
-            status_text = "Status snapshot — no Lark submission recorded yet."
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
-            status_text + " This card does not update automatically; send /channel_sheet again to refresh."
+        status_text = (
+            "Last successful synchronization: " + last_sync
+            if last_sync else "No successful Lark synchronization has been recorded yet."
+        )
+        elements.append({"tag": "note", "elements": [{
+            "tag": "plain_text", "content": status_text,
         }]})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
@@ -366,23 +366,36 @@ def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
 
 
 def channel_sync_result_card(result):
-    """Render a safe summary after Bot-triggered Lark submission."""
+    """Render a formal English summary after a Lark submission."""
     ok = bool(result.get("ok"))
     if ok:
+        errors = [str(item) for item in (result.get("errors") or [])]
         content = (
-            "已同步到网站。\n"
-            f"- Pipeline 新增：{int(result.get('created') or 0)}\n"
-            f"- Pipeline 更新：{int(result.get('updated') or 0)}\n"
-            f"- 已应用渠道记录：{int(result.get('applied') or 0)}\n"
-            f"- 跳过空行：{int(result.get('skipped') or 0)}\n"
-            f"- 问题行：{len(result.get('errors') or [])}"
+            "Valid Lark rows were synchronized to the management website.\n"
+            f"- Candidate applications created: {int(result.get('created') or 0)}\n"
+            f"- Candidate applications updated: {int(result.get('updated') or 0)}\n"
+            f"- Unidentified batch rows applied: {int(result.get('applied') or 0)}\n"
+            f"- Blank rows skipped: {int(result.get('skipped') or 0)}\n"
+            f"- Rows requiring correction: {len(result.get('errors') or [])}"
         )
+        if errors:
+            content += "\n\nRows requiring correction:\n" + "\n".join(
+                "- " + item for item in errors[:5]
+            )
+            if len(errors) > 5:
+                content += "\n- Additional errors are available in Channel Analytics."
     else:
-        content = "没有写入。原因：" + str(result.get("error") or "同步失败")
+        content = "No data was imported. Reason: " + str(
+            result.get("error") or "Synchronization failed."
+        )
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": "green" if ok else "red", "title": {
-            "tag": "plain_text", "content": "渠道表已同步" if ok else "渠道表同步失败",
+            "tag": "plain_text",
+            "content": (
+                "Channel Analytics Synchronized"
+                if ok else "Channel Analytics Synchronization Failed"
+            ),
         }},
         "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
     }

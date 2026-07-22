@@ -107,9 +107,11 @@
   .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 13px;box-shadow:var(--shadow)}
   .kpi .n{font-size:21px;font-weight:750;font-variant-numeric:tabular-nums}
   .kpi .l{font-size:11.5px;color:var(--soft);margin-top:2px} .kpi .s{font-size:11px;margin-top:3px;color:var(--soft)}
-  .agrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px} @media(max-width:900px){.agrid{grid-template-columns:1fr}}
+  .agrid{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px}
   .acard{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:14px 16px}
-  .acard-h{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px} .acard-h b{font-size:14.5px}
+  .acard-h{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px} .acard-h b{font-size:14.5px}
+  .channel-chart-scroll{max-height:620px;overflow-y:auto;overflow-x:hidden;padding-right:4px}
+  #cChannelChartFrame{height:240px;min-height:240px;position:relative}
   .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px}
   .seg button{border:0;background:transparent;color:var(--soft);font-weight:600;padding:5px 11px;border-radius:7px;cursor:pointer;font-size:13px}
   .seg button.on{background:var(--accent);color:#fff}
@@ -372,12 +374,12 @@
 
       <div class="agrid">
         <div class="acard">
-          <div class="acard-h"><b>趋势</b><select id="cTrendChan" onchange="if(CANA)renderTrend(CANA)" style="padding:4px 8px;border:1px solid var(--lineS);border-radius:7px;background:var(--panel);font-size:12px;color:var(--ink)"><option value="">全部渠道</option></select></div>
-          <div style="height:210px;position:relative"><canvas id="cTrendChart"></canvas></div>
+          <div class="acard-h"><b>趋势</b><select id="cTrendChan" title="仅列出当前时间窗口内有招聘活动的渠道" onchange="if(CANA)renderTrend(CANA)" style="max-width:100%;padding:4px 8px;border:1px solid var(--lineS);border-radius:7px;background:var(--panel);font-size:12px;color:var(--ink)"><option value="">全部有招聘活动渠道（0）</option></select></div>
+          <div style="height:260px;position:relative"><canvas id="cTrendChart"></canvas></div>
         </div>
         <div class="acard">
-          <div class="acard-h"><b>渠道对比</b><span class="muted" style="padding:0">窗口累计</span></div>
-          <div style="height:210px;position:relative"><canvas id="cChannelChart"></canvas></div>
+          <div class="acard-h"><b>渠道对比</b><span class="muted" style="padding:0">窗口累计 · 招聘活动渠道按总量排序</span></div>
+          <div class="channel-chart-scroll"><div id="cChannelChartFrame"><canvas id="cChannelChart"></canvas></div></div>
         </div>
       </div>
 
@@ -771,9 +773,10 @@ async function loadAnalytics(){
   CANA=a;
   const _empty=!a.timeseries.length;const _eb=document.getElementById('cEmpty');if(_eb)_eb.classList.toggle('hide',!_empty);
   const _ts=document.getElementById('cTrendChan');
-  if(_ts){const prev=_ts.value;const chans=Object.keys(a.channel_series||{}).filter(k=>(a.channel_series[k]||[]).some(b=>b.new||b.passed||b.recommended||b.rejected));_ts.innerHTML='<option value="">全部渠道</option>'+chans.map(c=>`<option ${c===prev?'selected':''}>${esc(c)}</option>`).join('');}
+  if(_ts){const prev=_ts.value;const chans=Object.keys(a.channel_series||{}).filter(k=>(a.channel_series[k]||[]).some(b=>b.new||b.passed||b.recommended||b.rejected)).sort((x,y)=>x.localeCompare(y));_ts.innerHTML=`<option value="">全部有招聘活动渠道（${chans.length}）</option>`+chans.map(c=>`<option ${c===prev?'selected':''}>${esc(c)}</option>`).join('');}
   renderInsights(a);renderKpis(a);renderTrend(a);renderChannelChart(a);renderJobs(a);renderChannelTable(a);
-  document.getElementById('cChanWin').textContent=a.window.from+' ~ '+a.window.to+'（按'+({day:'日',week:'周',month:'月',year:'年'}[a.granularity]||a.granularity)+'）';
+  const _activeChannels=(a.channels||[]).filter(c=>c.new||c.passed||c.recommended||c.rejected||(Number(c.cost)||0)).length;
+  document.getElementById('cChanWin').textContent=a.window.from+' ~ '+a.window.to+'（按'+({day:'日',week:'周',month:'月',year:'年'}[a.granularity]||a.granularity)+'）· '+_activeChannels+' 个有数据渠道';
   const _lbl=document.getElementById('cRangeLbl');if(_lbl)_lbl.textContent=a.window.from+' ~ '+a.window.to;
 }
 function _delta(cur,prev,rate){
@@ -811,16 +814,21 @@ function renderTrend(a){
 function renderChannelChart(a){
   if(typeof Chart==='undefined'){noChart('cChannelChart','图表库未加载（检查网络/CDN）');return;}
   const th=_ctheme();
-  const rows=a.channels.filter(c=>c.new||c.passed||c.recommended||c.rejected);
+  const volume=c=>['new','passed','recommended','rejected'].reduce((n,k)=>n+(Number(c[k])||0),0);
+  const rows=a.channels.filter(c=>c.new||c.passed||c.recommended||c.rejected).sort((x,y)=>
+    (volume(y)-volume(x)) || String(x.channel||'').localeCompare(String(y.channel||'')));
   const L=rows.map(c=>c.channel);
+  const frame=document.getElementById('cChannelChartFrame');
+  if(frame)frame.style.height=Math.max(240,rows.length*48+70)+'px';
   if(cChan)cChan.destroy();
   cChan=new Chart(document.getElementById('cChannelChart'),{type:'bar',
     data:{labels:L,datasets:[
-      {label:'新增',data:rows.map(c=>c.new),backgroundColor:PAL.new},
-      {label:'初筛',data:rows.map(c=>c.passed),backgroundColor:PAL.passed},
-      {label:'推荐',data:rows.map(c=>c.recommended),backgroundColor:PAL.recommended}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{boxWidth:12,font:{size:11}}}},
-      scales:{y:{beginAtZero:true,ticks:{precision:0},grid:{color:th.grid}},x:{ticks:{font:{size:11}},grid:{display:false}}}}});
+      {label:'新增',data:rows.map(c=>c.new),backgroundColor:PAL.new,barThickness:10,maxBarThickness:12},
+      {label:'初筛',data:rows.map(c=>c.passed),backgroundColor:PAL.passed,barThickness:10,maxBarThickness:12},
+      {label:'推荐',data:rows.map(c=>c.recommended),backgroundColor:PAL.recommended,barThickness:10,maxBarThickness:12},
+      {label:'拒绝',data:rows.map(c=>c.rejected),backgroundColor:PAL.rejected,barThickness:10,maxBarThickness:12}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{boxWidth:12,font:{size:11}}}},
+      scales:{x:{beginAtZero:true,ticks:{precision:0},grid:{color:th.grid}},y:{ticks:{font:{size:11},autoSkip:false},grid:{display:false}}}}});
 }
 function renderJobs(a){
   if(!a.jobs.length){document.getElementById('cJobProgress').innerHTML='<div class="muted">暂无在招职位</div>';return;}
@@ -831,8 +839,10 @@ function renderJobs(a){
 }
 function renderChannelTable(a){
   const hc=a.has_cost;
+  const visible=(a.channels||[]).filter(c=>c.new||c.passed||c.recommended||c.rejected||(Number(c.cost)||0));
+  if(!visible.length){document.getElementById('cChannelTable').innerHTML='<div class="muted">当前筛选窗口没有渠道活动。</div>';return;}
   const head=`<th>渠道</th><th>新增</th><th>占比</th><th>初筛</th><th>转化率</th><th>推荐</th><th>推荐率</th><th>拒绝</th>`+(hc?`<th>成本</th><th>每份成本</th>`:``);
-  const body=a.channels.map(c=>`<tr><td class="name">${esc(c.channel)}</td><td>${c.new}</td><td>${cpct(c.share)}</td><td>${c.passed}</td><td><span class="rate ${rateClass(c.conversion)}">${cpct(c.conversion)}</span></td><td>${c.recommended}</td><td>${cpct(c.recommend_rate)}</td><td>${c.rejected}</td>`+(hc?`<td>${c.cost?('￥'+fmt(c.cost)):'—'}</td><td>${c.cost_per_resume!=null?('￥'+c.cost_per_resume):'—'}</td>`:``)+`</tr>`).join('');
+  const body=visible.map(c=>`<tr><td class="name">${esc(c.channel)}</td><td>${c.new}</td><td>${cpct(c.share)}</td><td>${c.passed}</td><td><span class="rate ${rateClass(c.conversion)}">${cpct(c.conversion)}</span></td><td>${c.recommended}</td><td>${cpct(c.recommend_rate)}</td><td>${c.rejected}</td>`+(hc?`<td>${c.cost?('￥'+fmt(c.cost)):'—'}</td><td>${c.cost_per_resume!=null?('￥'+c.cost_per_resume):'—'}</td>`:``)+`</tr>`).join('');
   document.getElementById('cChannelTable').innerHTML=`<table class="rtable"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 function renderInsights(a){
@@ -1194,13 +1204,13 @@ function renderJobsList(){
 }
 function jobActions(j){if(j.status==='closed')return'';const next=[];if(j.status==='draft'||j.status==='paused')next.push(['open','Open']);if(j.status==='open')next.push(['paused','Pause'],['closing','Start closing']);if(['draft','open','paused','closing'].includes(j.status))next.push(['closed','Close']);return next.map(x=>` · <span class="dact" onclick="setJobStatus(${j.id},'${x[0]}')">${x[1]}</span>`).join('');}
 function jobModal(j){
-  const profileOptions='<option value="">Not linked yet</option>'+SEARCH_PROFILES.map(p=>`<option value="${esc(p.core_job_ref||'')}" ${j&&j.search_profile_ref===p.core_job_ref?'selected':''}>${esc(p.title)} · ${esc([p.location,p.country].filter(Boolean).join(', '))}</option>`).join('');
+  const profileOptions='<option value="">Not linked — configure later if candidate search is needed</option>'+SEARCH_PROFILES.filter(p=>p.status==='open').map(p=>`<option value="${esc(p.core_job_ref||'')}" ${j&&j.search_profile_ref===p.core_job_ref?'selected':''}>${esc(p.title)} · ${esc([p.location,p.country].filter(Boolean).join(', ')||'No location configured')}</option>`).join('');
   document.getElementById('modalRoot').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>${j?'Edit Job Requisition':'Add Job Requisition'}</h3>`
     +`<div class="muted" style="text-align:left;padding:0 0 10px">CSR and Customer Support are separate requisitions. Use one row per real hiring need; related search titles belong in Talent Discovery search expansion, not as duplicate requisitions.</div>`
     +`<div class="field"><label>Job title *</label><input id="jmTitle" value="${j?esc(j.title):''}"></div>`
     +`<div class="row2"><div class="field"><label>Department</label><input id="jmDept" value="${j?esc(j.department||''):''}"></div><div class="field"><label>Owner</label><input id="jmOwner" value="${j?esc(j.owner||''):''}"></div></div>`
     +`<div class="row2"><div class="field"><label>Country</label><input id="jmCountry" value="${j?esc(j.country||''):''}"></div><div class="field"><label>Location / metro</label><input id="jmLocation" value="${j?esc(j.location||''):''}"></div></div>`
-    +`<div class="field"><label>Talent Discovery Search Profile (optional)</label><select id="jmProfile">${profileOptions}</select></div>`
+    +`<details class="field" ${j&&j.search_profile_ref?'open':''}><summary style="cursor:pointer;font-weight:700">Advanced: link a Talent Discovery search profile</summary><div class="muted" style="text-align:left;padding:7px 0">Optional. This selects the saved search criteria used by the Windows Talent Discovery worker. It does not change Channel Analytics, HR workflow, resume target, or headcount.</div><select id="jmProfile">${profileOptions}</select></details>`
     +`<div class="row2"><div class="field"><label>Resume target</label><input id="jmRes" type="number" min="0" value="${j?j.target_resume_count:0}"></div>`
     +`<div class="field"><label>Headcount target</label><input id="jmHead" type="number" min="0" value="${j?j.target_headcount:0}"></div></div>`
     +(j?'':`<div class="field"><label>Initial status</label><select id="jmStatus"><option value="draft">Draft (review first)</option><option value="open">Open now</option></select></div>`)

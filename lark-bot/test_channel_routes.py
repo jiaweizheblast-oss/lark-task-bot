@@ -99,6 +99,23 @@ def main():
     bot.db.transition_candidate_application = lambda ref, *args: store.transition(int(ref.split('-')[1]), *args)
     bot.db.list_candidate_application_stage_events = lambda app_id: []
 
+    workspace_card = bot.cards.channel_sheet_card(
+        "https://example.test/base", "https://example.test/panel",
+        configured=True, last_sync="2026-07-22T01:14:07+00:00",
+    )
+    workspace_text = str(workspace_card)
+    assert "Last successful synchronization" in workspace_text
+    assert "does not update automatically" not in workspace_text
+    result_card = bot.cards.channel_sync_result_card({
+        "ok": True, "created": 1, "updated": 2, "applied": 0,
+        "skipped": 29, "errors": ["fixture"],
+    })
+    result_text = str(result_card)
+    assert "Channel Analytics Synchronized" in result_text
+    assert "Candidate applications created" in result_text
+    assert "fixture" in result_text
+    assert "渠道表" not in result_text
+
     workbook = sheet_io.build_xlsx(
         sheet_io.pipeline_columns(["Sales"]),
         prefill_rows=[{
@@ -341,6 +358,15 @@ def main():
     panel = Path("panel.html").read_text(encoding="utf-8")
     assert "清理空白默认页签" not in panel
     assert "mcStageDate" not in panel
+    assert 'class="channel-chart-scroll"' in panel
+    assert 'id="cChannelChartFrame"' in panel
+    assert "indexAxis:'y'" in panel
+    assert "barThickness:10" in panel
+    assert "全部有招聘活动渠道" in panel
+    assert "{label:'拒绝',data:rows.map(c=>c.rejected)" in panel
+    assert "const visible=(a.channels||[]).filter" in panel
+    assert "个有数据渠道" in panel
+    assert "max-width:100%" in panel
 
     blocked_reset = client.post(
         "/api/lark/reconnect", headers={"X-Auth": bot.PANEL_PASSWORD},

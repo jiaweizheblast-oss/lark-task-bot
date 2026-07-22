@@ -27,6 +27,7 @@ from datetime import date
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill, Alignment, Protection
 from openpyxl.comments import Comment
@@ -267,9 +268,25 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
             for i, opt in enumerate(c["choices"], 1):
                 refs.cell(row=i, column=ref_col, value=opt)
             letter = get_column_letter(ref_col)
-            dv = DataValidation(type="list",
-                                formula1="_refs!$%s$1:$%s$%d" % (letter, letter, len(c["choices"])),
-                                allow_blank=True)
+            # WPS and some Excel versions do not reliably render a dropdown
+            # whose validation formula directly references a hidden sheet,
+            # especially when the list currently contains only one Open job.
+            # A workbook-level defined name is portable across Excel and WPS
+            # and keeps the source list hidden from HR.
+            list_name = "_nexus_choice_%d" % (ref_col,)
+            wb.defined_names.add(DefinedName(
+                list_name,
+                attr_text="'_refs'!$%s$1:$%s$%d" % (
+                    letter, letter, len(c["choices"]),
+                ),
+            ))
+            dv = DataValidation(
+                type="list", formula1="=" + list_name,
+                allow_blank=True, showDropDown=False,
+            )
+            dv.promptTitle = c["header"]
+            dv.prompt = "Select a value from the approved list."
+            dv.showInputMessage = True
             ws.add_data_validation(dv)
             dv_map[ci] = dv
             ref_col += 1

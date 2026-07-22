@@ -50,7 +50,7 @@ def _integer(value: Any) -> int:
         return 0
     number = int(float(text))
     if number < 0:
-        raise ValueError("数量不能为负数")
+        raise ValueError("Counts cannot be negative")
     return number
 
 
@@ -100,7 +100,7 @@ def import_channel_rows(database, parsed: Mapping[str, Any], *, owner: str = "")
             )
             applied += 1
         except Exception as error:
-            errors.append("入库失败（%s/%s）：%s" %
+            errors.append("Import failed (%s/%s): %s" %
                           (row.get("channel"), row.get("record_date"), error))
     return {"ok": True, "applied": applied, "imported": applied, "updated": 0,
             "skipped": int(parsed.get("skipped") or 0), "errors": errors}
@@ -117,9 +117,9 @@ def import_pipeline_rows(
             name, channel = _text(row.get("name")), _text(row.get("channel"))
             detail, stage = _text(row.get("source_detail")), _text(row.get("status")) or "New Lead"
             if not name or not channel or not row.get("job_request_id"):
-                raise ValueError("Candidate、Source Channel 和 Job 必填")
+                raise ValueError("Candidate, Source Channel, and Job are required")
             if channel == "Other" and not detail:
-                raise ValueError("选择 Other 时必须填写其他来源说明")
+                raise ValueError("Other Source Details is required when Source Channel is Other")
             if channel != "Other" and detail:
                 raise ValueError(
                     "Only rows with Source Channel = Other may contain Other Source Detail"
@@ -128,7 +128,7 @@ def import_pipeline_rows(
             # assigned at the first accepted import and never updated by HR.
             record_date = _text(default_date)[:10]
             if not _valid_date(record_date):
-                raise ValueError("系统 Entry Date 必须是 YYYY-MM-DD")
+                raise ValueError("The system Entry Date must use YYYY-MM-DD")
             candidate_id_text = _text(row.get("cand_id"))
             application = None
             if candidate_id_text.startswith("APP-") and hasattr(database, "get_candidate_application_by_ref"):
@@ -136,18 +136,18 @@ def import_pipeline_rows(
             existing = (database.get_candidate(int(candidate_id_text))
                         if candidate_id_text.isdigit() else None)
             if candidate_id_text and application is None and existing is None:
-                raise ValueError("System ID 不存在；拒绝按姓名猜测身份")
+                raise ValueError("System ID does not exist; identity will not be guessed from a name")
             row_ref = _text(row.get("row_ref"))
             if (not application and not existing and row_ref
                     and not hasattr(database, "create_candidate_application")):
                 existing = database.get_candidate_by_ext_ref(row_ref)
             if not application and not existing and not row_ref:
-                raise ValueError("新候选人缺少系统 Row Ref；请使用系统生成的表")
+                raise ValueError("A new candidate is missing Row Ref; use a system-generated workbook")
             created_now = application is None and existing is None
             if application:
                 application_ref = application["application_ref"]
                 if _text(application.get("name")) and name != _text(application.get("name")):
-                    raise ValueError("Candidate 是已有记录的系统身份字段，禁止修改")
+                    raise ValueError("Candidate is a protected identity field for an existing record")
                 database.update_candidate_application(
                     application_ref, channel=channel, source_detail=detail,
                     job_request_id=row.get("job_request_id"), note=_text(row.get("note")),
@@ -157,7 +157,7 @@ def import_pipeline_rows(
             elif existing:
                 candidate_id = existing["id"]
                 if _text(existing.get("name")) and name != _text(existing.get("name")):
-                    raise ValueError("Candidate 是已有记录的系统身份字段，禁止修改")
+                    raise ValueError("Candidate is a protected identity field for an existing record")
                 database.update_candidate(candidate_id,
                     channel=channel, source_detail=detail, job_request_id=row.get("job_request_id"),
                     note=_text(row.get("note")), filled_by=owner or _text(row.get("filled_by")))
@@ -200,7 +200,7 @@ def import_pipeline_rows(
                     database.transition_candidate_stage(candidate_id, stage, stage_date,
                         owner or _text(row.get("filled_by")), reason, _text(row.get("note")), event_ref)
         except Exception as error:
-            errors.append("Pipeline 第%d行：%s" % (index, error))
+            errors.append("Pipeline row %d: %s" % (index, error))
     return {"ok": True, "created": created, "imported": created, "updated": updated,
             "skipped": int(parsed.get("skipped") or 0), "errors": errors}
 
@@ -229,13 +229,13 @@ def import_lark_channel_records(
             continue
         date_value = _lark_date(_field(fields, "record_date", manual=True), default_date)
         if not _valid_date(date_value):
-            errors.append("Lark 第%d条：日期格式非法（应为 YYYY-MM-DD）" % index)
+            errors.append("Lark row %d: Date must use YYYY-MM-DD" % index)
             continue
         if channel not in channel_set:
-            errors.append("Lark 第%d条：渠道「%s」不在受控词表" % (index, channel))
+            errors.append("Lark row %d: Source Channel '%s' is not an approved option" % (index, channel))
             continue
         if channel == "Other" and not source_detail:
-            errors.append("Lark 第%d条：选择 Other 时必须填写其他来源说明" % index)
+            errors.append("Lark row %d: Other Source Details is required when Source Channel is Other" % index)
             continue
         if channel != "Other" and source_detail:
             errors.append(
@@ -245,7 +245,7 @@ def import_lark_channel_records(
             continue
         job_id = title_to_id.get(job_title)
         if not job_id:
-            errors.append("Lark 第%d条：职位「%s」不存在或已停用" % (index, job_title))
+            errors.append("Lark row %d: Job '%s' does not exist or is not Open" % (index, job_title))
             continue
         try:
             row = {
@@ -261,7 +261,7 @@ def import_lark_channel_records(
                 "note": _text(_field(fields, "note", manual=True)),
             }
         except (TypeError, ValueError) as error:
-            errors.append("Lark 第%d条：数量非法（%s）" % (index, error))
+            errors.append("Lark row %d: invalid count (%s)" % (index, error))
             continue
         rows.append(row)
     return import_channel_rows(
@@ -295,24 +295,24 @@ def import_lark_pipeline_records(
         entry_date = _text(default_date)[:10]
         reason = _text(_field(fields, "rejection_reason"))
         if not name:
-            errors.append("Pipeline 第%d条：Candidate 必填" % index); continue
+            errors.append("Pipeline row %d: Candidate is required" % index); continue
         if channel not in channel_set:
-            errors.append("Pipeline 第%d条：Source Channel 非法" % index); continue
+            errors.append("Pipeline row %d: Source Channel is not an approved option" % index); continue
         if channel == "Other" and not detail:
-            errors.append("Pipeline 第%d条：选择 Other 时必须填写其他来源说明" % index); continue
+            errors.append("Pipeline row %d: Other Source Details is required when Source Channel is Other" % index); continue
         if channel != "Other" and detail:
             errors.append(
                 "Pipeline row %d: Other Source Detail is allowed only when Source Channel = Other"
                 % index
             ); continue
         if not job_id:
-            errors.append("Pipeline 第%d条：Job 不存在或已停用" % index); continue
+            errors.append("Pipeline row %d: Job does not exist or is not Open" % index); continue
         if stage not in stage_set:
-            errors.append("Pipeline 第%d条：Current Stage 非法" % index); continue
+            errors.append("Pipeline row %d: Current Stage is not an approved option" % index); continue
         if not _valid_date(entry_date):
-            errors.append("Pipeline 第%d条：Entry Date 必须是 YYYY-MM-DD" % index); continue
+            errors.append("Pipeline row %d: Entry Date must use YYYY-MM-DD" % index); continue
         if stage == "Rejected" and not reason:
-            errors.append("Pipeline 第%d条：Rejected 必须填写 Rejection Reason" % index); continue
+            errors.append("Pipeline row %d: Rejection Reason is required when Current Stage is Rejected" % index); continue
         record_id = _text(record.get("record_id"))
         try:
             application = (database.get_candidate_application_by_lark(record_id)
@@ -325,7 +325,7 @@ def import_lark_pipeline_records(
                 application_ref = application["application_ref"]
                 candidate_id = application["candidate_id"]
                 if _text(application.get("name")) and name != _text(application.get("name")):
-                    raise ValueError("Candidate 是已有记录的系统身份字段，禁止修改")
+                    raise ValueError("Candidate is a protected identity field for an existing record")
                 database.update_candidate_application(
                     application_ref, channel=channel, source_detail=detail,
                     job_request_id=job_id, note=_text(_field(fields, "note")),
@@ -336,7 +336,7 @@ def import_lark_pipeline_records(
             elif existing:
                 candidate_id = existing["id"]
                 if _text(existing.get("name")) and name != _text(existing.get("name")):
-                    raise ValueError("Candidate 是已有记录的系统身份字段，禁止修改")
+                    raise ValueError("Candidate is a protected identity field for an existing record")
                 database.update_candidate(candidate_id,
                     channel=channel, source_detail=detail, job_request_id=job_id,
                     note=_text(_field(fields, "note")), filled_by=_text(_field(fields, "filled_by")),
@@ -381,7 +381,7 @@ def import_lark_pipeline_records(
                     database.transition_candidate_stage(candidate_id, stage, stage_date,
                         _text(_field(fields, "filled_by")), reason, _text(_field(fields, "note")), event_ref)
         except Exception as error:
-            errors.append("Pipeline 第%d条：%s" % (index, error))
+            errors.append("Pipeline row %d: %s" % (index, error))
     return {"ok": True, "created": created, "updated": updated, "skipped": skipped,
             "errors": errors, "_writebacks": writebacks}
 
@@ -402,7 +402,7 @@ def sync_lark_table(
     manual_table_id = _text(config.get("manual_table_id"))
     if (not app_token or not pipeline_table_id or not manual_table_id
             or config.get("schema_version") != "channel-analytics-v2"):
-        return {"ok": False, "error": "Lark Channel Analytics 尚未配置或仍是旧版表"}
+        return {"ok": False, "error": "Lark Channel Analytics is not configured or still uses an unsupported schema"}
     pipeline_response = lark_client.list_pipeline_records(app_token, pipeline_table_id)
     if not pipeline_response.get("ok"):
         return pipeline_response
@@ -438,7 +438,7 @@ def sync_lark_table(
         if response.get("ok"):
             writeback_count += 1
         else:
-            writeback_errors.append(response.get("error") or "System ID 回写失败")
+            writeback_errors.append(response.get("error") or "System identity writeback failed")
     manual_result = import_lark_channel_records(
         database, manual_response.get("records") or [], jobs=jobs,
         default_date=default_date, channels=channels)

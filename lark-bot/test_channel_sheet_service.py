@@ -162,7 +162,8 @@ def main():
         jobs=jobs, default_date="2026-07-21", channels=channels,
     )
     assert other_without_detail["applied"] == 0
-    assert any("其他来源说明" in error for error in other_without_detail["errors"])
+    assert any("Other Source Details is required" in error
+               for error in other_without_detail["errors"])
 
     detail_without_other = channel_sheet_service.import_lark_channel_records(
         database,
