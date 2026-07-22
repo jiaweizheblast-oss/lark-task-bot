@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class ContentType(StrEnum):
+    WEBSITE_ANNOUNCEMENT = "WEBSITE_ANNOUNCEMENT"
+    NEW_GAME = "NEW_GAME"
+    NEW_FEATURE = "NEW_FEATURE"
+    DAILY_EVENT = "DAILY_EVENT"
+    LUCKY_SPIN = "LUCKY_SPIN"
+    BANK_DELAY = "BANK_DELAY"
+    DEPOSIT_BONUS = "DEPOSIT_BONUS"
+    WELCOME_BONUS = "WELCOME_BONUS"
+    VIP_BONUS = "VIP_BONUS"
+    EMERGENCY_NOTICE = "EMERGENCY_NOTICE"
+    INDUSTRY_CONTENT = "INDUSTRY_CONTENT"
+
+
+class ContentStatus(StrEnum):
+    DRAFT = "DRAFT"
+    WAITING_REVIEW = "WAITING_REVIEW"
+    APPROVED = "APPROVED"
+    ARCHIVED = "ARCHIVED"
+
+
+class RecordStatus(StrEnum):
+    ENABLED = "ENABLED"
+    DISABLED = "DISABLED"
+
+
+class DestinationType(StrEnum):
+    CHANNEL = "CHANNEL"
+    GROUP = "GROUP"
+    TEST_CHANNEL = "TEST_CHANNEL"
+    TEST_GROUP = "TEST_GROUP"
+
+
+class CampaignStatus(StrEnum):
+    DRAFT = "DRAFT"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    APPROVED = "APPROVED"
+    SCHEDULED = "SCHEDULED"
+    SENDING = "SENDING"
+    PARTIALLY_SENT = "PARTIALLY_SENT"
+    SENT = "SENT"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+
+
+class PublishMode(StrEnum):
+    IMMEDIATE = "IMMEDIATE"
+    SCHEDULED = "SCHEDULED"
+    TEST = "TEST"
+
+
+class DeliveryStatus(StrEnum):
+    PENDING = "PENDING"
+    SENDING = "SENDING"
+    SENT = "SENT"
+    RETRYING = "RETRYING"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class ButtonType(StrEnum):
+    CLAIM_NOW = "CLAIM_NOW"
+    CUSTOMER_SERVICE = "CUSTOMER_SERVICE"
+    MORE_PROMOTIONS = "MORE_PROMOTIONS"
+    PLAY_NOW = "PLAY_NOW"
+    VIEW_DETAILS = "VIEW_DETAILS"
+    SPIN_NOW = "SPIN_NOW"
+
+
+class IntegrationEventStatus(StrEnum):
+    RECEIVED = "RECEIVED"
+    PROCESSED = "PROCESSED"
+    REJECTED = "REJECTED"

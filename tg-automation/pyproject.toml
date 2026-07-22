@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nexus-tg-automation"
+version = "0.1.0"
+description = "NEXUS-controlled Telegram publishing, bot engagement, and campaign analytics service."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.18.5,<2",
+  "fastapi>=0.139.2,<1",
+  "pydantic-settings>=2.14.2,<3",
+  "python-multipart>=0.0.20,<1",
+  "python-telegram-bot>=22.8,<23",
+  "sqlalchemy>=2.0.46,<3",
+  "tzdata>=2025.2,<2027",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<0.29",
+  "pytest>=9.1,<10",
+  "pytest-asyncio>=1.4,<2",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+tg-api = "apps.api.main:run"
+tg-bot = "apps.bot.main:main"
+tg-worker-once = "apps.worker.main:main"
+tg-worker = "apps.worker.main:main_forever"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tg_automation", "apps"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]
