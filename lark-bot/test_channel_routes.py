@@ -58,6 +58,7 @@ def main():
     bot.NEXUS_INTEGRATION_SIGNING_KEY = workbook_key
     bot._kolkata_today = lambda: date(2026, 7, 21)
     bot.db.list_job_requests = lambda only_open=False: jobs
+    bot.db.list_lark_referenced_job_request_ids = lambda: []
     bot.db.list_candidates_active = lambda: []
     bot.db.list_candidate_applications_active = lambda: []
     bot.db.get_settings = lambda: store.settings
@@ -148,10 +149,19 @@ def main():
         "skipped": 29, "errors": ["fixture"],
     })
     result_text = str(result_card)
-    assert "Channel Analytics Synchronized" in result_text
+    assert "Channel Analytics Needs Correction" in result_text
+    assert "Valid rows were applied; problem rows were left unchanged" in result_text
     assert "Candidate applications created" in result_text
     assert "fixture" in result_text
     assert "渠道表" not in result_text
+
+    all_rejected_card = bot.cards.channel_sync_result_card({
+        "ok": True, "created": 0, "updated": 0, "applied": 0,
+        "skipped": 0, "errors": ["Pipeline row 1: protected job"],
+    })
+    all_rejected_text = str(all_rejected_card)
+    assert "No rows were applied" in all_rejected_text
+    assert "Pipeline row 1: protected job" in all_rejected_text
 
     workbook = sheet_io.build_xlsx(
         sheet_io.pipeline_columns(["Sales"]),
@@ -394,6 +404,8 @@ def main():
                        headers={"X-Auth": bot.PANEL_PASSWORD}).status_code == 404
 
     panel = Path("panel.html").read_text(encoding="utf-8")
+    assert "Applications: '+CANDS.length" in panel
+    assert "One row is one candidate × job application" in panel
     assert "清理空白默认页签" not in panel
     assert "mcStageDate" not in panel
     assert 'class="channel-chart-scroll"' in panel

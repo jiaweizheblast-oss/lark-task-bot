@@ -369,9 +369,23 @@ def channel_sync_result_card(result):
     """Render a formal English summary after a Lark submission."""
     ok = bool(result.get("ok"))
     if ok:
-        errors = [str(item) for item in (result.get("errors") or [])]
+        errors = [
+            " ".join(str(item).split())[:240]
+            for item in (result.get("errors") or [])
+            if str(item).strip()
+        ]
+        changed_count = sum(
+            int(result.get(key) or 0)
+            for key in ("created", "updated", "applied")
+        )
+        if errors and changed_count == 0:
+            opening = "No rows were applied. Correct the rows below and submit again."
+        elif errors:
+            opening = "Valid rows were applied; problem rows were left unchanged."
+        else:
+            opening = "All valid Lark changes were synchronized to the management website."
         content = (
-            "Valid Lark rows were synchronized to the management website.\n"
+            opening + "\n"
             f"- Candidate applications created: {int(result.get('created') or 0)}\n"
             f"- Candidate applications updated: {int(result.get('updated') or 0)}\n"
             f"- Unidentified batch rows applied: {int(result.get('applied') or 0)}\n"
@@ -390,9 +404,13 @@ def channel_sync_result_card(result):
         )
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "green" if ok else "red", "title": {
+        "header": {"template": (
+            "orange" if ok and result.get("errors") else "green" if ok else "red"
+        ), "title": {
             "tag": "plain_text",
             "content": (
+                "Channel Analytics Needs Correction"
+                if ok and result.get("errors") else
                 "Channel Analytics Synchronized"
                 if ok else "Channel Analytics Synchronization Failed"
             ),

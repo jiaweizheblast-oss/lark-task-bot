@@ -1921,7 +1921,20 @@ def _lark_cfg():
 def _ensure_lark_channel_schema(cfg=None):
     """Run the one-time, idempotent Base repair before any operational use."""
     cfg = cfg or _lark_cfg()
-    jobs = db.list_job_requests(only_open=True)
+    open_jobs = db.list_job_requests(only_open=True)
+    referenced_job_ids = set(
+        db.list_lark_referenced_job_request_ids()
+        if hasattr(db, "list_lark_referenced_job_request_ids") else ()
+    )
+    historical_jobs = [
+        job for job in db.list_job_requests(only_open=False)
+        if job.get("id") in referenced_job_ids
+    ]
+    # Open jobs are valid for new rows. Historical jobs appear only because an
+    # existing persistent Lark row is bound to them; the application service
+    # still rejects using a non-Open job for a new candidate.
+    jobs_by_id = {job.get("id"): job for job in (*open_jobs, *historical_jobs)}
+    jobs = list(jobs_by_id.values())
     job_titles = [job["title"] for job in jobs]
     catalog_sha = hashlib.sha256(json.dumps(
         [{"job_ref": job.get("job_ref"), "title": job.get("title"),

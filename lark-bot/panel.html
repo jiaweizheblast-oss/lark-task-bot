@@ -397,7 +397,7 @@
 
       <div class="acard" style="margin-bottom:14px">
         <div class="acard-h">
-          <div><b>Candidate Pipeline</b><div class="muted" style="padding:2px 0 0;font-size:12px">所有来源平级；这里只跟进招聘阶段，不修改 Talent Discovery 的联系任务。</div></div>
+          <div><b>Candidate Pipeline</b><div class="muted" style="padding:2px 0 0;font-size:12px">One row is one candidate × job application. This workflow does not modify Talent Discovery contact tasks.</div></div>
           <span style="display:flex;gap:8px;align-items:center"><span class="muted" id="candCount" style="padding:0"></span><button class="btn ghost sm" onclick="newCandidate()">＋ 添加外部候选人</button><button class="btn ghost sm" onclick="loadCandidates()">🔄</button></span>
         </div>
         <div id="candTabs" style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px"></div>
@@ -934,7 +934,7 @@ function renderCandidates(){
   const cnt=k=>CANDS.filter(c=>_CBUCKET[k](c.status||'New Lead')).length;
   const tabsEl=document.getElementById('candTabs');
   if(tabsEl)tabsEl.innerHTML=['Active','New','Completed','All'].map(k=>`<button onclick="setCandFilter('${k}')" style="padding:4px 12px;border-radius:999px;border:1px solid var(--line);background:${k===CANDFILTER?'var(--accent)':'var(--panel)'};color:${k===CANDFILTER?'#fff':'var(--ink)'};font-size:12.5px;font-weight:600;cursor:pointer">${k} <span style="opacity:.75">${cnt(k)}</span></button>`).join('');
-  const cc=document.getElementById('candCount');if(cc)cc.textContent=CANDS.length?('共 '+CANDS.length+' 人'):'';
+  const cc=document.getElementById('candCount');if(cc)cc.textContent=CANDS.length?('Applications: '+CANDS.length):'';
   const rows=CANDS.filter(c=>_CBUCKET[CANDFILTER](c.status||'New Lead'));
   if(!rows.length){box.innerHTML='<div class="muted">这个阶段暂时没有候选人。</div>';return;}
   const jobName=id=>{const j=(CMETA.jobs||[]).find(x=>x.id===id);return j?j.title:'—';};

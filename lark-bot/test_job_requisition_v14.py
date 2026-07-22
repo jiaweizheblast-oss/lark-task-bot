@@ -161,6 +161,10 @@ def main():
     db_source = Path("db.py").read_text(encoding="utf-8")
     assert "SELECT pg_advisory_xact_lock(%s)" in db_source
     assert "job_request_id IS NOT DISTINCT FROM %s" in db_source
+    assert "list_lark_referenced_job_request_ids" in db_source
+    bot_source = Path("bot.py").read_text(encoding="utf-8")
+    assert "referenced_job_ids" in bot_source
+    assert "historical_jobs" in bot_source
     nexus_db._validate_application_stage_change("New Lead", "Interview 1")
     nexus_db._validate_application_stage_change("On Hold", "HR Screening")
     for current_stage, next_stage in (

@@ -950,6 +950,24 @@ def list_candidate_applications_active():
         return cur.fetchall()
 
 
+def list_lark_referenced_job_request_ids():
+    """Return only requisitions referenced by persistent Lark application rows.
+
+    These IDs keep a historical value available in the Lark Job dropdown so an
+    accidentally edited existing row can be restored.  They do not authorize a
+    new application against a closed requisition.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT job_request_id
+               FROM candidate_application
+               WHERE lark_record_id IS NOT NULL
+                 AND btrim(lark_record_id) <> ''
+                 AND job_request_id IS NOT NULL"""
+        )
+        return [int(row[0]) for row in cur.fetchall()]
+
+
 def get_candidate_application_by_ref(application_ref):
     if not str(application_ref or "").strip():
         return None
