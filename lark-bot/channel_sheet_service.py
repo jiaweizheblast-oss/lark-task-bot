@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import unicodedata
 from typing import Any, Mapping, Sequence
 
 import channel_pipeline_schema as pipeline_schema
@@ -18,13 +19,20 @@ INDIA_TIMEZONE = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 
 def _job_title_map(jobs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    mapping = {}
+    candidates = {}
     for job in jobs:
         for title in (job.get("title"), *(job.get("title_aliases") or [])):
-            key = _text(title)
+            key = _job_title_key(title)
             if key:
-                mapping[key] = job.get("id")
-    return mapping
+                candidates.setdefault(key, set()).add(job.get("id"))
+    # A display title must resolve to exactly one stable requisition.  Keeping
+    # ambiguous titles out of the map makes the importer fail closed instead
+    # of silently attributing a row to whichever job happened to be last.
+    return {
+        key: next(iter(job_ids))
+        for key, job_ids in candidates.items()
+        if len(job_ids) == 1
+    }
 
 
 def _records_fingerprint(records: Sequence[Mapping[str, Any]]) -> str:
@@ -42,6 +50,12 @@ def _records_fingerprint(records: Sequence[Mapping[str, Any]]) -> str:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _job_title_key(value: Any) -> str:
+    """Normalize a human-visible requisition title for catalog lookup only."""
+    normalized = unicodedata.normalize("NFKC", _text(value))
+    return " ".join(normalized.split()).casefold()
 
 
 def _integer(value: Any) -> int:
@@ -289,7 +303,7 @@ def import_lark_channel_records(
                 % index
             )
             continue
-        job_id = title_to_id.get(job_title)
+        job_id = title_to_id.get(_job_title_key(job_title))
         if not job_id:
             errors.append("Lark row %d: Job '%s' does not exist or is not Open" % (index, job_title))
             continue
@@ -325,8 +339,13 @@ def import_lark_pipeline_records(
     title_to_ids = {}
     for job in jobs:
         for title in (job.get("title"), *(job.get("title_aliases") or [])):
-            if _text(title):
-                title_to_ids.setdefault(_text(title), []).append(job.get("id"))
+            key = _job_title_key(title)
+            if key:
+                # A rename stores both the old and current title as aliases.
+                # The current title can therefore occur more than once for the
+                # same job; deduplicate by stable job ID before deciding
+                # whether a title is ambiguous.
+                title_to_ids.setdefault(key, set()).add(job.get("id"))
     channel_set, stage_set = set(channels), set(stages)
     created = updated = skipped = 0
     errors = []
@@ -347,13 +366,13 @@ def import_lark_pipeline_records(
         existing = (None if application else database.get_candidate_by_lark(record_id))
         if application:
             job_id = application.get("job_request_id")
-            signed_job_ids = title_to_ids.get(job_title) or []
+            signed_job_ids = title_to_ids.get(_job_title_key(job_title)) or set()
             if job_id not in signed_job_ids:
                 errors.append("Pipeline row %d: Job is protected for an existing application" % index)
                 continue
         else:
             open_ids = [
-                job_id for job_id in (title_to_ids.get(job_title) or [])
+                job_id for job_id in (title_to_ids.get(_job_title_key(job_title)) or set())
                 if _text((jobs_by_id.get(job_id) or {}).get("status") or "open").casefold() == "open"
             ]
             job_id = open_ids[0] if len(open_ids) == 1 else None

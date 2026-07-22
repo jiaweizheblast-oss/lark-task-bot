@@ -192,6 +192,37 @@ def main():
     assert any("only when Source Channel = Other" in error
                for error in pipeline_detail_without_other["errors"])
 
+    # Editing a requisition title stores both its old and current labels as
+    # aliases.  Repeating the current title for the same stable job ID is not
+    # an ambiguous match and must not reject a valid Open requisition.
+    renamed_database = FakeDatabase()
+    renamed_job = [{
+        "id": 17,
+        "title": "Customer Service Representative",
+        "title_aliases": [
+            "Customer Service REPRESENTATIVE",
+            "Customer Service Representative",
+        ],
+        "status": "open",
+    }]
+    renamed_result = channel_sheet_service.import_lark_pipeline_records(
+        renamed_database,
+        [{"record_id": "renamed-job-row", "fields": {
+            "Candidate": "Valid Candidate",
+            "Source Channel": "Company Careers",
+            pipeline_schema.OTHER_SOURCE_DETAIL: "",
+            "Job": "  CUSTOMER   SERVICE REPRESENTATIVE  ",
+            "Current Stage": "Contacted / Awaiting Reply",
+            "HR Owner": "HR-01",
+        }}],
+        jobs=renamed_job, channels=channels,
+        stages=channel_report.PIPELINE_STATUS,
+        default_date="2026-07-22",
+    )
+    assert renamed_result["created"] == 1, renamed_result
+    assert not renamed_result["errors"], renamed_result
+    assert renamed_database.candidates[1]["job_request_id"] == 17
+
     legacy = channel_sheet_service.sync_lark_table(
         database, lark, {"app_token": "old", "manual_table_id": "old"},
         jobs=jobs, channels=channels, default_date="2026-07-21", synced_at="now",
