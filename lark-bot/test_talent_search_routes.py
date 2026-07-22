@@ -55,6 +55,13 @@ def main():
     )
     bot.db.heartbeat_talent_search_task = lambda *args: True
     bot.db.get_talent_search_task = lambda task_id: stored.get(task_id)
+    retry_calls = []
+    def retry_failed(task_id):
+        retry_calls.append(task_id)
+        stored[task_id]["status"] = "pending"
+        stored[task_id]["last_error_code"] = None
+        return stored[task_id]
+    bot.db.retry_failed_talent_search_task = retry_failed
     def complete(*args):
         result = args[3]
         task_id = args[0]
@@ -178,6 +185,24 @@ def main():
         "status": "reset", "reset": True, "task_count": 1,
     }
     assert reset_calls == ["22222222-2222-4222-8222-222222222222"]
+
+    stored[task["task_id"]]["status"] = "failed"
+    stored[task["task_id"]]["last_error_code"] = "workspace_not_clean"
+    retry_url = f"/api/talent/search-tasks/{task['task_id']}/retry"
+    assert client.post(retry_url).status_code == 401
+    assert client.post(
+        retry_url,
+        json={"confirm": "wrong"},
+        headers={"X-Auth": PANEL_PASSWORD},
+    ).status_code == 422
+    retried = client.post(
+        retry_url,
+        json={"confirm": "RETRY_FAILED"},
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert retried.status_code == 200
+    assert retried.get_json()["status"] == "pending"
+    assert retry_calls == [task["task_id"]]
 
     unsafe = dict(result)
     unsafe["database_changed"] = True

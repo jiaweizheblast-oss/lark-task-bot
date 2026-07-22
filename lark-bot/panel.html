@@ -571,6 +571,15 @@ async function queueTalentPreview(){
   try{const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();if(!response.ok){msg.textContent='任务被拒绝：'+(body.error||'unknown');return;}msg.textContent='已开始。系统将在搜索成功后自动生成今日招聘表，无需再次点击发布。';loadTalentTasks();}catch(e){msg.textContent='搜索队列暂不可用。';}
 }
 async function retryTalentPublish(taskId){try{const r=await api('/api/talent/search-tasks/'+encodeURIComponent(taskId)+'/publish',{method:'POST'}),j=await r.json();if(!r.ok)throw new Error(j.detail||j.error||'Publication failed');toast(`✅ 已将今日 ${j.cohort_count||''} 个职位 cohort 排入本地 Worker；Railway 未写数据库或 Lark`);await Promise.all([loadTalentTasks(),loadChannelTab()]);}catch(e){toast('✗ '+e.message,false);}}
+async function retryFailedTalentSearch(taskId){
+  if(!confirm('Retry this exact failed search task? The job and HR allocation will not change.'))return;
+  try{
+    const r=await api('/api/talent/search-tasks/'+encodeURIComponent(taskId)+'/retry',{method:'POST',body:JSON.stringify({confirm:'RETRY_FAILED'})}),j=await r.json();
+    if(!r.ok)throw new Error(j.detail||j.error||'Retry failed');
+    toast('Failed search requeued with the same job and HR allocation.');
+    await loadTalentTasks();
+  }catch(e){toast(e.message,true);}
+}
 async function resetTalentPublication(publicationId){
   if(!publicationId)return;
   if(!confirm('Cancel this unpublished recruiting table run? Frozen search results will be retained, but this run will not be published.'))return;
@@ -595,13 +604,14 @@ async function loadTalentTasks(){
       const job=TALENT_OPER_JOBS.find(j=>j.job_ref===p.operational_job_ref);
       const split=(p.hr_allocations||[]).map(x=>x.name+' '+x.count).join(' · ');
       const ready=r.selected_contacts??r.contact_ready??0;
-      const search=t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting');
+      const retry=(t.status==='failed'||(t.status==='pending'&&Number(t.attempt_count||0)>=3))?` <button class="btn ghost sm" onclick="retryFailedTalentSearch('${esc(t.task_id)}')">Retry same search</button>`:'';
+      const search=(t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting'))+retry;
       const ps=t.publication_status||'not_ready';
       const label=ps==='ready'?'Ready（将纳入今日统一表）':ps==='queued'?'等待本地 Worker':ps==='publishing'?'本地 Worker 正在导入并发布':ps==='failed'?'发布失败':ps;
       let publicationCell=esc(label);
       if(ps==='published')publicationCell=`<a href="${esc(pub.spreadsheet_url||'#')}" target="_blank" rel="noopener">Open Recruiting ${esc(pub.business_date||'')}</a>`;
       else if(['queued','publishing','failed'].includes(ps)&&pub.publication_id)publicationCell=`${esc(label)} <button class="btn ghost sm" onclick="resetTalentPublication('${esc(pub.publication_id)}')">取消本次发布</button>`;
-      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td>${esc(search)}</td><td>${publicationCell}</td></tr>`;
+      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td>${search}</td><td>${publicationCell}</td></tr>`;
     }).join('');
     root.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">完成搜索后只发布一次；卡住或不需要的未发布任务可以立即取消，不再等待租约。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>招聘职位</th><th>配额</th><th>HR 分配</th><th>搜索</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
   }catch(e){root.innerHTML='<div class="muted">搜索队列暂不可用。</div>';}

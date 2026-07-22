@@ -659,6 +659,39 @@ def get_talent_search_task(task_id):
         return cur.fetchone()
 
 
+def retry_failed_talent_search_task(task_id):
+    """Requeue the exact immutable command after its failure is repaired."""
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT * FROM talent_search_task WHERE task_id=%s FOR UPDATE",
+            (task_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Search task was not found")
+        if row["status"] != "failed" and not (
+            row["status"] == "pending" and int(row["attempt_count"] or 0) >= 3
+        ):
+            raise ValueError("Only a failed or exhausted search task can be retried")
+        if row["expires_at"] <= datetime.datetime.now(datetime.timezone.utc):
+            raise ValueError("Search task has expired; create a new search")
+        cur.execute(
+            """UPDATE talent_search_task
+               SET status='pending', attempt_count=0,
+                   worker_id=NULL, lease_token_sha256=NULL,
+                   claimed_at=NULL, lease_expires_at=NULL,
+                   last_error_code=NULL, result=NULL, result_sha256=NULL,
+                   publication_status='not_ready', publication='{}'::jsonb,
+                   published_at=NULL, updated_at=now()
+               WHERE task_id=%s
+               RETURNING *""",
+            (task_id,),
+        )
+        return cur.fetchone()
+
+
 def claim_talent_search_task(worker_id, lease_seconds):
     conn = get_conn()
     conn.autocommit = False
@@ -681,6 +714,16 @@ def claim_talent_search_task(worker_id, lease_seconds):
                        updated_at=now()
                    WHERE status='claimed' AND lease_expires_at < now()
                      AND attempt_count >= 3"""
+            )
+            # Older workers could leave an exhausted command in pending,
+            # which made it permanently invisible to both claim and retry.
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET status='failed', last_error_code='attempts_exhausted',
+                       worker_id=NULL, lease_token_sha256=NULL,
+                       claimed_at=NULL, lease_expires_at=NULL,
+                       updated_at=now()
+                   WHERE status='pending' AND attempt_count >= 3"""
             )
             cur.execute(
                 """UPDATE talent_search_task

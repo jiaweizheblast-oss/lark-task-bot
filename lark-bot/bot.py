@@ -702,6 +702,26 @@ def api_talent_search_task_list():
     })
 
 
+@app.route("/api/talent/search-tasks/<task_id>/retry", methods=["POST"])
+def api_talent_search_task_retry(task_id):
+    """Manager-only retry of the exact same immutable failed command."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if (request.get_json(silent=True) or {}) != {"confirm": "RETRY_FAILED"}:
+        return jsonify({"error": "retry_confirmation_required"}), 422
+    try:
+        row = db.retry_failed_talent_search_task(task_id)
+    except ValueError as exc:
+        return jsonify({
+            "error": "search_retry_rejected",
+            "detail": str(exc),
+        }), 409
+    except Exception as exc:
+        print("[talent_search_retry] unavailable:", type(exc).__name__)
+        return jsonify({"error": "search_retry_unavailable"}), 503
+    return jsonify({"status": "pending", "task": _search_task_json(row)})
+
+
 @app.route("/api/talent/search-tasks/<task_id>/publish", methods=["POST"])
 def api_talent_search_task_publish(task_id):
     """Manager approval queues local apply/publish; Railway never writes Lark."""
