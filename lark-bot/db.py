@@ -311,42 +311,152 @@ def clear_draft(admin_open_id):
 
 # ---------------- 招聘渠道日报模块 ----------------
 
-def list_job_requests(only_open=True):
+OPERATIONAL_JOB_STATUSES = ("draft", "open", "paused", "closing", "closed")
+
+
+def list_job_requests(only_open=True, include_search_profiles=False):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        where = []
+        params = []
+        if not include_search_profiles:
+            where.append("record_type='operational'")
         if only_open:
-            cur.execute("SELECT * FROM job_requests WHERE status='open' ORDER BY id")
-        else:
-            cur.execute("SELECT * FROM job_requests ORDER BY id")
+            where.append("status='open'")
+        sql = """SELECT j.*, COALESCE((SELECT array_agg(a.title ORDER BY a.created_at)
+                  FROM job_request_title_alias a WHERE a.job_request_id=j.id),
+                  ARRAY[]::text[]) AS title_aliases FROM job_requests j"""
+        if where:
+            sql += " WHERE " + " AND ".join("j." + item for item in where)
+        sql += " ORDER BY CASE j.status WHEN 'open' THEN 0 WHEN 'paused' THEN 1 WHEN 'draft' THEN 2 WHEN 'closing' THEN 3 ELSE 4 END, j.id"
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def list_search_profiles():
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM job_requests WHERE record_type='search_profile' ORDER BY id")
         return cur.fetchall()
 
 
 def seed_job_requests():
     """首次为空时给几个示例职位，方便直接试。已有职位则跳过。"""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM job_requests LIMIT 1")
+        cur.execute("SELECT 1 FROM job_requests WHERE record_type='operational' LIMIT 1")
         if cur.fetchone():
             return
-        cur.execute("""INSERT INTO job_requests (title, target_headcount, target_resume_count)
-                       VALUES ('后端工程师',5,300),('产品经理',3,250),('HRBP',2,150)""")
+        # Production should start empty.  Real requisitions are created
+        # explicitly by a manager and never seeded from search profiles.
 
 
-def create_job_request(title, target_headcount=0, target_resume_count=0, owner=""):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""INSERT INTO job_requests (title, target_headcount, target_resume_count, owner)
-                       VALUES (%s,%s,%s,%s) RETURNING id""",
-                    (title, target_headcount, target_resume_count, owner))
-        return cur.fetchone()[0]
+def create_job_request(title, target_headcount=0, target_resume_count=0, owner="",
+                       country="", location="", department="", status="draft",
+                       search_profile_ref=None):
+    status = str(status or "draft").strip().casefold()
+    if status not in OPERATIONAL_JOB_STATUSES:
+        raise ValueError("invalid job lifecycle status")
+    job_ref = "REQ-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d") + "-" + secrets.token_hex(4).upper()
+    conn = get_conn(); conn.autocommit = False
+    try:
+      with conn.cursor() as cur:
+        cur.execute("""INSERT INTO job_requests
+                       (job_ref,record_type,title,target_headcount,target_resume_count,
+                        owner,country,location,department,status,search_profile_ref)
+                       VALUES (%s,'operational',%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (job_ref, title, target_headcount, target_resume_count, owner,
+                     country, location, department, status, search_profile_ref or None))
+        job_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO job_request_title_alias(job_request_id,title) VALUES(%s,%s) ON CONFLICT DO NOTHING",
+                    (job_id, title))
+      conn.commit(); return job_id
+    except Exception:
+      conn.rollback(); raise
+    finally:
+      conn.close()
 
 
 def update_job_request(jid, **fields):
-    allowed = {"title", "target_headcount", "target_resume_count", "status", "owner"}
+    allowed = {"title", "target_headcount", "target_resume_count", "status", "owner",
+               "country", "location", "department", "close_reason"}
+    allowed.add("search_profile_ref")
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
-    cols = ", ".join(f"{k}=%s" for k in sets)
-    vals = list(sets.values()) + [jid]
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+      with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM job_requests WHERE id=%s FOR UPDATE", (jid,))
+        current = cur.fetchone()
+        if not current:
+            raise ValueError("job not found")
+        if current.get("record_type") != "operational":
+            raise ValueError("search profiles are read-only in Job Reqs")
+        requested_status = sets.get("status", current.get("status"))
+        if requested_status not in OPERATIONAL_JOB_STATUSES:
+            raise ValueError("invalid job lifecycle status")
+        transitions = {
+            "draft": {"draft", "open", "closed"},
+            "open": {"open", "paused", "closing", "closed"},
+            "paused": {"paused", "open", "closing", "closed"},
+            "closing": {"closing", "closed"},
+            "closed": {"closed"},
+        }
+        if requested_status not in transitions.get(current.get("status"), set()):
+            raise ValueError("invalid job lifecycle transition")
+        definition_keys = {"title", "country", "location", "department", "search_profile_ref"}
+        operations_keys = {"owner", "target_headcount", "target_resume_count"}
+        changed_definition = any(k in sets and sets[k] != current.get(k) for k in definition_keys)
+        changed_operations = any(k in sets and sets[k] != current.get(k) for k in operations_keys)
+        catalog_changed = changed_definition or requested_status != current.get("status")
+        sets["definition_revision"] = int(current.get("definition_revision") or 1) + (1 if changed_definition else 0)
+        sets["operations_revision"] = int(current.get("operations_revision") or 1) + (1 if changed_operations else 0)
+        sets["catalog_revision"] = int(current.get("catalog_revision") or 1) + (1 if catalog_changed else 0)
+        sets["record_version"] = int(current.get("record_version") or 1) + 1
+        if requested_status == "closed" and current.get("status") != "closed":
+            sets["closed_at"] = datetime.datetime.now(datetime.timezone.utc)
+        if "title" in sets and sets["title"] != current.get("title"):
+            cur.execute(
+                """INSERT INTO job_request_title_alias(job_request_id,title)
+                   VALUES(%s,%s),(%s,%s) ON CONFLICT DO NOTHING""",
+                (jid, current.get("title"), jid, sets["title"]),
+            )
+        cols = ", ".join(f"{k}=%s" for k in sets)
+        vals = list(sets.values()) + [jid]
+        cur.execute(f"UPDATE job_requests SET {cols}, updated_at=now() WHERE id=%s", vals)
+      conn.commit()
+    except Exception:
+      conn.rollback()
+      raise
+    finally:
+      conn.close()
+
+
+def operational_job_catalog(statuses=("open",)):
+    statuses = tuple(statuses or ())
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """SELECT id,job_ref,title,status,country,location,department,
+                      catalog_revision,record_version
+               FROM job_requests
+               WHERE record_type='operational' AND status = ANY(%s)
+               ORDER BY title,job_ref""",
+            (list(statuses),),
+        )
+        return cur.fetchall()
+
+
+def operational_title_conflict(title, exclude_id=None):
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(f"UPDATE job_requests SET {cols} WHERE id=%s", vals)
+        cur.execute(
+            """SELECT 1 FROM job_requests
+               WHERE record_type='operational'
+                 AND lower(btrim(title))=lower(btrim(%s))
+                 AND status <> 'closed'
+                 AND (%s IS NULL OR id <> %s)
+               LIMIT 1""",
+            (title, exclude_id, exclude_id),
+        )
+        return cur.fetchone() is not None
 
 
 def store_talent_snapshot(envelope):
@@ -387,18 +497,23 @@ def store_talent_snapshot(envelope):
                 local_status = "open" if core_status in {"active", "open"} else "closed"
                 cur.execute(
                     """INSERT INTO job_requests
-                       (title, target_headcount, target_resume_count, status, owner,
-                        core_job_ref, core_requested_contact_count)
-                       VALUES (%s,0,0,%s,'',%s,%s)
+                       (job_ref,record_type,title,target_headcount,target_resume_count,
+                        status,owner,core_job_ref,core_requested_contact_count,definition_sha256)
+                       VALUES (%s,'search_profile',%s,0,0,%s,'',%s,%s,%s)
                        ON CONFLICT (core_job_ref) WHERE core_job_ref IS NOT NULL DO UPDATE SET
                          title=EXCLUDED.title,
                          core_requested_contact_count=EXCLUDED.core_requested_contact_count,
-                         status=EXCLUDED.status""",
+                         status=EXCLUDED.status,
+                         definition_sha256=EXCLUDED.definition_sha256,
+                         record_type='search_profile',
+                         updated_at=now()""",
                     (
+                        "SEARCH-" + str(job["core_job_ref"]).replace("-", ""),
                         str(job.get("title") or "Untitled"),
                         local_status,
                         job["core_job_ref"],
                         int(job.get("requested_contact_count") or 0),
+                        str(job.get("definition_sha256") or ""),
                     ),
                 )
         conn.commit()
@@ -729,28 +844,26 @@ def upsert_channel_record(record_date, channel, job_request_id, filled_by,
 
 # ================= Nexus：候选人级招聘跟踪（每行一个候选人；渠道/漏斗/速度由此派生） =================
 def list_candidates(day=None, limit=500):
-    """候选人列表（带职位名）。给定 day 只看当天进入的，否则最近 limit 条。"""
+    """Application list with candidate identity and requisition context."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        sql = """SELECT a.id,a.application_ref,a.candidate_id,c.name,
+                        a.entry_date AS apply_date,a.channel,a.source_detail,
+                        a.job_request_id,a.current_stage AS status,a.note,
+                        a.hr_owner AS filled_by,a.source,a.external_ref AS ext_ref,
+                        a.lark_record_id,a.record_version,a.created_at,a.updated_at,
+                        j.title AS job_title,e.effective_date AS stage_date,e.rejection_reason
+                 FROM candidate_application a
+                 JOIN candidate c ON c.id=a.candidate_id
+                 LEFT JOIN job_requests j ON j.id=a.job_request_id
+                 LEFT JOIN LATERAL (
+                   SELECT effective_date,rejection_reason
+                   FROM candidate_application_stage_event
+                   WHERE application_id=a.id ORDER BY created_at DESC,id DESC LIMIT 1
+                 ) e ON true"""
         if day:
-            cur.execute("""SELECT c.*, j.title AS job_title,
-                                  e.effective_date AS stage_date, e.rejection_reason
-                           FROM candidate c
-                           LEFT JOIN job_requests j ON j.id = c.job_request_id
-                           LEFT JOIN LATERAL (
-                             SELECT effective_date,rejection_reason FROM candidate_stage_event
-                             WHERE candidate_id=c.id ORDER BY created_at DESC,id DESC LIMIT 1
-                           ) e ON true
-                           WHERE c.apply_date=%s ORDER BY c.id DESC""", (day,))
+            cur.execute(sql + " WHERE a.entry_date=%s ORDER BY a.id DESC", (day,))
         else:
-            cur.execute("""SELECT c.*, j.title AS job_title,
-                                  e.effective_date AS stage_date, e.rejection_reason
-                           FROM candidate c
-                           LEFT JOIN job_requests j ON j.id = c.job_request_id
-                           LEFT JOIN LATERAL (
-                             SELECT effective_date,rejection_reason FROM candidate_stage_event
-                             WHERE candidate_id=c.id ORDER BY created_at DESC,id DESC LIMIT 1
-                           ) e ON true
-                           ORDER BY c.apply_date DESC, c.id DESC LIMIT %s""", (limit,))
+            cur.execute(sql + " ORDER BY a.entry_date DESC,a.id DESC LIMIT %s", (limit,))
         return cur.fetchall()
 
 
@@ -770,26 +883,187 @@ def list_candidates_active():
         return cur.fetchall()
 
 
+def list_candidate_applications_active():
+    """HR work queue: one row per candidate×requisition application."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT a.application_ref,a.id AS application_id,
+                              a.candidate_id,c.name,a.entry_date AS apply_date,
+                              a.channel,a.source_detail,a.job_request_id,
+                              a.current_stage AS status,a.note,a.hr_owner AS filled_by,
+                              a.external_ref AS ext_ref,a.lark_record_id,a.record_version,
+                              j.title AS job_title,
+                              e.effective_date AS stage_date,e.rejection_reason
+                       FROM candidate_application a
+                       JOIN candidate c ON c.id=a.candidate_id
+                       LEFT JOIN job_requests j ON j.id=a.job_request_id
+                       LEFT JOIN LATERAL (
+                         SELECT effective_date,rejection_reason
+                         FROM candidate_application_stage_event
+                         WHERE application_id=a.id ORDER BY created_at DESC,id DESC LIMIT 1
+                       ) e ON true
+                       WHERE a.current_stage NOT IN ('Hired','Rejected','Withdrawn','已录用','已拒绝')
+                       ORDER BY a.entry_date DESC,a.id DESC""")
+        return cur.fetchall()
+
+
+def get_candidate_application_by_ref(application_ref):
+    if not str(application_ref or "").strip():
+        return None
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT a.*,c.name FROM candidate_application a
+                       JOIN candidate c ON c.id=a.candidate_id
+                       WHERE a.application_ref=%s""", (application_ref,))
+        return cur.fetchone()
+
+
+def get_candidate_application(application_id):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT a.*,c.name FROM candidate_application a
+                       JOIN candidate c ON c.id=a.candidate_id WHERE a.id=%s""",
+                    (application_id,))
+        return cur.fetchone()
+
+
+def get_candidate_application_by_lark(record_id):
+    if not str(record_id or "").strip():
+        return None
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT a.*,c.name FROM candidate_application a
+                       JOIN candidate c ON c.id=a.candidate_id
+                       WHERE a.lark_record_id=%s LIMIT 1""", (record_id,))
+        return cur.fetchone()
+
+
+def create_candidate_application(entry_date, name, channel, job_request_id,
+                                 note="", hr_owner="", source="manual",
+                                 external_ref="", lark_record_id="",
+                                 source_detail=""):
+    """Create a person and application without name-based identity guessing.
+
+    A trusted external_ref may reuse a person; the workflow remains a distinct
+    candidate_application for each requisition.
+    """
+    conn = get_conn(); conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            candidate_id = None
+            if str(external_ref or "").strip():
+                cur.execute("SELECT id FROM candidate WHERE ext_ref=%s LIMIT 1 FOR UPDATE",
+                            (external_ref,))
+                row = cur.fetchone(); candidate_id = row["id"] if row else None
+            if candidate_id is None:
+                cur.execute("""INSERT INTO candidate
+                    (apply_date,name,channel,source_detail,job_request_id,status,note,
+                     filled_by,source,ext_ref,lark_record_id)
+                    VALUES(%s,%s,%s,%s,%s,'New Lead',%s,%s,%s,%s,%s) RETURNING id""",
+                    (entry_date,name,channel,source_detail,job_request_id,note,
+                     hr_owner,source,external_ref,lark_record_id))
+                candidate_id = cur.fetchone()["id"]
+            cur.execute("""SELECT * FROM candidate_application
+                           WHERE candidate_id=%s AND job_request_id=%s FOR UPDATE""",
+                        (candidate_id,job_request_id))
+            existing = cur.fetchone()
+            if existing:
+                conn.commit(); return existing, False
+            application_ref = "APP-" + secrets.token_hex(8).upper()
+            cur.execute("""INSERT INTO candidate_application
+                (application_ref,candidate_id,job_request_id,entry_date,channel,
+                 source_detail,current_stage,note,hr_owner,source,external_ref,
+                 lark_record_id,record_version)
+                VALUES(%s,%s,%s,%s,%s,%s,'New Lead',%s,%s,%s,%s,%s,1)
+                RETURNING *""",
+                (application_ref,candidate_id,job_request_id,entry_date,channel,
+                 source_detail,note,hr_owner,source,external_ref,lark_record_id))
+            application = cur.fetchone()
+        conn.commit(); return application, True
+    except Exception:
+        conn.rollback(); raise
+    finally:
+        conn.close()
+
+
+def update_candidate_application(application_ref, **fields):
+    allowed = {"channel","source_detail","job_request_id","note","hr_owner",
+               "source","external_ref","lark_record_id"}
+    sets = {key:value for key,value in fields.items() if key in allowed}
+    if not sets:
+        return
+    cols = ",".join(f"{key}=%s" for key in sets)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"""UPDATE candidate_application SET {cols},
+                     record_version=record_version+1,updated_at=now()
+                     WHERE application_ref=%s""",
+                    list(sets.values()) + [application_ref])
+        if cur.rowcount != 1:
+            raise ValueError("application not found")
+
+
+def transition_candidate_application(application_ref, to_stage, effective_date,
+                                     changed_by="", rejection_reason="", note="",
+                                     event_ref=""):
+    ref = str(event_ref or "").strip() or secrets.token_urlsafe(18)
+    conn = get_conn(); conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM candidate_application WHERE application_ref=%s FOR UPDATE",
+                        (application_ref,))
+            current = cur.fetchone()
+            if not current:
+                raise ValueError("application not found")
+            cur.execute("""INSERT INTO candidate_application_stage_event
+                (application_id,from_stage,to_stage,effective_date,rejection_reason,
+                 note,changed_by,event_ref)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(event_ref) DO NOTHING RETURNING id""",
+                (current["id"],current.get("current_stage") or "",to_stage,
+                 effective_date,rejection_reason,note,changed_by,ref))
+            inserted = cur.fetchone()
+            if inserted:
+                cur.execute("""UPDATE candidate_application SET current_stage=%s,
+                            record_version=record_version+1,updated_at=now() WHERE id=%s""",
+                            (to_stage,current["id"]))
+                # Keep the legacy projection coherent only for its original job.
+                cur.execute("""UPDATE candidate SET status=%s,updated_at=now()
+                               WHERE id=%s AND job_request_id IS NOT DISTINCT FROM %s""",
+                            (to_stage,current["candidate_id"],current["job_request_id"]))
+        conn.commit()
+        return {"event_ref":ref,"idempotent":inserted is None,
+                "from_stage":current.get("current_stage") or "","to_stage":to_stage}
+    except Exception:
+        conn.rollback(); raise
+    finally:
+        conn.close()
+
+
+def list_candidate_application_stage_events(application_id):
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT * FROM candidate_application_stage_event
+                       WHERE application_id=%s ORDER BY created_at,id""",
+                    (application_id,))
+        return cur.fetchall()
+
+
 def list_candidates_range(dfrom, dto):
     """[dfrom,dto] 内候选人（apply_date 取别名 record_date，直接喂 candidates_to_daily→analytics）。"""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""SELECT id, apply_date AS record_date, channel, job_request_id, status
-                       FROM candidate WHERE apply_date BETWEEN %s AND %s
-                       ORDER BY apply_date""", (dfrom, dto))
+        cur.execute("""SELECT id,entry_date AS record_date,channel,job_request_id,
+                              current_stage AS status
+                       FROM candidate_application WHERE entry_date BETWEEN %s AND %s
+                       ORDER BY entry_date""", (dfrom, dto))
         return cur.fetchall()
 
 
 def earliest_candidate_date():
     """最早候选人进入日（无数据返回 None）；用于推断上线日默认值。"""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT MIN(apply_date) FROM candidate")
+        cur.execute("SELECT MIN(entry_date) FROM candidate_application")
         return cur.fetchone()[0]
 
 
 def candidate_data_days():
     """所有有候选人的日期（ISO 字符串列表），供日历标注。"""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT apply_date FROM candidate ORDER BY 1")
+        cur.execute("SELECT DISTINCT entry_date FROM candidate_application ORDER BY 1")
         return [r[0].isoformat() for r in cur.fetchall()]
 
 
@@ -802,12 +1076,30 @@ def get_candidate(cid):
 def create_candidate(apply_date, name, channel, job_request_id=None,
                      status="New Lead", note="", filled_by="", source="手动", ext_ref="",
                      lark_record_id="", source_detail=""):
-    with get_conn() as conn, conn.cursor() as cur:
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+      with conn.cursor() as cur:
         cur.execute("""INSERT INTO candidate
             (apply_date, name, channel, source_detail, job_request_id, status, note, filled_by, source, ext_ref, lark_record_id)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
             (apply_date, name, channel, source_detail, job_request_id, status, note, filled_by, source, ext_ref, lark_record_id))
-        return cur.fetchone()[0]
+        candidate_id = cur.fetchone()[0]
+        cur.execute("""INSERT INTO candidate_application
+            (application_ref,candidate_id,job_request_id,entry_date,channel,
+             source_detail,current_stage,note,hr_owner,source,external_ref,
+             lark_record_id,record_version)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)""",
+            ("APP-" + secrets.token_hex(8).upper(), candidate_id, job_request_id,
+             apply_date, channel, source_detail, status, note, filled_by, source,
+             ext_ref, lark_record_id))
+      conn.commit()
+      return candidate_id
+    except Exception:
+      conn.rollback()
+      raise
+    finally:
+      conn.close()
 
 
 def get_candidate_by_lark(record_id):
@@ -847,8 +1139,33 @@ def update_candidate(cid, **fields):
         return
     cols = ", ".join(f"{k}=%s" for k in sets)
     vals = list(sets.values()) + [cid]
-    with get_conn() as conn, conn.cursor() as cur:
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+      with conn.cursor() as cur:
         cur.execute(f"UPDATE candidate SET {cols}, updated_at=now() WHERE id=%s", vals)
+        app_map = {
+            "apply_date": "entry_date", "channel": "channel",
+            "source_detail": "source_detail", "job_request_id": "job_request_id",
+            "status": "current_stage", "note": "note", "filled_by": "hr_owner",
+            "source": "source", "ext_ref": "external_ref",
+            "lark_record_id": "lark_record_id",
+        }
+        app_sets = {app_map[k]: v for k, v in sets.items() if k in app_map}
+        if app_sets:
+            app_cols = ", ".join(f"{k}=%s" for k in app_sets)
+            cur.execute(
+                f"""UPDATE candidate_application SET {app_cols},
+                    record_version=record_version+1,updated_at=now()
+                    WHERE candidate_id=%s AND application_ref='APP-' || lpad(candidate_id::text,10,'0')""",
+                list(app_sets.values()) + [cid],
+            )
+      conn.commit()
+    except Exception:
+      conn.rollback()
+      raise
+    finally:
+      conn.close()
 
 
 def delete_candidate(cid):
@@ -908,6 +1225,29 @@ def transition_candidate_stage(candidate_id, to_stage, effective_date, changed_b
             if inserted:
                 cur.execute("UPDATE candidate SET status=%s,updated_at=now() WHERE id=%s",
                             (to_stage, candidate_id))
+                cur.execute(
+                    """SELECT id,current_stage FROM candidate_application
+                       WHERE candidate_id=%s ORDER BY id LIMIT 1 FOR UPDATE""",
+                    (candidate_id,),
+                )
+                application = cur.fetchone()
+                if application:
+                    cur.execute(
+                        """INSERT INTO candidate_application_stage_event
+                           (application_id,from_stage,to_stage,effective_date,
+                            rejection_reason,note,changed_by,event_ref)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                           ON CONFLICT (event_ref) DO NOTHING""",
+                        (application["id"], application.get("current_stage") or "",
+                         to_stage, effective_date, rejection_reason, note,
+                         changed_by, "APP-" + ref),
+                    )
+                    cur.execute(
+                        """UPDATE candidate_application
+                           SET current_stage=%s,record_version=record_version+1,
+                               updated_at=now() WHERE id=%s""",
+                        (to_stage, application["id"]),
+                    )
         conn.commit()
         return {"event_ref": ref, "idempotent": inserted is None,
                 "from_stage": current.get("status") or "", "to_stage": to_stage}

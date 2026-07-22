@@ -6,7 +6,7 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v13"
+SCHEMA_VERSION = "channel-pipeline-v14"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
@@ -84,6 +84,10 @@ PIPELINE_COLUMNS = (
     },
     {
         "key": "row_ref", "header": "Row Ref", "kind": "text",
+        "aliases": (), "system": True, "hidden": True, "surfaces": ("xlsx",),
+    },
+    {
+        "key": "row_token", "header": "System Row Token", "kind": "text",
         "aliases": (), "system": True, "hidden": True, "surfaces": ("xlsx",),
     },
 )

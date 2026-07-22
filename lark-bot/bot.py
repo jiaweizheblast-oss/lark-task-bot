@@ -11,6 +11,7 @@
 """
 import os
 import json
+import hashlib
 import time
 import secrets
 import hmac
@@ -1115,7 +1116,9 @@ def api_channel_meta():
     jobs = db.list_job_requests(only_open=True)
     return jsonify({
         "channels": channel_report.CHANNELS,
-        "jobs": [{"id": j["id"], "title": j["title"], "target_headcount": j["target_headcount"]} for j in jobs],
+        "jobs": [{"id": j["id"], "job_ref": j.get("job_ref"), "title": j["title"],
+                  "target_headcount": j["target_headcount"],
+                  "catalog_revision": j.get("catalog_revision", 1)} for j in jobs],
         "roster": _channel_roster(),
         "today": _kolkata_today().isoformat(),
         "timezone": "Asia/Kolkata",
@@ -1180,22 +1183,42 @@ def api_candidate_create():
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
     jid = d.get("job_request_id")
     jid = int(jid) if str(jid or "").strip().isdigit() else None
-    if jid is not None and not db.get_job_request(jid):
+    job = db.get_job_request(jid) if jid is not None else None
+    if jid is not None and not job:
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
+    if job and (job.get("record_type", "operational") != "operational" or job.get("status", "open") != "open"):
+        return jsonify({"error": "只能为正在招聘的实际职位新增候选人"}), 409
     rd = _kolkata_today().isoformat()
     stage_date = rd
-    cid = db.create_candidate(
-        rd, (d.get("name") or "").strip(), d["channel"], jid,
-        "New Lead", (d.get("note") or "").strip(),
-        (d.get("filled_by") or "").strip(), d.get("source") or "手动",
-        (d.get("ext_ref") or "").strip(), "", (d.get("source_detail") or "").strip())
+    application_ref = ""
+    if hasattr(db, "create_candidate_application"):
+        application, _ = db.create_candidate_application(
+            rd, (d.get("name") or "").strip(), d["channel"], jid,
+            (d.get("note") or "").strip(), (d.get("filled_by") or "").strip(),
+            d.get("source") or "manual", (d.get("ext_ref") or "").strip(), "",
+            (d.get("source_detail") or "").strip())
+        cid = application["id"]
+        application_ref = application["application_ref"]
+    else:
+        cid = db.create_candidate(
+            rd, (d.get("name") or "").strip(), d["channel"], jid,
+            "New Lead", (d.get("note") or "").strip(),
+            (d.get("filled_by") or "").strip(), d.get("source") or "手动",
+            (d.get("ext_ref") or "").strip(), "", (d.get("source_detail") or "").strip())
     requested_stage = d.get("status") or "New Lead"
     # Every candidate receives an initial immutable stage event. Stage Started On is
     # system-owned and never accepted from website/Lark/Excel HR input.
-    db.transition_candidate_stage(
-        cid, requested_stage, stage_date, (d.get("filled_by") or "").strip(),
-        (d.get("rejection_reason") or "").strip(), (d.get("note") or "").strip(),
-        (d.get("event_ref") or "").strip())
+    if application_ref:
+        db.transition_candidate_application(
+            application_ref, requested_stage, stage_date,
+            (d.get("filled_by") or "").strip(),
+            (d.get("rejection_reason") or "").strip(), (d.get("note") or "").strip(),
+            (d.get("event_ref") or "").strip())
+    else:
+        db.transition_candidate_stage(
+            cid, requested_stage, stage_date, (d.get("filled_by") or "").strip(),
+            (d.get("rejection_reason") or "").strip(), (d.get("note") or "").strip(),
+            (d.get("event_ref") or "").strip())
     return jsonify({"ok": True, "id": cid, "warnings": warnings})
 
 
@@ -1203,7 +1226,8 @@ def api_candidate_create():
 def api_candidate_update(cid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    existing = db.get_candidate(cid)
+    application = db.get_candidate_application(cid) if hasattr(db, "get_candidate_application") else None
+    existing = application or db.get_candidate(cid)
     if not existing:
         return jsonify({"error": "候选人不存在"}), 404
     d = request.get_json(silent=True) or {}
@@ -1212,29 +1236,42 @@ def api_candidate_update(cid):
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
     jid = d.get("job_request_id")
     jid = int(jid) if str(jid or "").strip().isdigit() else None
-    if jid is not None and not db.get_job_request(jid):
+    job = db.get_job_request(jid) if jid is not None else None
+    if jid is not None and not job:
         return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
+    if jid != existing.get("job_request_id") and job and (
+        job.get("record_type", "operational") != "operational" or job.get("status", "open") != "open"
+    ):
+        return jsonify({"error": "新关联只能选择正在招聘的实际职位"}), 409
     submitted_name = (d.get("name") or "").strip()
     if submitted_name != (existing.get("name") or "").strip():
         return jsonify({"error": "Candidate 是系统身份字段，已有候选人名称不可修改"}), 422
-    fields = dict(
-        channel=d["channel"], job_request_id=jid,
-        source_detail=(d.get("source_detail") or "").strip(), note=(d.get("note") or "").strip(),
-        filled_by=(d.get("filled_by") or "").strip())
+    fields = dict(channel=d["channel"], job_request_id=jid,
+        source_detail=(d.get("source_detail") or "").strip(), note=(d.get("note") or "").strip())
+    fields["hr_owner" if application else "filled_by"] = (d.get("filled_by") or "").strip()
     if d.get("source"):
         fields["source"] = d["source"]
     if d.get("ext_ref") is not None:
-        fields["ext_ref"] = (d.get("ext_ref") or "").strip()
+        fields["external_ref" if application else "ext_ref"] = (d.get("ext_ref") or "").strip()
     stage_date = _kolkata_today().isoformat()
-    db.update_candidate(cid, **fields)
+    if application:
+        db.update_candidate_application(application["application_ref"], **fields)
+    else:
+        db.update_candidate(cid, **fields)
     transition = None
     requested_stage = d.get("status") or "New Lead"
-    if requested_stage != (existing.get("status") or "New Lead"):
-        transition = db.transition_candidate_stage(
-            cid, requested_stage,
-            stage_date,
-            (d.get("filled_by") or "").strip(), (d.get("rejection_reason") or "").strip(),
-            (d.get("note") or "").strip(), (d.get("event_ref") or "").strip())
+    existing_stage = existing.get("current_stage") if application else existing.get("status")
+    if requested_stage != (existing_stage or "New Lead"):
+        if application:
+            transition = db.transition_candidate_application(
+                application["application_ref"], requested_stage, stage_date,
+                (d.get("filled_by") or "").strip(), (d.get("rejection_reason") or "").strip(),
+                (d.get("note") or "").strip(), (d.get("event_ref") or "").strip())
+        else:
+            transition = db.transition_candidate_stage(
+                cid, requested_stage, stage_date,
+                (d.get("filled_by") or "").strip(), (d.get("rejection_reason") or "").strip(),
+                (d.get("note") or "").strip(), (d.get("event_ref") or "").strip())
     return jsonify({"ok": True, "warnings": warnings, "transition": transition})
 
 
@@ -1242,6 +1279,9 @@ def api_candidate_update(cid):
 def api_candidate_stage_events(cid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    application = db.get_candidate_application(cid) if hasattr(db, "get_candidate_application") else None
+    if application:
+        return jsonify([_cand_json(row) for row in db.list_candidate_application_stage_events(cid)])
     if not db.get_candidate(cid):
         return jsonify({"error": "候选人不存在"}), 404
     return jsonify([_cand_json(row) for row in db.list_candidate_stage_events(cid)])
@@ -1251,8 +1291,9 @@ def api_candidate_stage_events(cid):
 def api_candidate_delete(cid):
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    db.delete_candidate(cid)
-    return jsonify({"ok": True})
+    return jsonify({
+        "error": "Candidate history is immutable. Close or withdraw an application instead of deleting the person."
+    }), 409
 
 
 def _job_json(j):
@@ -1269,6 +1310,14 @@ def api_channel_list_jobs():
     return jsonify([_job_json(j) for j in db.list_job_requests(only_open=False)])
 
 
+@app.route("/api/talent/search-profiles", methods=["GET"])
+def api_talent_search_profiles():
+    """Manager-only read model. Search profiles never enter Job Reqs selectors."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify([_job_json(j) for j in db.list_search_profiles()])
+
+
 @app.route("/api/channel/jobs", methods=["POST"])
 def api_channel_add_job():
     if not _panel_auth():
@@ -1277,8 +1326,28 @@ def api_channel_add_job():
     title = (d.get("title") or "").strip()
     if not title:
         return jsonify({"error": "职位名必填"}), 400
-    jid = db.create_job_request(title, int(d.get("target_headcount") or 0),
-                                int(d.get("target_resume_count") or 0), (d.get("owner") or "").strip())
+    if db.operational_title_conflict(title):
+        return jsonify({"error": "已有同名未关闭职位；请使用更明确的职位名称或先完成关闭流程"}), 409
+    target_headcount = int(d.get("target_headcount") or 0)
+    target_resume_count = int(d.get("target_resume_count") or 0)
+    if target_headcount < 0 or target_resume_count < 0:
+        return jsonify({"error": "目标人数和目标简历量不能为负数"}), 400
+    status = str(d.get("status") or "draft").strip().casefold()
+    profile_ref = (d.get("search_profile_ref") or "").strip() or None
+    if profile_ref and not db.get_job_request_by_core_ref(profile_ref):
+        return jsonify({"error": "关联的 Talent Discovery Search Profile 不存在"}), 422
+    try:
+        jid = db.create_job_request(
+            title, target_headcount, target_resume_count,
+            (d.get("owner") or "").strip(),
+            (d.get("country") or "").strip(),
+            (d.get("location") or "").strip(),
+            (d.get("department") or "").strip(),
+            status,
+            profile_ref,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True, "id": jid})
 
 
@@ -1290,27 +1359,38 @@ def api_channel_update_job(jid):
     if not existing:
         return jsonify({"error": "职位不存在"}), 404
     d = request.get_json(silent=True) or {}
-    if existing.get("core_job_ref") and any(
-        key in d for key in ("title", "status")
-    ):
+    if existing.get("record_type") != "operational":
         return jsonify({
-            "error": "核心职位的名称和状态由 Talent Discovery 同步，不能在 Nexus 修改"
+            "error": "搜索配置只读；请在 Talent Discovery 修改，不能当作实际招聘职位编辑"
         }), 409
     fields = {}
     if "title" in d:
         t = (d.get("title") or "").strip()
         if not t:
             return jsonify({"error": "职位名不能为空"}), 400
+        if db.operational_title_conflict(t, jid):
+            return jsonify({"error": "已有同名未关闭职位"}), 409
         fields["title"] = t
     if "owner" in d:
         fields["owner"] = (d.get("owner") or "").strip()
+    for key in ("country", "location", "department", "close_reason"):
+        if key in d:
+            fields[key] = (d.get(key) or "").strip()
+    if "search_profile_ref" in d:
+        profile_ref = (d.get("search_profile_ref") or "").strip() or None
+        if profile_ref and not db.get_job_request_by_core_ref(profile_ref):
+            return jsonify({"error": "关联的 Talent Discovery Search Profile 不存在"}), 422
+        fields["search_profile_ref"] = profile_ref
     if "target_headcount" in d:
         fields["target_headcount"] = int(d.get("target_headcount") or 0)
     if "target_resume_count" in d:
         fields["target_resume_count"] = int(d.get("target_resume_count") or 0)
-    if "status" in d and d.get("status") in ("open", "closed"):
+    if "status" in d and d.get("status") in db.OPERATIONAL_JOB_STATUSES:
         fields["status"] = d["status"]
-    db.update_job_request(jid, **fields)
+    try:
+        db.update_job_request(jid, **fields)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
     return jsonify({"ok": True})
 
 
@@ -1703,7 +1783,7 @@ def api_channel_template():
     jobs = db.list_job_requests(only_open=True)
     try:
         data = sheet_io.build_pipeline_template_xlsx(
-            jobs, day, by, db.list_candidates_active(),
+            jobs, day, by, db.list_candidate_applications_active(),
             signing_key=NEXUS_INTEGRATION_SIGNING_KEY,
         )
     except ValueError as exc:
@@ -1763,7 +1843,14 @@ def _ensure_lark_channel_schema(cfg=None):
     cfg = cfg or _lark_cfg()
     jobs = db.list_job_requests(only_open=True)
     job_titles = [job["title"] for job in jobs]
-    if db.get_settings().get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION:
+    catalog_sha = hashlib.sha256(json.dumps(
+        [{"job_ref": job.get("job_ref"), "title": job.get("title"),
+          "catalog_revision": job.get("catalog_revision", 1)} for job in jobs],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    settings = db.get_settings()
+    if (settings.get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION
+            and settings.get("lark_channel_catalog_sha") == catalog_sha):
         verified = lark_bitable.verify_channel_base_schema(
             cfg.get("app_token"), cfg.get("pipeline_table_id"), cfg.get("manual_table_id"),
             job_titles=job_titles, channels=channel_report.CHANNELS,
@@ -1812,6 +1899,7 @@ def _ensure_lark_channel_schema(cfg=None):
         result["discarded_test_rows"] = test_cleanup
     if result.get("ok"):
         db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
+        db.set_setting("lark_channel_catalog_sha", catalog_sha)
     return result
 
 

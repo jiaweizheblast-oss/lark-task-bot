@@ -137,6 +137,49 @@ CREATE TABLE IF NOT EXISTS job_requests (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- v14: operational requisitions are deliberately separate from Talent
+-- Discovery search profiles.  Existing core mirrors are retained as
+-- search_profile records so no history is lost, but they are excluded from
+-- operational job selectors and Channel Analytics.
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS job_ref TEXT;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS core_job_ref TEXT;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS core_requested_contact_count INTEGER;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS record_type TEXT NOT NULL DEFAULT 'operational';
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS location TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS department TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS search_profile_ref TEXT;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS definition_revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS definition_sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS operations_revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS catalog_revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS record_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS close_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ALTER TABLE job_requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+UPDATE job_requests
+SET record_type='search_profile'
+WHERE core_job_ref IS NOT NULL AND record_type <> 'search_profile';
+UPDATE job_requests
+SET job_ref = CASE
+  WHEN core_job_ref IS NOT NULL THEN 'SEARCH-' || replace(core_job_ref::text, '-', '')
+  ELSE 'REQ-' || to_char(created_at AT TIME ZONE 'UTC', 'YYYYMMDD') || '-' || lpad(id::text, 6, '0')
+END
+WHERE job_ref IS NULL OR btrim(job_ref)='';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_requests_job_ref ON job_requests(job_ref);
+CREATE INDEX IF NOT EXISTS idx_job_requests_operational
+    ON job_requests(record_type, status, id);
+CREATE TABLE IF NOT EXISTS job_request_title_alias (
+    job_request_id INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE RESTRICT,
+    title TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(job_request_id, title)
+);
+INSERT INTO job_request_title_alias(job_request_id,title)
+SELECT id,title FROM job_requests
+ON CONFLICT DO NOTHING;
+
 -- 人工渠道汇总表（manual_unidentified 空间）：只放未逐人建档的渠道人工汇总。
 -- 单一 owner 键：同职位 + 同报告日 + 同渠道 只允许一行；填报人是受控 roster 选择、
 -- 不进唯一键（自由文本换名不能再造重复行）。逐人建档的派生渠道指标由 AI-TD 核心
@@ -222,6 +265,73 @@ CREATE TABLE IF NOT EXISTS candidate_stage_event (
 );
 CREATE INDEX IF NOT EXISTS idx_candidate_stage_event_candidate
     ON candidate_stage_event(candidate_id, created_at, id);
+
+-- v14 application layer: one real person may participate in more than one
+-- requisition.  The legacy candidate projection remains for backwards
+-- compatibility while every existing row is migrated idempotently into one
+-- application.  New code uses application_ref as the stable workflow key.
+CREATE TABLE IF NOT EXISTS candidate_application (
+    id                 BIGSERIAL PRIMARY KEY,
+    application_ref    TEXT NOT NULL UNIQUE,
+    candidate_id       INTEGER NOT NULL REFERENCES candidate(id) ON DELETE RESTRICT,
+    job_request_id     INTEGER REFERENCES job_requests(id) ON DELETE RESTRICT,
+    entry_date         DATE NOT NULL,
+    channel            TEXT NOT NULL,
+    source_detail      TEXT NOT NULL DEFAULT '',
+    current_stage      TEXT NOT NULL DEFAULT 'New Lead',
+    note               TEXT NOT NULL DEFAULT '',
+    hr_owner           TEXT NOT NULL DEFAULT '',
+    source             TEXT NOT NULL DEFAULT 'manual',
+    external_ref       TEXT NOT NULL DEFAULT '',
+    lark_record_id     TEXT NOT NULL DEFAULT '',
+    record_version     INTEGER NOT NULL DEFAULT 1,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_candidate_application_job UNIQUE(candidate_id, job_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_application_job
+    ON candidate_application(job_request_id, current_stage);
+CREATE INDEX IF NOT EXISTS idx_candidate_application_entry
+    ON candidate_application(entry_date);
+CREATE INDEX IF NOT EXISTS idx_candidate_application_lark
+    ON candidate_application(lark_record_id) WHERE lark_record_id <> '';
+
+INSERT INTO candidate_application
+  (application_ref,candidate_id,job_request_id,entry_date,channel,source_detail,
+   current_stage,note,hr_owner,source,external_ref,lark_record_id,record_version,
+   created_at,updated_at)
+SELECT
+  'APP-' || lpad(c.id::text, 10, '0'), c.id, c.job_request_id, c.apply_date,
+  c.channel, c.source_detail, c.status, c.note, c.filled_by, c.source,
+  c.ext_ref, c.lark_record_id, 1, c.created_at, c.updated_at
+FROM candidate c
+ON CONFLICT (candidate_id, job_request_id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS candidate_application_stage_event (
+    id                 BIGSERIAL PRIMARY KEY,
+    application_id     BIGINT NOT NULL REFERENCES candidate_application(id) ON DELETE RESTRICT,
+    from_stage         TEXT NOT NULL DEFAULT '',
+    to_stage           TEXT NOT NULL,
+    effective_date     DATE NOT NULL,
+    rejection_reason   TEXT NOT NULL DEFAULT '',
+    note               TEXT NOT NULL DEFAULT '',
+    changed_by         TEXT NOT NULL DEFAULT '',
+    event_ref          TEXT NOT NULL UNIQUE,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_application_stage_event_app
+    ON candidate_application_stage_event(application_id, created_at, id);
+
+INSERT INTO candidate_application_stage_event
+  (application_id,from_stage,to_stage,effective_date,rejection_reason,note,
+   changed_by,event_ref,created_at)
+SELECT a.id,e.from_stage,e.to_stage,e.effective_date,e.rejection_reason,e.note,
+       e.changed_by,'LEGACY-' || e.event_ref,e.created_at
+FROM candidate_stage_event e
+JOIN candidate_application a
+  ON a.candidate_id=e.candidate_id
+ AND a.application_ref='APP-' || lpad(e.candidate_id::text,10,'0')
+ON CONFLICT (event_ref) DO NOTHING;
 
 -- ============================================================
 --  Nexus 运营模块（纯增量：职位 owner、文档模板库、渠道成本）

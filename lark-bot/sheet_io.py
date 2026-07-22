@@ -17,6 +17,7 @@
     parse_candidate_sheet(data, filename, jobs, sources)        -> {rows, skipped, errors}
 """
 import csv
+import base64
 import hashlib
 import hmac
 import io
@@ -37,7 +38,7 @@ import channel_pipeline_schema as pipeline_schema
 
 WORKBOOK_META_SHEET = "_NEXUS_META"
 WORKBOOK_ARTIFACT_TYPE = "channel-candidate-pipeline"
-WORKBOOK_META_VERSION = "channel-workbook-v1"
+WORKBOOK_META_VERSION = "channel-workbook-v2"
 MINIMUM_SIGNING_KEY_BYTES = 32
 
 
@@ -48,24 +49,97 @@ def _workbook_signature(metadata, signing_key):
     canonical = json.dumps(
         metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    return hmac.new(key, b"channel-workbook-v1\n" + canonical, hashlib.sha256).hexdigest()
+    return hmac.new(key, b"channel-workbook-v2\n" + canonical, hashlib.sha256).hexdigest()
 
 
-def _attach_workbook_metadata(data, generated_date, signing_key):
+def _catalog_snapshot(jobs):
+    return [
+        {
+            "job_ref": str(job.get("job_ref") or ("legacy-id-%s" % job.get("id"))),
+            "title": str(job.get("title") or ""),
+            "catalog_revision": int(job.get("catalog_revision") or 1),
+        }
+        for job in sorted(jobs or [], key=lambda item: str(item.get("job_ref") or ""))
+    ]
+
+
+def _row_token(payload, signing_key):
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(canonical).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        str(signing_key or "").encode("utf-8"),
+        b"channel-row-v1\n" + canonical,
+        hashlib.sha256,
+    ).hexdigest()
+    return encoded + "." + signature
+
+
+def _decode_row_token(value, signing_key):
+    try:
+        encoded, supplied = str(value or "").split(".", 1)
+        canonical = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        expected = hmac.new(
+            str(signing_key or "").encode("utf-8"),
+            b"channel-row-v1\n" + canonical,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(supplied, expected):
+            raise ValueError
+        payload = json.loads(canonical.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("A system row token is missing or invalid.") from exc
+    return payload
+
+
+def _attach_workbook_metadata(data, generated_date, signing_key, jobs=()):
+    catalog = _catalog_snapshot(jobs)
     metadata = {
         "artifact_type": WORKBOOK_ARTIFACT_TYPE,
         "artifact_version": WORKBOOK_META_VERSION,
         "schema_version": pipeline_schema.SCHEMA_VERSION,
         "generated_date": str(generated_date or "")[:10],
         "artifact_id": str(uuid.uuid4()),
+        "job_catalog": json.dumps(catalog, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")),
     }
     date.fromisoformat(metadata["generated_date"])
     metadata["signature"] = _workbook_signature(metadata, signing_key)
     wb = load_workbook(io.BytesIO(data))
+    data_ws = (wb[pipeline_schema.PIPELINE_TABLE_NAME]
+               if pipeline_schema.PIPELINE_TABLE_NAME in wb.sheetnames else wb[wb.sheetnames[0]])
+    headers = {str(cell.value or ""): cell.column for cell in data_ws[1]}
+    if not catalog and headers.get("Job"):
+        seen = sorted({str(data_ws.cell(row=row, column=headers["Job"]).value or "").strip()
+                       for row in range(2, data_ws.max_row + 1)
+                       if str(data_ws.cell(row=row, column=headers["Job"]).value or "").strip()})
+        catalog = [{"job_ref": "legacy-title-" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:16],
+                    "title": title, "catalog_revision": 1} for title in seen]
+        metadata["job_catalog"] = json.dumps(catalog, ensure_ascii=False, sort_keys=True,
+                                             separators=(",", ":"))
+        metadata["signature"] = _workbook_signature(
+            {key: value for key, value in metadata.items() if key != "signature"}, signing_key)
+    token_col = headers.get("System Row Token")
+    ref_col = headers.get("Row Ref")
+    candidate_col = headers.get("System ID")
+    if not token_col or not ref_col:
+        raise ValueError("Workbook row identity columns are missing")
+    for row_index in range(2, data_ws.max_row + 1):
+        row_ref = str(data_ws.cell(row=row_index, column=ref_col).value or "")
+        if not row_ref:
+            continue
+        payload = {
+            "artifact_id": metadata["artifact_id"],
+            "schema_version": pipeline_schema.SCHEMA_VERSION,
+            "row_ref": row_ref,
+            "candidate_id": str(data_ws.cell(row=row_index, column=candidate_col).value or "") if candidate_col else "",
+            "record_version": 1,
+        }
+        data_ws.cell(row=row_index, column=token_col, value=_row_token(payload, signing_key))
     ws = wb.create_sheet(WORKBOOK_META_SHEET)
     for row_index, key in enumerate(
         ("artifact_type", "artifact_version", "schema_version", "generated_date",
-         "artifact_id", "signature"), start=1
+         "artifact_id", "job_catalog", "signature"), start=1
     ):
         ws.cell(row=row_index, column=1, value=key)
         ws.cell(row=row_index, column=2, value=metadata[key])
@@ -86,11 +160,12 @@ def _verify_workbook_metadata(data, expected_date, signing_key):
         str(ws.cell(row=row, column=1).value or ""): str(
             ws.cell(row=row, column=2).value or ""
         )
-        for row in range(1, 7)
+        for row in range(1, 8)
     }
     signature = metadata.pop("signature", "")
     required = {
-        "artifact_type", "artifact_version", "schema_version", "generated_date", "artifact_id"
+        "artifact_type", "artifact_version", "schema_version", "generated_date",
+        "artifact_id", "job_catalog"
     }
     if set(metadata) != required:
         raise ValueError("The workbook provenance record is incomplete.")
@@ -115,6 +190,10 @@ def _verify_workbook_metadata(data, expected_date, signing_key):
             "Download a fresh workbook before submitting."
             % (generated_date.isoformat(), current_date.isoformat())
         )
+    try:
+        metadata["job_catalog"] = json.loads(metadata["job_catalog"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("The workbook job catalog snapshot is invalid.") from exc
     return metadata
 
 # 候选人联系表用到的下拉
@@ -469,7 +548,7 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=
     prefill = []
     for c in (candidates or []):
         prefill.append({
-            "cand_id": str(c.get("id") or ""),
+            "cand_id": str(c.get("application_ref") or c.get("id") or ""),
             "name": c.get("name") or "",
             "channel": c.get("channel") or "",
             "source_detail": c.get("source_detail") or "",
@@ -478,7 +557,7 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=
             "rejection_reason": c.get("rejection_reason") or "",
             "note": c.get("note") or "",
             "filled_by": c.get("filled_by") or "",
-            "row_ref": c.get("ext_ref") or ("candidate-%s" % c.get("id")),
+            "row_ref": c.get("application_ref") or c.get("ext_ref") or ("candidate-%s" % c.get("id")),
         })
     blank_count = 30 if prefill else 60
     # HR surfaces contain commands only. Entry Date is assigned when a row is
@@ -488,15 +567,17 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=
     data = build_xlsx(cols, prefill_rows=prefill,
                       sheet_title=pipeline_schema.PIPELINE_TABLE_NAME,
                       extra_blank=0, blank_defaults={})
-    return _attach_workbook_metadata(data, day, signing_key)
+    return _attach_workbook_metadata(data, day, signing_key, jobs)
 
 
 def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
                          signing_key=""):
     """解析 HR 交回的候选人跟进表 → 候选人行。带「记录ID」= 已有候选人（更新），无 ID = 新候选人（新增）。"""
-    _verify_workbook_metadata(data, default_date, signing_key)
-    title2id = {_s(j["title"]): j["id"] for j in jobs}
-    cols = pipeline_columns([j["title"] for j in jobs])
+    metadata = _verify_workbook_metadata(data, default_date, signing_key)
+    current_by_ref = {str(j.get("job_ref") or ("legacy-id-%s" % j.get("id"))): j for j in jobs}
+    current_by_title = {_s(j.get("title")): j for j in jobs}
+    catalog_by_title = {_s(j["title"]): j for j in metadata["job_catalog"]}
+    cols = pipeline_columns([j["title"] for j in metadata["job_catalog"]])
 
     def skip(r):
         return not (r.get("channel") or r.get("name"))  # 渠道和姓名都空 -> 空行
@@ -504,7 +585,33 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
     res = parse_rows(cols, data, filename, required=["channel"], skip=skip)
     out, errors = [], list(res["errors"])
     for r in res["rows"]:
-        jid = title2id.get(r.get("job"))  # 职位可空 -> None
+        catalog_job = catalog_by_title.get(r.get("job"))
+        catalog_ref = str((catalog_job or {}).get("job_ref") or "")
+        current_job = current_by_ref.get(catalog_ref)
+        if current_job is None and catalog_ref.startswith("legacy-title-"):
+            current_job = current_by_title.get(r.get("job"))
+        jid = current_job.get("id") if current_job else None
+        if r.get("job") and not catalog_job:
+            errors.append("Row %d: Job is not part of this workbook's signed catalog" % r.get("__line__", 0))
+            continue
+        if catalog_job and not current_job:
+            errors.append("Row %d: Job no longer exists in the operational catalog" % r.get("__line__", 0))
+            continue
+        try:
+            token = _decode_row_token(r.get("row_token"), signing_key)
+        except ValueError as exc:
+            errors.append("Row %d: %s" % (r.get("__line__", 0), exc))
+            continue
+        if (token.get("artifact_id") != metadata["artifact_id"] or
+                token.get("row_ref") != (r.get("row_ref") or "") or
+                str(token.get("candidate_id") or "") != str(r.get("cand_id") or "")):
+            errors.append("Row %d: signed system identity does not match the row" % r.get("__line__", 0))
+            continue
+        # New applications can only enter an Open requisition. Existing rows
+        # may finish work after a requisition moves to Paused/Closing/Closed.
+        if current_job and not (r.get("cand_id") or "").strip() and current_job.get("status", "open") != "open":
+            errors.append("Row %d: new candidates require an Open requisition" % r.get("__line__", 0))
+            continue
         # Entry Date is system-owned. A workbook value is display-only and is
         # never trusted for a new or existing candidate.
         rd = (default_date or "").strip()[:10]
@@ -532,7 +639,10 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
                     "row_ref": (r.get("row_ref") or "").strip(), "record_date": rd,
                     "name": r.get("name", ""), "channel": r["channel"],
                     "source_detail": r.get("source_detail", ""),
-                    "job_request_id": jid, "status": r.get("status") or "New Lead",
+                    "job_request_id": jid,
+                    "job_ref": (catalog_job or {}).get("job_ref", ""),
+                    "catalog_revision": int((catalog_job or {}).get("catalog_revision") or 1),
+                    "status": r.get("status") or "New Lead",
                     "stage_date": "", "rejection_reason": r.get("rejection_reason", ""),
                     "note": r.get("note", ""), "filled_by": r.get("filled_by") or default_by})
     return {"rows": out, "skipped": res["skipped"], "errors": errors}

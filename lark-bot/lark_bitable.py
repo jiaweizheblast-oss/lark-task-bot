@@ -20,6 +20,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import channel_pipeline_schema as pipeline_schema
 
+supports_revision_barrier = True
+
 DOMAIN = os.environ.get("LARK_DOMAIN", "https://open.larksuite.com").rstrip("/")
 
 # Channel Analytics belongs to the outward-facing Recruitment Bot. Keep these
@@ -1150,6 +1152,7 @@ def list_channel_records(app_token, table_id):
         for item in data.get("items", []):
             fields = item.get("fields", {})
             out.append({"record_id": item.get("record_id"),
+                        "last_modified_time": item.get("last_modified_time"),
                         "fields": {key: _flatten(fields.get(key)) for key in CHANNEL_FIELD_KEYS}})
         if data.get("has_more") and data.get("page_token"):
             page = data["page_token"]
@@ -1176,6 +1179,7 @@ def list_pipeline_records(app_token, table_id):
         for item in data.get("items", []):
             fields = item.get("fields", {})
             out.append({"record_id": item.get("record_id"),
+                        "last_modified_time": item.get("last_modified_time"),
                         "fields": {key: _flatten(fields.get(key)) for key in PIPELINE_FIELD_KEYS}})
         if data.get("has_more") and data.get("page_token"):
             page = data["page_token"]
