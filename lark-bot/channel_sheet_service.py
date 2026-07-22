@@ -112,6 +112,9 @@ def import_pipeline_rows(
     """Apply website Pipeline workbook rows without guessing candidate identity."""
     created = updated = 0
     errors = list(parsed.get("errors") or [])
+    if parsed.get("fatal"):
+        return {"ok": False, "created": 0, "imported": 0, "updated": 0,
+                "skipped": int(parsed.get("skipped") or 0), "errors": errors}
     for index, row in enumerate(parsed.get("rows") or [], start=2):
         try:
             name, channel = _text(row.get("name")), _text(row.get("channel"))
@@ -129,6 +132,49 @@ def import_pipeline_rows(
             record_date = _text(default_date)[:10]
             if not _valid_date(record_date):
                 raise ValueError("The system Entry Date must use YYYY-MM-DD")
+            if hasattr(database, "apply_candidate_application_command"):
+                artifact_id = _text(row.get("artifact_id") or parsed.get("artifact_id"))
+                row_ref = _text(row.get("row_ref"))
+                command_payload = {
+                    "artifact_id": artifact_id,
+                    "row_ref": row_ref,
+                    "application_ref": _text(row.get("cand_id")),
+                    "expected_version": int(row.get("expected_version") or 0),
+                    "name": name,
+                    "channel": channel,
+                    "source_detail": detail,
+                    "job_ref": _text(row.get("job_ref")),
+                    "job_request_id": row.get("job_request_id"),
+                    "stage": stage,
+                    "note": _text(row.get("note")),
+                    "hr_owner": owner or _text(row.get("filled_by")),
+                    "rejection_reason": _text(row.get("rejection_reason")),
+                }
+                canonical = json.dumps(
+                    command_payload, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                payload_sha = hashlib.sha256(canonical).hexdigest()
+                event_ref = "xlsx-row-" + hashlib.sha256(
+                    (artifact_id + "\n" + row_ref).encode("utf-8")
+                ).hexdigest()
+                result = database.apply_candidate_application_command(
+                    event_id=event_ref, artifact_id=artifact_id, row_ref=row_ref,
+                    payload_sha256=payload_sha, transport="xlsx",
+                    entry_date=record_date, name=name, channel=channel,
+                    source_detail=detail, job_request_id=row.get("job_request_id"),
+                    stage=stage, note=_text(row.get("note")),
+                    hr_owner=owner or _text(row.get("filled_by")),
+                    rejection_reason=_text(row.get("rejection_reason")),
+                    application_ref=_text(row.get("cand_id")),
+                    expected_version=int(row.get("expected_version") or 0),
+                    source="Excel", changed_by=owner or _text(row.get("filled_by")),
+                )
+                if result.get("created") and not result.get("idempotent"):
+                    created += 1
+                elif result.get("updated") and not result.get("idempotent"):
+                    updated += 1
+                continue
             candidate_id_text = _text(row.get("cand_id"))
             application = None
             if candidate_id_text.startswith("APP-") and hasattr(database, "get_candidate_application_by_ref"):
@@ -275,8 +321,12 @@ def import_lark_pipeline_records(
     channels: Sequence[str], stages: Sequence[str], default_date: str,
 ) -> dict[str, Any]:
     """Upsert source-neutral candidate applications and append stage changes."""
-    title_to_id = _job_title_map(jobs)
     jobs_by_id = {job.get("id"): job for job in jobs}
+    title_to_ids = {}
+    for job in jobs:
+        for title in (job.get("title"), *(job.get("title_aliases") or [])):
+            if _text(title):
+                title_to_ids.setdefault(_text(title), []).append(job.get("id"))
     channel_set, stage_set = set(channels), set(stages)
     created = updated = skipped = 0
     errors = []
@@ -289,14 +339,36 @@ def import_lark_pipeline_records(
             continue
         channel = _text(_field(fields, "channel"))
         detail = _text(_field(fields, "source_detail"))
-        job_id = title_to_id.get(_text(_field(fields, "job")))
+        job_title = _text(_field(fields, "job"))
         stage = _text(_field(fields, "status")) or "New Lead"
-        # Entry Date is service-owned and is not exposed on the Lark HR form.
-        entry_date = _text(default_date)[:10]
+        record_id = _text(record.get("record_id"))
+        application = (database.get_candidate_application_by_lark(record_id)
+                       if hasattr(database, "get_candidate_application_by_lark") else None)
+        existing = (None if application else database.get_candidate_by_lark(record_id))
+        if application:
+            job_id = application.get("job_request_id")
+            signed_job_ids = title_to_ids.get(job_title) or []
+            if job_id not in signed_job_ids:
+                errors.append("Pipeline row %d: Job is protected for an existing application" % index)
+                continue
+        else:
+            open_ids = [
+                job_id for job_id in (title_to_ids.get(job_title) or [])
+                if _text((jobs_by_id.get(job_id) or {}).get("status") or "open").casefold() == "open"
+            ]
+            job_id = open_ids[0] if len(open_ids) == 1 else None
+        # The record creation time is the closest server-owned source-received
+        # instant available for a new Lark row. Delayed submission must not turn
+        # into a false "new today" date.
+        entry_date = _lark_date(record.get("created_time"), _text(default_date)[:10])
         reason = _text(_field(fields, "rejection_reason"))
         if not name:
             errors.append("Pipeline row %d: Candidate is required" % index); continue
-        if channel not in channel_set:
+        if application:
+            if (channel != _text(application.get("channel")) or
+                    detail != _text(application.get("source_detail"))):
+                errors.append("Pipeline row %d: Source attribution is protected for an existing application" % index); continue
+        elif channel not in channel_set:
             errors.append("Pipeline row %d: Source Channel is not an approved option" % index); continue
         if channel == "Other" and not detail:
             errors.append("Pipeline row %d: Other Source Details is required when Source Channel is Other" % index); continue
@@ -313,14 +385,48 @@ def import_lark_pipeline_records(
             errors.append("Pipeline row %d: Entry Date must use YYYY-MM-DD" % index); continue
         if stage == "Rejected" and not reason:
             errors.append("Pipeline row %d: Rejection Reason is required when Current Stage is Rejected" % index); continue
-        record_id = _text(record.get("record_id"))
         try:
-            application = (database.get_candidate_application_by_lark(record_id)
-                           if hasattr(database, "get_candidate_application_by_lark") else None)
-            existing = (None if application else database.get_candidate_by_lark(record_id))
             created_now = application is None and existing is None
             if created_now and (jobs_by_id.get(job_id) or {}).get("status", "open") != "open":
                 raise ValueError("New candidates require an Open requisition")
+            if hasattr(database, "apply_candidate_application_command"):
+                command_payload = {
+                    "record_id": record_id,
+                    "last_modified_time": _text(record.get("last_modified_time")),
+                    "name": name, "channel": channel, "source_detail": detail,
+                    "job_request_id": job_id, "stage": stage,
+                    "note": _text(_field(fields, "note")),
+                    "hr_owner": _text(_field(fields, "filled_by")),
+                    "rejection_reason": reason,
+                }
+                canonical = json.dumps(
+                    command_payload, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                payload_sha = hashlib.sha256(canonical).hexdigest()
+                lark_revision = _text(record.get("last_modified_time")) or payload_sha
+                event_id = "lark-row-" + hashlib.sha256(
+                    (record_id + "\n" + lark_revision).encode("utf-8")
+                ).hexdigest()
+                result = database.apply_candidate_application_command(
+                    event_id=event_id, artifact_id="lark-live-pipeline",
+                    row_ref=record_id, payload_sha256=payload_sha, transport="lark",
+                    entry_date=entry_date, name=name, channel=channel,
+                    source_detail=detail, job_request_id=job_id, stage=stage,
+                    note=_text(_field(fields, "note")),
+                    hr_owner=_text(_field(fields, "filled_by")),
+                    rejection_reason=reason,
+                    application_ref=_text((application or {}).get("application_ref")),
+                    expected_version=int((application or {}).get("record_version") or 0),
+                    lark_record_id=record_id, source="Lark",
+                    changed_by=_text(_field(fields, "filled_by")),
+                    baseline_import=created_now and stage != "New Lead",
+                )
+                if result.get("created") and not result.get("idempotent"):
+                    created += 1
+                elif result.get("updated") and not result.get("idempotent"):
+                    updated += 1
+                continue
             if application:
                 application_ref = application["application_ref"]
                 candidate_id = application["candidate_id"]
@@ -442,12 +548,16 @@ def sync_lark_table(
     manual_result = import_lark_channel_records(
         database, manual_response.get("records") or [], jobs=jobs,
         default_date=default_date, channels=channels)
+    all_errors = pipeline_result["errors"] + manual_result["errors"] + writeback_errors
     result = {"ok": True, "pipeline": pipeline_result, "manual": manual_result,
               "created": pipeline_result["created"], "updated": pipeline_result["updated"],
               "applied": manual_result["applied"],
               "skipped": pipeline_result["skipped"] + manual_result["skipped"],
               "system_field_writebacks": writeback_count,
               "stage_date_writebacks": 0,
-              "errors": pipeline_result["errors"] + manual_result["errors"] + writeback_errors}
-    database.set_setting("lark_channel_last_sync", synced_at)
+              "errors": all_errors,
+              "status": "partially_imported" if all_errors else "synchronized"}
+    database.set_setting("lark_channel_last_attempt", synced_at)
+    if not all_errors:
+        database.set_setting("lark_channel_last_sync", synced_at)
     return result

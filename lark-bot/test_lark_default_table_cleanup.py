@@ -315,6 +315,29 @@ def main():
     assert not any("rec-protected" in path or "rec-real" in path
                    for method, path, body in cleanup_calls if method == "DELETE")
 
+    # A truncated full-table read must never be treated as complete.  Both
+    # online tables fail closed at the explicit 25,000-row safety boundary.
+    page_calls = []
+    def fake_unbounded_pages(method, path, token=None, body=None, timeout=15):
+        page_calls.append(path)
+        return {"code": 0, "data": {
+            "items": [], "has_more": True,
+            "page_token": "page-%d" % len(page_calls),
+        }}
+    try:
+        lark_bitable.tenant_token = lambda: ("fixture-token", None)
+        lark_bitable._req = fake_unbounded_pages
+        channel_limit = lark_bitable.list_channel_records("app-token", "manual")
+        assert not channel_limit["ok"] and "25,000-row" in channel_limit["error"]
+        assert len(page_calls) == 50
+        page_calls.clear()
+        pipeline_limit = lark_bitable.list_pipeline_records("app-token", "pipeline")
+        assert not pipeline_limit["ok"] and "25,000-row" in pipeline_limit["error"]
+        assert len(page_calls) == 50
+    finally:
+        lark_bitable.tenant_token = original_token
+        lark_bitable._req = original_req
+
     print("Empty Lark default table cleanup is bounded and safe: PASSED")
     print("Candidate Pipeline direct-link canonicalisation: PASSED")
     print("Workflow dates are service-owned and absent from the Lark HR surface: PASSED")

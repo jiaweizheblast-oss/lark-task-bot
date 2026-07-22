@@ -6,7 +6,7 @@ module.  Keeping one field contract prevents the two HR surfaces from drifting.
 from __future__ import annotations
 
 
-SCHEMA_VERSION = "channel-pipeline-v14"
+SCHEMA_VERSION = "channel-pipeline-v15"
 BASE_NAME = "Channel Analytics - Live"
 PIPELINE_TABLE_NAME = "Candidate Pipeline"
 PIPELINE_VIEW_NAME = "Pipeline"
@@ -36,10 +36,12 @@ PIPELINE_COLUMNS = (
     },
     {
         "key": "channel", "header": "Source Channel", "kind": "choice",
+        "lock_existing": True,
         "aliases": ("Channel", "招聘渠道", "渠道", "来源渠道"),
     },
     {
         "key": "source_detail", "header": OTHER_SOURCE_DETAIL, "kind": "text",
+        "lock_existing": True,
         "aliases": (
             "Other Source Detail (only when Source Channel = Other)",
             "Other Source Detail (required if Other)",
@@ -50,6 +52,7 @@ PIPELINE_COLUMNS = (
     },
     {
         "key": "job", "header": "Job", "kind": "choice",
+        "lock_existing": True,
         "aliases": ("职位", "关联职位"),
     },
     {

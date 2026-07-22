@@ -6,11 +6,13 @@
 import os
 import datetime
 import hashlib
+import json
 import secrets
 import psycopg2
 import psycopg2.extras
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+SCHEMA_MIGRATION_VERSION = "20260722_recruiting_core_v1"
 
 
 def get_conn():
@@ -23,7 +25,7 @@ def get_conn():
 
 
 def init_db():
-    """Apply the idempotent schema as one serialized transaction.
+    """Apply each immutable schema migration exactly once.
 
     Railway may briefly overlap old and new containers during a deploy. A
     transaction-scoped advisory lock prevents two current containers from
@@ -33,22 +35,45 @@ def init_db():
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "schema.sql"), "r", encoding="utf-8") as f:
         sql = f.read()
+    checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
     conn = get_conn()
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
-                ("nexus_schema_migration_v1",),
+                ("nexus_schema_migration",),
             )
-            cur.execute(sql)
+            cur.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                checksum_sha256 TEXT NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""")
+            cur.execute(
+                "SELECT checksum_sha256 FROM schema_migrations WHERE version=%s",
+                (SCHEMA_MIGRATION_VERSION,),
+            )
+            applied = cur.fetchone()
+            if applied:
+                if applied[0] != checksum:
+                    raise RuntimeError(
+                        "Applied migration %s does not match the packaged checksum; "
+                        "publish a new immutable migration version"
+                        % SCHEMA_MIGRATION_VERSION
+                    )
+            else:
+                cur.execute(sql)
+                cur.execute(
+                    "INSERT INTO schema_migrations(version,checksum_sha256) VALUES(%s,%s)",
+                    (SCHEMA_MIGRATION_VERSION, checksum),
+                )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    print("[db] tables ready")
+    print("[db] schema ready: %s" % SCHEMA_MIGRATION_VERSION)
 
 
 # ---------------- 用户 ----------------
@@ -910,7 +935,7 @@ def list_candidate_applications_active():
                               a.channel,a.source_detail,a.job_request_id,
                               a.current_stage AS status,a.note,a.hr_owner AS filled_by,
                               a.external_ref AS ext_ref,a.lark_record_id,a.record_version,
-                              j.title AS job_title,
+                              j.title AS job_title,j.job_ref,j.status AS job_status,
                               e.effective_date AS stage_date,e.rejection_reason
                        FROM candidate_application a
                        JOIN candidate c ON c.id=a.candidate_id
@@ -951,6 +976,234 @@ def get_candidate_application_by_lark(record_id):
                        JOIN candidate c ON c.id=a.candidate_id
                        WHERE a.lark_record_id=%s LIMIT 1""", (record_id,))
         return cur.fetchone()
+
+
+_TERMINAL_APPLICATION_STAGES = {"Hired", "Rejected", "Withdrawn"}
+_APPLICATION_STAGE_ORDER = {
+    "New Lead": 0,
+    "Contacted / Awaiting Reply": 1,
+    "HR Screening": 2,
+    "Interview 1": 3,
+    "Interview 2 / Final": 4,
+    "Offer": 5,
+    "Hired": 6,
+}
+
+
+def _validate_application_stage_change(current_stage, next_stage):
+    current = str(current_stage or "New Lead")
+    target = str(next_stage or "New Lead")
+    if current == target:
+        return
+    if current in _TERMINAL_APPLICATION_STAGES:
+        raise ValueError(
+            "%s is terminal; a manager correction event is required to reopen it" % current
+        )
+    if target in {"On Hold", "Rejected", "Withdrawn"}:
+        return
+    if current == "On Hold":
+        if target in _APPLICATION_STAGE_ORDER:
+            return
+        raise ValueError("On Hold can resume only to an approved recruiting stage")
+    if target not in _APPLICATION_STAGE_ORDER:
+        raise ValueError("Current Stage is not approved")
+    if _APPLICATION_STAGE_ORDER.get(target, -1) < _APPLICATION_STAGE_ORDER.get(current, -1):
+        raise ValueError(
+            "A backward stage change requires an audited manager correction"
+        )
+
+
+def apply_candidate_application_command(
+    *, event_id, artifact_id, row_ref, payload_sha256, transport,
+    entry_date, name, channel, source_detail, job_request_id, stage,
+    note="", hr_owner="", rejection_reason="", application_ref="",
+    expected_version=0, lark_record_id="", source="Excel", changed_by="",
+    occurred_at=None, baseline_import=False,
+):
+    """Apply one signed HR row as one serializable, idempotent transaction.
+
+    Identity, requisition and first-touch attribution are immutable for an
+    existing application.  A second application is required for another job;
+    attribution corrections use a separate manager-only audit command.
+    """
+    event_id = str(event_id or "").strip()
+    artifact_id = str(artifact_id or "").strip()
+    row_ref = str(row_ref or "").strip()
+    payload_sha256 = str(payload_sha256 or "").strip()
+    if not all((event_id, artifact_id, row_ref, payload_sha256)):
+        raise ValueError("The signed submission identity is incomplete")
+    if stage == "Rejected" and not str(rejection_reason or "").strip():
+        raise ValueError("Rejection Reason is required when Current Stage is Rejected")
+    occurred_at = occurred_at or datetime.datetime.now(datetime.timezone.utc)
+
+    conn = get_conn(); conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM channel_submission_event WHERE event_id=%s FOR UPDATE",
+                (event_id,),
+            )
+            receipt = cur.fetchone()
+            if receipt:
+                if receipt["payload_sha256"] != payload_sha256:
+                    raise ValueError(
+                        "This submission event was already accepted with different content"
+                    )
+                result = dict(receipt.get("result_json") or {})
+                result["idempotent"] = True
+                conn.commit()
+                return result
+
+            application = None
+            if str(application_ref or "").strip():
+                cur.execute(
+                    """SELECT a.*,c.name FROM candidate_application a
+                       JOIN candidate c ON c.id=a.candidate_id
+                       WHERE a.application_ref=%s FOR UPDATE OF a,c""",
+                    (application_ref,),
+                )
+                application = cur.fetchone()
+                if not application:
+                    raise ValueError("The candidate application no longer exists")
+                if int(expected_version or 0) != int(application.get("record_version") or 0):
+                    raise ValueError(
+                        "This row is stale because the application changed after the workbook was downloaded"
+                    )
+                if str(application.get("name") or "").strip() != str(name or "").strip():
+                    raise ValueError("Candidate is protected for an existing application")
+                if application.get("job_request_id") != job_request_id:
+                    raise ValueError("Job is immutable; create a new application for another requisition")
+                if (str(application.get("channel") or "").strip() != str(channel or "").strip()
+                        or str(application.get("source_detail") or "").strip() !=
+                        str(source_detail or "").strip()):
+                    raise ValueError("Source attribution is immutable after the application is created")
+                if lark_record_id:
+                    cur.execute(
+                        """SELECT application_ref FROM candidate_application
+                           WHERE lark_record_id=%s AND application_ref<>%s LIMIT 1""",
+                        (lark_record_id, application_ref),
+                    )
+                    if cur.fetchone():
+                        raise ValueError("The Lark record is already bound to another application")
+                _validate_application_stage_change(application.get("current_stage"), stage)
+                stage_changed = str(application.get("current_stage") or "") != str(stage or "")
+                metadata_changed = any((
+                    str(application.get("note") or "") != str(note or ""),
+                    str(application.get("hr_owner") or "") != str(hr_owner or ""),
+                    bool(lark_record_id) and str(application.get("lark_record_id") or "") != str(lark_record_id),
+                ))
+                if stage_changed:
+                    cur.execute(
+                        """INSERT INTO candidate_application_stage_event
+                           (application_id,from_stage,to_stage,effective_date,rejection_reason,
+                            note,changed_by,event_ref,occurred_at,baseline_import)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE)""",
+                        (application["id"], application.get("current_stage") or "", stage,
+                         entry_date, rejection_reason, note, changed_by or hr_owner,
+                         event_id, occurred_at),
+                    )
+                if stage_changed or metadata_changed:
+                    cur.execute(
+                        """UPDATE candidate_application
+                           SET current_stage=%s,note=%s,hr_owner=%s,
+                               lark_record_id=CASE WHEN %s='' THEN lark_record_id ELSE %s END,
+                               stage_started_at=CASE WHEN %s THEN %s ELSE stage_started_at END,
+                               record_version=record_version+1,updated_at=now()
+                           WHERE id=%s RETURNING record_version""",
+                        (stage, note, hr_owner, lark_record_id, lark_record_id,
+                         stage_changed, occurred_at, application["id"]),
+                    )
+                    version = cur.fetchone()["record_version"]
+                    if stage_changed:
+                        cur.execute(
+                            """UPDATE candidate SET status=%s,updated_at=now()
+                               WHERE id=%s AND job_request_id IS NOT DISTINCT FROM %s""",
+                            (stage, application["candidate_id"], application["job_request_id"]),
+                        )
+                else:
+                    version = application["record_version"]
+                result = {
+                    "created": False, "updated": bool(stage_changed or metadata_changed),
+                    "application_ref": application_ref, "record_version": int(version),
+                    "application_id": int(application["id"]),
+                    "candidate_id": int(application["candidate_id"]),
+                    "idempotent": not (stage_changed or metadata_changed),
+                }
+            else:
+                if int(expected_version or 0) != 0:
+                    raise ValueError("A new row must have record version 0")
+                cur.execute("SELECT id,status FROM job_requests WHERE id=%s FOR SHARE", (job_request_id,))
+                job = cur.fetchone()
+                if not job or str(job.get("status") or "").casefold() != "open":
+                    raise ValueError("New candidates require an Open requisition")
+                candidate_id = None
+                cur.execute("SELECT id FROM candidate WHERE ext_ref=%s LIMIT 1 FOR UPDATE", (row_ref,))
+                candidate = cur.fetchone()
+                if candidate:
+                    candidate_id = candidate["id"]
+                    cur.execute(
+                        """SELECT application_ref FROM candidate_application
+                           WHERE candidate_id=%s AND job_request_id IS NOT DISTINCT FROM %s""",
+                        (candidate_id, job_request_id),
+                    )
+                    if cur.fetchone():
+                        raise ValueError("This Row Ref is already bound to an application")
+                else:
+                    cur.execute(
+                        """INSERT INTO candidate
+                           (apply_date,name,channel,source_detail,job_request_id,status,note,
+                            filled_by,source,ext_ref,lark_record_id)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (entry_date, name, channel, source_detail, job_request_id, stage,
+                         note, hr_owner, source, row_ref, lark_record_id),
+                    )
+                    candidate_id = cur.fetchone()["id"]
+                application_ref = "APP-" + secrets.token_hex(8).upper()
+                is_baseline = bool(baseline_import or stage != "New Lead")
+                cur.execute(
+                    """INSERT INTO candidate_application
+                       (application_ref,candidate_id,job_request_id,entry_date,channel,
+                        source_detail,current_stage,note,hr_owner,source,external_ref,
+                        lark_record_id,record_version,baseline_import,source_received_on,
+                        stage_started_at,system_imported_at)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s)
+                       RETURNING id""",
+                    (application_ref, candidate_id, job_request_id, entry_date, channel,
+                     source_detail, stage, note, hr_owner, source, row_ref, lark_record_id,
+                     is_baseline, None if is_baseline else entry_date, occurred_at, occurred_at),
+                )
+                application_id = cur.fetchone()["id"]
+                cur.execute(
+                    """INSERT INTO candidate_application_stage_event
+                       (application_id,from_stage,to_stage,effective_date,rejection_reason,
+                        note,changed_by,event_ref,occurred_at,baseline_import)
+                       VALUES(%s,'',%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (application_id, stage, entry_date, rejection_reason, note,
+                     changed_by or hr_owner, event_id, occurred_at, is_baseline),
+                )
+                result = {
+                    "created": True, "updated": False,
+                    "application_ref": application_ref, "record_version": 1,
+                    "application_id": int(application_id),
+                    "candidate_id": int(candidate_id),
+                    "idempotent": False, "baseline_import": is_baseline,
+                }
+
+            cur.execute(
+                """INSERT INTO channel_submission_event
+                   (event_id,artifact_id,row_ref,payload_sha256,transport,
+                    application_ref,result_json)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s)""",
+                (event_id, artifact_id, row_ref, payload_sha256, transport,
+                 result.get("application_ref") or "", psycopg2.extras.Json(result)),
+            )
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def create_candidate_application(entry_date, name, channel, job_request_id,
@@ -1079,17 +1332,75 @@ def list_candidates_range(dfrom, dto):
         return cur.fetchall()
 
 
+def list_candidate_metric_rows_range(dfrom, dto):
+    """Immutable identity-derived funnel events for Channel Analytics.
+
+    A candidate is counted as a new resume once, on ``source_received_on``.
+    Screening/recommendation/rejection are counted only when an immutable stage
+    event crosses the relevant boundary.  Baseline imports are deliberately
+    excluded because importing work that already happened is not new activity.
+    """
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """SELECT a.source_received_on AS record_date,a.channel,a.job_request_id,
+                      1::integer AS new_resumes,0::integer AS passed_screening,
+                      0::integer AS recommended,0::integer AS rejected
+               FROM candidate_application a
+               WHERE a.baseline_import=FALSE
+                 AND a.source_received_on BETWEEN %s AND %s
+               UNION ALL
+               SELECT e.effective_date AS record_date,a.channel,a.job_request_id,
+                      0::integer AS new_resumes,
+                      CASE WHEN e.to_stage IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                                  AND e.from_stage NOT IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                           THEN 1 ELSE 0 END AS passed_screening,
+                      CASE WHEN e.to_stage IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                                  AND e.from_stage NOT IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                           THEN 1 ELSE 0 END AS recommended,
+                      CASE WHEN e.to_stage='Rejected' AND e.from_stage<>'Rejected'
+                           THEN 1 ELSE 0 END AS rejected
+               FROM candidate_application_stage_event e
+               JOIN candidate_application a ON a.id=e.application_id
+               WHERE e.baseline_import=FALSE
+                 AND e.effective_date BETWEEN %s AND %s
+                 AND (
+                   (e.to_stage IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                    AND e.from_stage NOT IN ('Interview 1','Interview 2 / Final','Offer','Hired'))
+                   OR (e.to_stage='Rejected' AND e.from_stage<>'Rejected')
+                 )
+               ORDER BY record_date""",
+            (dfrom, dto, dfrom, dto),
+        )
+        return cur.fetchall()
+
+
 def earliest_candidate_date():
-    """最早候选人进入日（无数据返回 None）；用于推断上线日默认值。"""
+    """Earliest immutable candidate metric date (None when there is no data)."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT MIN(entry_date) FROM candidate_application")
+        cur.execute("""SELECT MIN(metric_date) FROM (
+                         SELECT source_received_on AS metric_date
+                         FROM candidate_application
+                         WHERE baseline_import=FALSE AND source_received_on IS NOT NULL
+                         UNION ALL
+                         SELECT effective_date AS metric_date
+                         FROM candidate_application_stage_event
+                         WHERE baseline_import=FALSE
+                       ) q""")
         return cur.fetchone()[0]
 
 
 def candidate_data_days():
-    """所有有候选人的日期（ISO 字符串列表），供日历标注。"""
+    """Dates containing an immutable identity-derived funnel event."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT entry_date FROM candidate_application ORDER BY 1")
+        cur.execute("""SELECT DISTINCT metric_date FROM (
+                         SELECT source_received_on AS metric_date
+                         FROM candidate_application
+                         WHERE baseline_import=FALSE AND source_received_on IS NOT NULL
+                         UNION ALL
+                         SELECT effective_date AS metric_date
+                         FROM candidate_application_stage_event
+                         WHERE baseline_import=FALSE
+                       ) q WHERE metric_date IS NOT NULL ORDER BY 1""")
         return [r[0].isoformat() for r in cur.fetchall()]
 
 

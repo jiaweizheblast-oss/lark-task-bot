@@ -1139,7 +1139,7 @@ def list_channel_records(app_token, table_id):
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
-    out, page = [], ""
+    out, page, complete = [], "", False
     for _ in range(50):
         path = "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" % (app_token, table_id)
         if page:
@@ -1157,7 +1157,13 @@ def list_channel_records(app_token, table_id):
         if data.get("has_more") and data.get("page_token"):
             page = data["page_token"]
         else:
+            complete = True
             break
+    if not complete:
+        return {"ok": False, "error": (
+            "The Channel Analytics table exceeds the safe 25,000-row read limit. "
+            "Nothing was imported; archive older cycles or enable incremental sync."
+        )}
     return {"ok": True, "records": out}
 
 
@@ -1166,7 +1172,7 @@ def list_pipeline_records(app_token, table_id):
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
-    out, page = [], ""
+    out, page, complete = [], "", False
     for _ in range(50):
         path = "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500" % (app_token, table_id)
         if page:
@@ -1179,12 +1185,19 @@ def list_pipeline_records(app_token, table_id):
         for item in data.get("items", []):
             fields = item.get("fields", {})
             out.append({"record_id": item.get("record_id"),
+                        "created_time": item.get("created_time"),
                         "last_modified_time": item.get("last_modified_time"),
                         "fields": {key: _flatten(fields.get(key)) for key in PIPELINE_FIELD_KEYS}})
         if data.get("has_more") and data.get("page_token"):
             page = data["page_token"]
         else:
+            complete = True
             break
+    if not complete:
+        return {"ok": False, "error": (
+            "The Candidate Pipeline exceeds the safe 25,000-row read limit. "
+            "Nothing was imported; archive older cycles or enable incremental sync."
+        )}
     return {"ok": True, "records": out}
 
 

@@ -340,21 +340,51 @@ ON CONFLICT DO NOTHING;
 -- Never turn a genuine reference collision into silently missing workflow
 -- data. Every legacy candidate must have a usable application for
 -- its original requisition (including the NULL legacy-requisition case).
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM candidate c
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM candidate_application a
-      WHERE a.candidate_id = c.id
-        AND a.job_request_id IS NOT DISTINCT FROM c.job_request_id
-    )
-  ) THEN
-    RAISE EXCEPTION 'candidate_application legacy migration incomplete';
-  END IF;
-END $$;
+INSERT INTO candidate_application
+  (application_ref,candidate_id,job_request_id,entry_date,channel,source_detail,
+   current_stage,note,hr_owner,source,external_ref,lark_record_id,record_version,
+   created_at,updated_at)
+SELECT
+  'APP-RECOVER-' || lpad(c.id::text, 10, '0') || '-' ||
+    COALESCE(c.job_request_id::text, 'NONE') || '-' ||
+    left(md5(c.id::text || ':' || COALESCE(c.job_request_id::text,'NONE')), 12),
+  c.id,c.job_request_id,c.apply_date,c.channel,c.source_detail,c.status,c.note,
+  c.filled_by,c.source,c.ext_ref,c.lark_record_id,1,c.created_at,c.updated_at
+FROM candidate c
+WHERE NOT EXISTS (
+  SELECT 1 FROM candidate_application a
+  WHERE a.candidate_id=c.id
+    AND a.job_request_id IS NOT DISTINCT FROM c.job_request_id
+)
+ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS schema_migration_anomaly (
+    anomaly_key TEXT PRIMARY KEY,
+    migration_version TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_ref TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at TIMESTAMPTZ
+);
+
+-- A collision that survives the deterministic recovery is recorded for
+-- manager repair, but it no longer takes the whole Railway service offline.
+-- Candidate/application writes remain fail-closed for that affected identity.
+INSERT INTO schema_migration_anomaly
+  (anomaly_key,migration_version,entity_type,entity_ref,detail)
+SELECT
+  'candidate-application:' || c.id::text || ':' || COALESCE(c.job_request_id::text,'NONE'),
+  '20260722_recruiting_core_v1','candidate',c.id::text,
+  'No candidate_application exists for the legacy candidate/requisition pair'
+FROM candidate c
+WHERE NOT EXISTS (
+  SELECT 1 FROM candidate_application a
+  WHERE a.candidate_id=c.id
+    AND a.job_request_id IS NOT DISTINCT FROM c.job_request_id
+)
+ON CONFLICT (anomaly_key) DO UPDATE
+SET detected_at=EXCLUDED.detected_at,detail=EXCLUDED.detail;
 
 CREATE TABLE IF NOT EXISTS candidate_application_stage_event (
     id                 BIGSERIAL PRIMARY KEY,
@@ -371,11 +401,49 @@ CREATE TABLE IF NOT EXISTS candidate_application_stage_event (
 CREATE INDEX IF NOT EXISTS idx_application_stage_event_app
     ON candidate_application_stage_event(application_id, created_at, id);
 
+-- Signed HR commands are immutable.  Replaying the same event with the same
+-- payload is an idempotent no-op; reusing an event id for different content is
+-- a conflict.  The row is committed in the same transaction as its workflow
+-- mutation so a successful receipt can never point at a partial write.
+CREATE TABLE IF NOT EXISTS channel_submission_event (
+    event_id           TEXT PRIMARY KEY,
+    artifact_id        TEXT NOT NULL,
+    row_ref            TEXT NOT NULL,
+    payload_sha256     TEXT NOT NULL,
+    transport          TEXT NOT NULL,
+    application_ref    TEXT NOT NULL DEFAULT '',
+    result_json        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_channel_submission_artifact
+    ON channel_submission_event(artifact_id, created_at);
+
+ALTER TABLE candidate_application
+    ADD COLUMN IF NOT EXISTS baseline_import BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE candidate_application
+    ADD COLUMN IF NOT EXISTS source_received_on DATE;
+ALTER TABLE candidate_application
+    ADD COLUMN IF NOT EXISTS stage_started_at TIMESTAMPTZ;
+ALTER TABLE candidate_application
+    ADD COLUMN IF NOT EXISTS system_imported_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+ALTER TABLE candidate_application_stage_event
+    ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE candidate_application_stage_event
+    ADD COLUMN IF NOT EXISTS baseline_import BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Preserve the pre-v15 meaning of Entry Date as first received date for rows
+-- that were already in the system.  Existing stage snapshots are treated as a
+-- baseline below so deploying the event model does not invent conversion work.
+UPDATE candidate_application
+SET source_received_on=entry_date
+WHERE baseline_import=FALSE AND source_received_on IS NULL;
+
 INSERT INTO candidate_application_stage_event
   (application_id,from_stage,to_stage,effective_date,rejection_reason,note,
-   changed_by,event_ref,created_at)
+   changed_by,event_ref,created_at,occurred_at,baseline_import)
 SELECT a.id,e.from_stage,e.to_stage,e.effective_date,e.rejection_reason,e.note,
-       e.changed_by,'LEGACY-' || e.event_ref,e.created_at
+       e.changed_by,'LEGACY-' || e.event_ref,e.created_at,e.created_at,TRUE
 FROM candidate_stage_event e
 JOIN candidate c ON c.id=e.candidate_id
 JOIN LATERAL (
@@ -389,6 +457,12 @@ JOIN LATERAL (
   LIMIT 1
 ) a ON TRUE
 ON CONFLICT (event_ref) DO NOTHING;
+
+-- The same migration may have run in an earlier release before baseline
+-- semantics existed.  Repair those rows deterministically and idempotently.
+UPDATE candidate_application_stage_event
+SET baseline_import=TRUE, occurred_at=created_at
+WHERE event_ref LIKE 'LEGACY-%';
 
 -- ============================================================
 --  Nexus 运营模块（纯增量：职位 owner、文档模板库、渠道成本）

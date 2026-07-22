@@ -23,6 +23,7 @@ import hmac
 import io
 import json
 import uuid
+import zipfile
 from datetime import date
 from io import BytesIO
 
@@ -39,8 +40,40 @@ import channel_pipeline_schema as pipeline_schema
 
 WORKBOOK_META_SHEET = "_NEXUS_META"
 WORKBOOK_ARTIFACT_TYPE = "channel-candidate-pipeline"
-WORKBOOK_META_VERSION = "channel-workbook-v2"
+WORKBOOK_META_VERSION = "channel-workbook-v3"
 MINIMUM_SIGNING_KEY_BYTES = 32
+MAX_XLSX_COMPRESSED_BYTES = 16 * 1024 * 1024
+MAX_XLSX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_XLSX_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_XLSX_MEMBERS = 250
+
+
+def _validate_xlsx_container(data):
+    if len(data) > MAX_XLSX_COMPRESSED_BYTES:
+        raise ValueError("The workbook exceeds the 16 MB safety limit.")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+            if len(members) > MAX_XLSX_MEMBERS:
+                raise ValueError("The workbook contains too many internal files.")
+            total = 0
+            for member in members:
+                name = member.filename.replace("\\", "/").casefold()
+                if member.file_size > MAX_XLSX_MEMBER_BYTES:
+                    raise ValueError("The workbook contains an oversized internal file.")
+                total += member.file_size
+                if total > MAX_XLSX_UNCOMPRESSED_BYTES:
+                    raise ValueError("The workbook expands beyond the 64 MB safety limit.")
+                if name.startswith("xl/externallinks/") or name.endswith("vbaproject.bin"):
+                    raise ValueError("External links and macros are not accepted in HR workbooks.")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("The uploaded file is not a valid XLSX workbook.") from exc
+
+
+def _safe_excel_value(value, kind):
+    if kind == "text" and isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
 
 
 def _workbook_signature(metadata, signing_key):
@@ -59,6 +92,7 @@ def _catalog_snapshot(jobs):
             "job_ref": str(job.get("job_ref") or ("legacy-id-%s" % job.get("id"))),
             "title": str(job.get("title") or ""),
             "catalog_revision": int(job.get("catalog_revision") or 1),
+            "accept_new": str(job.get("status") or "open").casefold() == "open",
         }
         for job in sorted(jobs or [], key=lambda item: str(item.get("job_ref") or ""))
     ]
@@ -93,8 +127,25 @@ def _decode_row_token(value, signing_key):
     return payload
 
 
-def _attach_workbook_metadata(data, generated_date, signing_key, jobs=()):
+def _attach_workbook_metadata(
+    data, generated_date, signing_key, jobs=(), *, row_versions=None,
+    row_job_refs=None, row_sources=None, channels=None,
+):
     catalog = _catalog_snapshot(jobs)
+    channel_catalog = sorted({
+        str(value or "").strip()
+        for value in (channels or CHANNELS)
+        if str(value or "").strip()
+    })
+    row_versions = {str(key): int(value or 0) for key, value in (row_versions or {}).items()}
+    row_job_refs = {str(key): str(value or "") for key, value in (row_job_refs or {}).items()}
+    row_sources = {
+        str(key): {
+            "channel": str((value or {}).get("channel") or ""),
+            "source_detail": str((value or {}).get("source_detail") or ""),
+        }
+        for key, value in (row_sources or {}).items()
+    }
     metadata = {
         "artifact_type": WORKBOOK_ARTIFACT_TYPE,
         "artifact_version": WORKBOOK_META_VERSION,
@@ -103,6 +154,8 @@ def _attach_workbook_metadata(data, generated_date, signing_key, jobs=()):
         "artifact_id": str(uuid.uuid4()),
         "job_catalog": json.dumps(catalog, ensure_ascii=False, sort_keys=True,
                                   separators=(",", ":")),
+        "channel_catalog": json.dumps(channel_catalog, ensure_ascii=False,
+                                      separators=(",", ":")),
     }
     date.fromisoformat(metadata["generated_date"])
     metadata["signature"] = _workbook_signature(metadata, signing_key)
@@ -115,7 +168,7 @@ def _attach_workbook_metadata(data, generated_date, signing_key, jobs=()):
                        for row in range(2, data_ws.max_row + 1)
                        if str(data_ws.cell(row=row, column=headers["Job"]).value or "").strip()})
         catalog = [{"job_ref": "legacy-title-" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:16],
-                    "title": title, "catalog_revision": 1} for title in seen]
+                    "title": title, "catalog_revision": 1, "accept_new": True} for title in seen]
         metadata["job_catalog"] = json.dumps(catalog, ensure_ascii=False, sort_keys=True,
                                              separators=(",", ":"))
         metadata["signature"] = _workbook_signature(
@@ -134,13 +187,16 @@ def _attach_workbook_metadata(data, generated_date, signing_key, jobs=()):
             "schema_version": pipeline_schema.SCHEMA_VERSION,
             "row_ref": row_ref,
             "candidate_id": str(data_ws.cell(row=row_index, column=candidate_col).value or "") if candidate_col else "",
-            "record_version": 1,
+            "record_version": row_versions.get(row_ref, 0),
+            "job_ref": row_job_refs.get(row_ref, ""),
+            "source_channel": (row_sources.get(row_ref) or {}).get("channel", ""),
+            "source_detail": (row_sources.get(row_ref) or {}).get("source_detail", ""),
         }
         data_ws.cell(row=row_index, column=token_col, value=_row_token(payload, signing_key))
     ws = wb.create_sheet(WORKBOOK_META_SHEET)
     for row_index, key in enumerate(
         ("artifact_type", "artifact_version", "schema_version", "generated_date",
-         "artifact_id", "job_catalog", "signature"), start=1
+         "artifact_id", "job_catalog", "channel_catalog", "signature"), start=1
     ):
         ws.cell(row=row_index, column=1, value=key)
         ws.cell(row=row_index, column=2, value=metadata[key])
@@ -151,7 +207,8 @@ def _attach_workbook_metadata(data, generated_date, signing_key, jobs=()):
 
 
 def _verify_workbook_metadata(data, expected_date, signing_key):
-    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=False)
+    _validate_xlsx_container(data)
+    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=False, keep_links=False)
     if WORKBOOK_META_SHEET not in wb.sheetnames:
         raise ValueError(
             "This workbook has no Nexus provenance record. Download a fresh workbook today."
@@ -161,12 +218,12 @@ def _verify_workbook_metadata(data, expected_date, signing_key):
         str(ws.cell(row=row, column=1).value or ""): str(
             ws.cell(row=row, column=2).value or ""
         )
-        for row in range(1, 8)
+        for row in range(1, 9)
     }
     signature = metadata.pop("signature", "")
     required = {
         "artifact_type", "artifact_version", "schema_version", "generated_date",
-        "artifact_id", "job_catalog"
+        "artifact_id", "job_catalog", "channel_catalog"
     }
     if set(metadata) != required:
         raise ValueError("The workbook provenance record is incomplete.")
@@ -193,8 +250,12 @@ def _verify_workbook_metadata(data, expected_date, signing_key):
         )
     try:
         metadata["job_catalog"] = json.loads(metadata["job_catalog"])
+        metadata["channel_catalog"] = json.loads(metadata["channel_catalog"])
+        if not isinstance(metadata["job_catalog"], list) or not isinstance(
+                metadata["channel_catalog"], list):
+            raise ValueError
     except (TypeError, ValueError) as exc:
-        raise ValueError("The workbook job catalog snapshot is invalid.") from exc
+        raise ValueError("The workbook catalog snapshot is invalid.") from exc
     return metadata
 
 # 候选人联系表用到的下拉
@@ -305,7 +366,7 @@ def build_xlsx(columns, prefill_rows=None, sheet_title="录入", extra_blank=0, 
                         v = date.fromisoformat(v[:10])
                     except ValueError:
                         pass
-                cell.value = v
+                cell.value = _safe_excel_value(v, c["kind"])
                 if c["kind"] == "date":
                     cell.number_format = "yyyy-mm-dd"
         r += 1
@@ -400,7 +461,7 @@ def _table(data, filename):
     if (filename or "").lower().endswith(".csv"):
         text = data.decode("utf-8-sig", errors="replace")
         return [row for row in csv.reader(io.StringIO(text))]
-    wb = load_workbook(io.BytesIO(data), data_only=True)
+    wb = load_workbook(io.BytesIO(data), data_only=True, keep_links=False)
     ws = None
     for name in wb.sheetnames:
         if name != "_refs" and wb[name].sheet_state == "visible":
@@ -540,11 +601,12 @@ def parse_candidate_sheet(data, filename, jobs, sources=None):
 
 
 # ---------------- 招聘流水线候选人表（运营口径：每行一个候选人，状态走漏斗） ----------------
-def pipeline_columns(job_titles):
+def pipeline_columns(job_titles, channels=None):
+    channel_choices = list(channels or CHANNELS)
     columns = []
     for spec in pipeline_schema.columns_for("xlsx"):
         choices = (
-            CHANNELS if spec["key"] == "channel"
+            channel_choices if spec["key"] == "channel"
             else job_titles if spec["key"] == "job"
             else PIPELINE_STATUS if spec["key"] == "status"
             else None
@@ -560,10 +622,17 @@ def pipeline_columns(job_titles):
 def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=""):
     """候选人跟进表：把在跟进中的候选人（带「记录ID」+当前状态）预填进去，HR 直接在「状态」列往前改；
     末尾留空行给新候选人（记录ID 留空）。上传时——有记录ID 的按 ID 原地更新，没 ID 的当新增，系统自动分辨。"""
-    cols = pipeline_columns([j["title"] for j in jobs])
+    candidates = list(candidates or [])
+    channel_choices = sorted({
+        *CHANNELS,
+        *(str(candidate.get("channel") or "").strip() for candidate in candidates),
+    } - {""})
+    cols = pipeline_columns(sorted({j["title"] for j in jobs}), channel_choices)
     id2title = {j["id"]: j["title"] for j in jobs}
     prefill = []
-    for c in (candidates or []):
+    row_versions, row_job_refs, row_sources = {}, {}, {}
+    for c in candidates:
+        row_ref = c.get("application_ref") or c.get("ext_ref") or ("candidate-%s" % c.get("id"))
         prefill.append({
             "cand_id": str(c.get("application_ref") or c.get("id") or ""),
             "name": c.get("name") or "",
@@ -574,8 +643,20 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=
             "rejection_reason": c.get("rejection_reason") or "",
             "note": c.get("note") or "",
             "filled_by": c.get("filled_by") or "",
-            "row_ref": c.get("application_ref") or c.get("ext_ref") or ("candidate-%s" % c.get("id")),
+            "row_ref": row_ref,
         })
+        row_versions[str(row_ref)] = int(c.get("record_version") or 1)
+        row_job_refs[str(row_ref)] = str(
+            c.get("job_ref") or next(
+                (job.get("job_ref") for job in jobs
+                 if job.get("id") == c.get("job_request_id")),
+                "",
+            ) or ""
+        )
+        row_sources[str(row_ref)] = {
+            "channel": c.get("channel") or "",
+            "source_detail": c.get("source_detail") or "",
+        }
     blank_count = 30 if prefill else 60
     # HR surfaces contain commands only. Entry Date is assigned when a row is
     # first imported, while Stage Started On comes from immutable stage events.
@@ -584,36 +665,41 @@ def build_pipeline_template_xlsx(jobs, day, by="", candidates=None, signing_key=
     data = build_xlsx(cols, prefill_rows=prefill,
                       sheet_title=pipeline_schema.PIPELINE_TABLE_NAME,
                       extra_blank=0, blank_defaults={})
-    return _attach_workbook_metadata(data, day, signing_key, jobs)
+    return _attach_workbook_metadata(
+        data, day, signing_key, jobs,
+        row_versions=row_versions, row_job_refs=row_job_refs,
+        row_sources=row_sources, channels=channel_choices,
+    )
 
 
 def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
                          signing_key=""):
     """解析 HR 交回的候选人跟进表 → 候选人行。带「记录ID」= 已有候选人（更新），无 ID = 新候选人（新增）。"""
     metadata = _verify_workbook_metadata(data, default_date, signing_key)
-    current_by_ref = {str(j.get("job_ref") or ("legacy-id-%s" % j.get("id"))): j for j in jobs}
+    current_by_ref = {
+        str(j.get("job_ref") or ("legacy-id-%s" % j.get("id"))): j for j in jobs
+    }
     current_by_title = {_s(j.get("title")): j for j in jobs}
-    catalog_by_title = {_s(j["title"]): j for j in metadata["job_catalog"]}
-    cols = pipeline_columns([j["title"] for j in metadata["job_catalog"]])
+    catalog_by_ref = {
+        str(j.get("job_ref") or ""): j for j in metadata["job_catalog"]
+    }
+    new_catalog_by_title = {}
+    for job in metadata["job_catalog"]:
+        if job.get("accept_new"):
+            new_catalog_by_title.setdefault(_s(job.get("title")), []).append(job)
+    cols = pipeline_columns(
+        sorted({_s(j.get("title")) for j in metadata["job_catalog"] if _s(j.get("title"))}),
+        metadata["channel_catalog"],
+    )
 
     def skip(r):
         return not (r.get("channel") or r.get("name"))  # 渠道和姓名都空 -> 空行
 
     res = parse_rows(cols, data, filename, required=["channel"], skip=skip)
     out, errors = [], list(res["errors"])
+    seen_refs, seen_tokens = {}, {}
+    duplicate_identity = False
     for r in res["rows"]:
-        catalog_job = catalog_by_title.get(r.get("job"))
-        catalog_ref = str((catalog_job or {}).get("job_ref") or "")
-        current_job = current_by_ref.get(catalog_ref)
-        if current_job is None and catalog_ref.startswith("legacy-title-"):
-            current_job = current_by_title.get(r.get("job"))
-        jid = current_job.get("id") if current_job else None
-        if r.get("job") and not catalog_job:
-            errors.append("Row %d: Job is not part of this workbook's signed catalog" % r.get("__line__", 0))
-            continue
-        if catalog_job and not current_job:
-            errors.append("Row %d: Job no longer exists in the operational catalog" % r.get("__line__", 0))
-            continue
         try:
             token = _decode_row_token(r.get("row_token"), signing_key)
         except ValueError as exc:
@@ -624,9 +710,56 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
                 str(token.get("candidate_id") or "") != str(r.get("cand_id") or "")):
             errors.append("Row %d: signed system identity does not match the row" % r.get("__line__", 0))
             continue
+        row_ref = (r.get("row_ref") or "").strip()
+        row_token = (r.get("row_token") or "").strip()
+        for value, seen, label in (
+            (row_ref, seen_refs, "Row Ref"),
+            (row_token, seen_tokens, "System Row Token"),
+        ):
+            if value in seen:
+                errors.append(
+                    "Rows %d and %d contain the same %s; copied system identities are not accepted"
+                    % (seen[value], r.get("__line__", 0), label)
+                )
+                duplicate_identity = True
+            else:
+                seen[value] = r.get("__line__", 0)
+
+        existing_row = bool((r.get("cand_id") or "").strip())
+        if existing_row:
+            catalog_ref = str(token.get("job_ref") or "")
+            catalog_job = catalog_by_ref.get(catalog_ref)
+            if not catalog_job:
+                errors.append("Row %d: the signed Job Ref is missing from this artifact" % r.get("__line__", 0))
+                continue
+            if _s(r.get("job")) != _s(catalog_job.get("title")):
+                errors.append("Row %d: Job is protected for an existing application" % r.get("__line__", 0))
+                continue
+            if (_s(r.get("channel")) != _s(token.get("source_channel")) or
+                    _s(r.get("source_detail")) != _s(token.get("source_detail"))):
+                errors.append("Row %d: Source attribution is protected for an existing application" % r.get("__line__", 0))
+                continue
+        else:
+            choices = new_catalog_by_title.get(_s(r.get("job"))) or []
+            if len(choices) != 1:
+                errors.append(
+                    "Row %d: Job must identify exactly one Open requisition in this signed workbook"
+                    % r.get("__line__", 0)
+                )
+                continue
+            catalog_job = choices[0]
+            catalog_ref = str(catalog_job.get("job_ref") or "")
+
+        current_job = current_by_ref.get(catalog_ref)
+        if current_job is None and catalog_ref.startswith("legacy-title-"):
+            current_job = current_by_title.get(_s(catalog_job.get("title")))
+        if not current_job:
+            errors.append("Row %d: Job no longer exists in the operational catalog" % r.get("__line__", 0))
+            continue
+        jid = current_job.get("id")
         # New applications can only enter an Open requisition. Existing rows
         # may finish work after a requisition moves to Paused/Closing/Closed.
-        if current_job and not (r.get("cand_id") or "").strip() and current_job.get("status", "open") != "open":
+        if not existing_row and _s(current_job.get("status") or "open").casefold() != "open":
             errors.append("Row %d: new candidates require an Open requisition" % r.get("__line__", 0))
             continue
         # Entry Date is system-owned. A workbook value is display-only and is
@@ -653,16 +786,22 @@ def parse_pipeline_sheet(data, filename, jobs, default_by="", default_date=None,
             errors.append("第%d行：Rejected 必须填写 Rejection Reason" % r.get("__line__", 0))
             continue
         out.append({"cand_id": (r.get("cand_id") or "").strip(),
-                    "row_ref": (r.get("row_ref") or "").strip(), "record_date": rd,
+                    "row_ref": row_ref, "record_date": rd,
                     "name": r.get("name", ""), "channel": r["channel"],
                     "source_detail": r.get("source_detail", ""),
                     "job_request_id": jid,
                     "job_ref": (catalog_job or {}).get("job_ref", ""),
                     "catalog_revision": int((catalog_job or {}).get("catalog_revision") or 1),
+                    "expected_version": int(token.get("record_version") or 0),
+                    "artifact_id": metadata["artifact_id"],
                     "status": r.get("status") or "New Lead",
                     "stage_date": "", "rejection_reason": r.get("rejection_reason", ""),
                     "note": r.get("note", ""), "filled_by": r.get("filled_by") or default_by})
-    return {"rows": out, "skipped": res["skipped"], "errors": errors}
+    if duplicate_identity:
+        return {"rows": [], "skipped": res["skipped"], "errors": errors, "fatal": True,
+                "artifact_id": metadata["artifact_id"]}
+    return {"rows": out, "skipped": res["skipped"], "errors": errors,
+            "artifact_id": metadata["artifact_id"]}
 
 
 # ================= 招聘分析导出（汇报用 xlsx；供 /api/channel/export.xlsx） =================

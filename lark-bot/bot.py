@@ -1191,6 +1191,40 @@ def api_candidate_create():
     rd = _kolkata_today().isoformat()
     stage_date = rd
     application_ref = ""
+    requested_stage = d.get("status") or "New Lead"
+    if hasattr(db, "apply_candidate_application_command"):
+        client_event = (d.get("submission_event_id") or "").strip() or secrets.token_urlsafe(18)
+        row_ref = (d.get("ext_ref") or "").strip() or ("web-" + client_event)
+        command_payload = {
+            "row_ref": row_ref, "name": (d.get("name") or "").strip(),
+            "channel": d["channel"], "source_detail": (d.get("source_detail") or "").strip(),
+            "job_request_id": jid, "stage": requested_stage,
+            "note": (d.get("note") or "").strip(),
+            "hr_owner": (d.get("filled_by") or "").strip(),
+            "rejection_reason": (d.get("rejection_reason") or "").strip(),
+        }
+        payload_sha = hashlib.sha256(json.dumps(
+            command_payload, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        try:
+            result = db.apply_candidate_application_command(
+                event_id="web-create-" + client_event, artifact_id="manager-website",
+                row_ref=row_ref, payload_sha256=payload_sha, transport="website",
+                entry_date=rd, name=command_payload["name"], channel=d["channel"],
+                source_detail=command_payload["source_detail"], job_request_id=jid,
+                stage=requested_stage, note=command_payload["note"],
+                hr_owner=command_payload["hr_owner"],
+                rejection_reason=command_payload["rejection_reason"], source="Website",
+                changed_by="manager-website", baseline_import=requested_stage != "New Lead",
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify({"ok": True, "id": result.get("application_id"),
+                        "application_ref": result.get("application_ref"),
+                        "record_version": result.get("record_version"),
+                        "idempotent": result.get("idempotent", False),
+                        "warnings": warnings})
     if hasattr(db, "create_candidate_application"):
         application, _ = db.create_candidate_application(
             rd, (d.get("name") or "").strip(), d["channel"], jid,
@@ -1205,7 +1239,6 @@ def api_candidate_create():
             "New Lead", (d.get("note") or "").strip(),
             (d.get("filled_by") or "").strip(), d.get("source") or "手动",
             (d.get("ext_ref") or "").strip(), "", (d.get("source_detail") or "").strip())
-    requested_stage = d.get("status") or "New Lead"
     # Every candidate receives an initial immutable stage event. Stage Started On is
     # system-owned and never accepted from website/Lark/Excel HR input.
     if application_ref:
@@ -1236,18 +1269,57 @@ def api_candidate_update(cid):
         return jsonify({"error": "；".join(errors), "errors": errors}), 422
     jid = d.get("job_request_id")
     jid = int(jid) if str(jid or "").strip().isdigit() else None
-    job = db.get_job_request(jid) if jid is not None else None
-    if jid is not None and not job:
-        return jsonify({"error": "职位不存在（job_request_id 非法）", "errors": ["职位不存在"]}), 422
-    if jid != existing.get("job_request_id") and job and (
-        job.get("record_type", "operational") != "operational" or job.get("status", "open") != "open"
-    ):
-        return jsonify({"error": "新关联只能选择正在招聘的实际职位"}), 409
+    if jid != existing.get("job_request_id"):
+        return jsonify({
+            "error": "Job is immutable for an existing application. "
+                     "Create a new application if the same person is considered for another requisition."
+        }), 409
     submitted_name = (d.get("name") or "").strip()
     if submitted_name != (existing.get("name") or "").strip():
-        return jsonify({"error": "Candidate 是系统身份字段，已有候选人名称不可修改"}), 422
+        return jsonify({"error": "Candidate identity is protected for an existing application."}), 409
+    source_detail = (d.get("source_detail") or "").strip()
+    if (str(d.get("channel") or "").strip() != str(existing.get("channel") or "").strip()
+            or source_detail != str(existing.get("source_detail") or "").strip()):
+        return jsonify({
+            "error": "Source attribution is immutable after an application is created."
+        }), 409
+    requested_stage = d.get("status") or "New Lead"
+    if application and hasattr(db, "apply_candidate_application_command"):
+        client_event = (d.get("submission_event_id") or "").strip()
+        if not client_event:
+            return jsonify({"error": "submission_event_id is required"}), 422
+        command_payload = {
+            "application_ref": application["application_ref"],
+            "expected_version": int(d.get("expected_version") or 0),
+            "stage": requested_stage,
+            "note": (d.get("note") or "").strip(),
+            "hr_owner": (d.get("filled_by") or "").strip(),
+            "rejection_reason": (d.get("rejection_reason") or "").strip(),
+        }
+        payload_sha = hashlib.sha256(json.dumps(
+            command_payload, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        row_ref = str(application.get("external_ref") or application["application_ref"])
+        try:
+            result = db.apply_candidate_application_command(
+                event_id="web-update-" + client_event, artifact_id="manager-website",
+                row_ref=row_ref, payload_sha256=payload_sha, transport="website",
+                entry_date=_kolkata_today().isoformat(), name=submitted_name,
+                channel=application.get("channel") or "",
+                source_detail=application.get("source_detail") or "",
+                job_request_id=application.get("job_request_id"), stage=requested_stage,
+                note=command_payload["note"], hr_owner=command_payload["hr_owner"],
+                rejection_reason=command_payload["rejection_reason"],
+                application_ref=application["application_ref"],
+                expected_version=command_payload["expected_version"],
+                source="Website", changed_by="manager-website",
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify({"ok": True, "warnings": warnings, "result": result})
     fields = dict(channel=d["channel"], job_request_id=jid,
-        source_detail=(d.get("source_detail") or "").strip(), note=(d.get("note") or "").strip())
+        source_detail=source_detail, note=(d.get("note") or "").strip())
     fields["hr_owner" if application else "filled_by"] = (d.get("filled_by") or "").strip()
     if d.get("source"):
         fields["source"] = d["source"]
@@ -1259,7 +1331,6 @@ def api_candidate_update(cid):
     else:
         db.update_candidate(cid, **fields)
     transition = None
-    requested_stage = d.get("status") or "New Lead"
     existing_stage = existing.get("current_stage") if application else existing.get("status")
     if requested_stage != (existing_stage or "New Lead"):
         if application:
@@ -1529,8 +1600,7 @@ def api_channel_analytics():
     prev_from = dfrom - datetime.timedelta(days=span)          # 上一周期（同长度、紧邻在前）
     space = request.args.get("space", "manual")
     if space == "derived":
-        cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
-        rows = channel_report.candidates_to_daily(cands)
+        rows = db.list_candidate_metric_rows_range(prev_from.isoformat(), dto.isoformat())
     else:
         space = "manual"
         rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
@@ -1560,8 +1630,7 @@ def api_channel_export():
     prev_from = dfrom - datetime.timedelta(days=span)
     space = request.args.get("space", "manual")
     if space == "derived":
-        cands = db.list_candidates_range(prev_from.isoformat(), dto.isoformat())
-        rows = channel_report.candidates_to_daily(cands)
+        rows = db.list_candidate_metric_rows_range(prev_from.isoformat(), dto.isoformat())
     else:
         rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
     jobs = db.list_job_requests(only_open=False)
@@ -1780,10 +1849,18 @@ def api_channel_template():
         return jsonify({"error": "unauthorized"}), 401
     day = _kolkata_today().isoformat()
     by = request.args.get("by", "")
-    jobs = db.list_job_requests(only_open=True)
+    open_jobs = db.list_job_requests(only_open=True)
+    candidates = db.list_candidate_applications_active()
+    referenced_job_ids = {row.get("job_request_id") for row in candidates}
+    historical_jobs = [
+        job for job in db.list_job_requests(only_open=False)
+        if job.get("id") in referenced_job_ids
+    ]
+    jobs_by_id = {job.get("id"): job for job in (*open_jobs, *historical_jobs)}
+    jobs = list(jobs_by_id.values())
     try:
         data = sheet_io.build_pipeline_template_xlsx(
-            jobs, day, by, db.list_candidate_applications_active(),
+            jobs, day, by, candidates,
             signing_key=NEXUS_INTEGRATION_SIGNING_KEY,
         )
     except ValueError as exc:
@@ -1812,8 +1889,11 @@ def api_channel_upload():
     default_date = _kolkata_today().isoformat()
     jobs = db.list_job_requests(only_open=False)
     try:
+        upload = f.read(16 * 1024 * 1024 + 1)
+        if len(upload) > 16 * 1024 * 1024:
+            return jsonify({"error": "The workbook is larger than the 16 MB safety limit."}), 413
         parsed = sheet_io.parse_pipeline_sheet(
-            f.read(), f.filename or "", jobs, owner, default_date,
+            upload, f.filename or "", jobs, owner, default_date,
             signing_key=NEXUS_INTEGRATION_SIGNING_KEY,
         )
     except Exception as e:

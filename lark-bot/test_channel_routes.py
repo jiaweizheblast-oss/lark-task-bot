@@ -20,6 +20,7 @@ class FakeChannelStore:
             "lark_channel_schema_version": "channel-analytics-v2",
         }
         self.candidates = {}
+        self.receipts = {}
         self.next_candidate_id = 1
 
     def upsert(self, record_date, channel, job_request_id, filled_by,
@@ -98,6 +99,42 @@ def main():
     })
     bot.db.transition_candidate_application = lambda ref, *args: store.transition(int(ref.split('-')[1]), *args)
     bot.db.list_candidate_application_stage_events = lambda app_id: []
+    def apply_command(**command):
+        receipt = store.receipts.get(command["event_id"])
+        if receipt:
+            assert receipt[0] == command["payload_sha256"]
+            return {**receipt[1], "idempotent": True}
+        ref = command.get("application_ref") or ""
+        if ref:
+            candidate_id = int(ref.split("-")[1])
+            row = store.candidates[candidate_id]
+            assert int(command.get("expected_version") or 0) == int(row.get("record_version") or 1)
+            changed = row.get("status") != command["stage"] or row.get("note") != command["note"]
+            row.update(status=command["stage"], note=command["note"],
+                       filled_by=command["hr_owner"])
+            if changed:
+                row["stage_date"] = command["entry_date"]
+                row["record_version"] = int(row.get("record_version") or 1) + 1
+            result = {"created": False, "updated": changed,
+                      "application_ref": ref, "record_version": row.get("record_version", 1),
+                      "application_id": candidate_id, "candidate_id": candidate_id,
+                      "idempotent": not changed}
+        else:
+            candidate_id = store.create_candidate(
+                command["entry_date"], command["name"], command["channel"],
+                command["job_request_id"], command["stage"], command["note"],
+                 command["hr_owner"], command["source"], command["row_ref"],
+                 command.get("lark_record_id", ""), command["source_detail"])
+            store.candidates[candidate_id].update(
+                stage_date=command["entry_date"], record_version=1,
+            )
+            result = {"created": True, "updated": False,
+                      "application_ref": "APP-%d" % candidate_id,
+                      "application_id": candidate_id, "candidate_id": candidate_id,
+                      "record_version": 1, "idempotent": False}
+        store.receipts[command["event_id"]] = (command["payload_sha256"], result)
+        return result
+    bot.db.apply_candidate_application_command = apply_command
 
     workspace_card = bot.cards.channel_sheet_card(
         "https://example.test/base", "https://example.test/panel",
@@ -187,7 +224,7 @@ def main():
         content_type="multipart/form-data")
     assert repeated_upload.status_code == 200
     assert repeated_upload.get_json()["created"] == 0
-    assert repeated_upload.get_json()["updated"] == 1
+    assert repeated_upload.get_json()["updated"] == 0
     assert len(store.candidates) == 1
 
     stale_workbook = sheet_io._attach_workbook_metadata(
@@ -299,6 +336,7 @@ def main():
             "name": "Ravi", "channel": "Naukri", "job_request_id": 7,
             "status": "Rejected", "stage_date": "2026-07-22",
             "rejection_reason": "Compensation mismatch", "filled_by": "HR-01",
+            "submission_event_id": "route-reject-1", "expected_version": 1,
         })
     assert rejected.status_code == 200
     assert store.candidates[candidate_id]["status"] == "Rejected"
