@@ -14,6 +14,7 @@ import psycopg2.extras
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SCHEMA_MIGRATIONS = (
     ("20260722_recruiting_core_v1", "schema.sql"),
+    ("20260722_recruiting_core_v2", "schema_20260722_recruiting_core_v2.sql"),
     ("20260722_talent_publication_queue_v1", "schema_20260722_talent_publication_queue_v1.sql"),
     ("20260722_talent_daily_publication_v2", "schema_20260722_talent_daily_publication_v2.sql"),
 )
