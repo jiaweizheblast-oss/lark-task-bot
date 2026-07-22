@@ -313,6 +313,30 @@ FROM candidate c
 -- completed migration restartable.
 ON CONFLICT DO NOTHING;
 
+-- A legacy candidate may have been reassigned after an older release created
+-- its first deterministic application reference. Preserve that old workflow
+-- and add the now-missing current candidate/requisition pair under a second
+-- deterministic reference. This migration is additive: it never overwrites
+-- an earlier application or its stage history.
+INSERT INTO candidate_application
+  (application_ref,candidate_id,job_request_id,entry_date,channel,source_detail,
+   current_stage,note,hr_owner,source,external_ref,lark_record_id,record_version,
+   created_at,updated_at)
+SELECT
+  'APP-LEGACY-' || lpad(c.id::text, 10, '0') || '-' ||
+    COALESCE(c.job_request_id::text, 'NONE'),
+  c.id, c.job_request_id, c.apply_date, c.channel, c.source_detail, c.status,
+  c.note, c.filled_by, c.source, c.ext_ref, c.lark_record_id, 1,
+  c.created_at, c.updated_at
+FROM candidate c
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM candidate_application a
+  WHERE a.candidate_id = c.id
+    AND a.job_request_id IS NOT DISTINCT FROM c.job_request_id
+)
+ON CONFLICT DO NOTHING;
+
 -- Never turn a genuine reference collision into silently missing workflow
 -- data. Every legacy candidate must have a usable application for
 -- its original requisition (including the NULL legacy-requisition case).
@@ -358,9 +382,9 @@ JOIN LATERAL (
   SELECT ca.id
   FROM candidate_application ca
   WHERE ca.candidate_id=c.id
-    AND ca.job_request_id IS NOT DISTINCT FROM c.job_request_id
   ORDER BY
     (ca.application_ref='APP-' || lpad(c.id::text,10,'0')) DESC,
+    (ca.job_request_id IS NOT DISTINCT FROM c.job_request_id) DESC,
     ca.id ASC
   LIMIT 1
 ) a ON TRUE

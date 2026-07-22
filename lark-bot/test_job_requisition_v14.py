@@ -82,7 +82,9 @@ def main():
     assert "candidate_application legacy migration incomplete" in sql
     assert "a.job_request_id IS NOT DISTINCT FROM c.job_request_id" in sql
     assert "JOIN LATERAL" in sql
+    assert "(ca.job_request_id IS NOT DISTINCT FROM c.job_request_id) DESC" in sql
     assert "ON CONFLICT DO NOTHING" in sql
+    assert "APP-LEGACY-" in sql
     for transaction_unsafe_sql in (
         "CONCURRENTLY", "VACUUM", "REINDEX", "CREATE DATABASE",
         "DROP DATABASE", "ALTER SYSTEM",
@@ -113,6 +115,20 @@ def main():
     migration_db.execute("""INSERT INTO app VALUES('APP-0000000001',1,NULL)
         ON CONFLICT DO NOTHING""")
     assert migration_db.execute("SELECT COUNT(*) FROM app").fetchone()[0] == 1
+
+    # An old application can legitimately remain on the previous requisition
+    # after the legacy candidate projection moves. Add the missing current
+    # pair without mutating the old workflow, and make the backfill restartable.
+    migration_db.execute("""INSERT INTO app VALUES(
+        'APP-LEGACY-0000000001-7',1,7) ON CONFLICT DO NOTHING""")
+    migration_db.execute("""INSERT INTO app VALUES(
+        'APP-LEGACY-0000000001-7',1,7) ON CONFLICT DO NOTHING""")
+    assert migration_db.execute(
+        "SELECT COUNT(*) FROM app WHERE candidate_id=1 AND job_request_id=7"
+    ).fetchone()[0] == 1
+    assert migration_db.execute(
+        "SELECT COUNT(*) FROM app WHERE candidate_id=1"
+    ).fetchone()[0] == 2
     migration_db.close()
 
     # Schema initialization is serialized and atomic. The success path commits
