@@ -1,4 +1,5 @@
 import io
+import json
 
 import bot
 
@@ -76,6 +77,15 @@ def main():
     assert sent.status_code == 200
     assert sent.get_json()["result"] == {"chat_id": "-1001", "message_id": 42}
     assert calls[-1][1].endswith("test-channel-id/send-test-upload")
+    forwarded_buttons = json.loads(calls[-1][2]["data"]["buttons"])
+    assert forwarded_buttons == [
+        {
+            "label": "OPEN BOT",
+            "value": "https://t.me/Game21HubBot",
+            "row": 0,
+            "position": 0,
+        }
+    ]
 
     print("TG website routes: PASS")
 
