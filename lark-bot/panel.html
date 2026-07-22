@@ -436,7 +436,7 @@
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:13px">HR 分配</b><span class="muted" style="padding:0;font-size:12px">填写 HR 姓名和各自需要的候选人数；合计即为本次搜索目标。</span><button class="btn ghost sm" type="button" onclick="addHrAllocation()">＋ 添加 HR</button><span id="tdHrTotal" style="margin-left:auto;font-size:12px;font-weight:700"></span></div>
             <div id="tdHrAllocations" style="display:grid;gap:7px;margin-top:8px"></div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><button class="btn" onclick="queueTalentPreview()">确认分配并开始搜索</button><span class="muted" style="padding:0;font-size:12px">搜索只读取公开结果并冻结同一次扫描；精确达到正式人数后，才按此分配生成当天唯一 Recruiting 表。短缺结果不会发布。</span></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><button class="btn" onclick="queueTalentPreview()">开始搜索并生成今日表</button><span class="muted" style="padding:0;font-size:12px">一次确认即可：搜索、冻结、导入和发布自动衔接；短缺结果不会发布。</span></div>
           <div id="tdSearchMessage" style="font-size:12px;margin-top:8px"></div>
         </div>
         <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>搜索任务队列</b><button class="btn ghost sm" onclick="loadTalentTasks()">刷新</button></div><div id="tdSearchTasks"></div></div>
@@ -567,20 +567,43 @@ async function queueTalentPreview(){
   const names=allocations.map(x=>x.name.toLocaleLowerCase());
   if(!allocations.length||allocations.some(x=>!x.name||!Number.isInteger(x.count)||x.count<1)||new Set(names).size!==names.length){msg.textContent='请填写 1–20 名不重复的 HR 姓名，并为每人分配至少 1 名候选人。';return;}
   const taskId=(crypto&&crypto.randomUUID)?crypto.randomUUID():('00000000-0000-4000-8000-'+String(Date.now()).padStart(12,'0').slice(-12)),observations=Math.min(2000,Math.max(500,quota*8));
-  const payload={task_id:taskId,operational_job_ref:operational.job_ref,core_job_ref:profile.core_job_ref,requested_contact_count:quota,max_review_pool_count:0,hr_allocations:allocations,budgets:{max_sources:2,max_queries_per_source:Math.min(30,Math.max(12,Math.ceil(quota/5))),max_pages_per_query:2,max_results_per_source:Math.min(1000,Math.max(250,quota*5)),max_total_observations:observations,max_enrichment_candidates:Math.min(200,Math.max(50,quota)),max_provider_api_requests:20,max_enrichment_api_requests:10,time_budget_seconds:Math.min(1800,Math.max(600,quota*9)),api_time_budget_seconds:90,request_timeout_seconds:10}};
-  try{const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();if(!response.ok){msg.textContent='任务被拒绝：'+(body.error||'unknown');return;}msg.textContent='已安全排队并锁定 HR 分配。搜索完成后先冻结完整候选人载荷；只有完整载荷通过发布校验，才生成当天招聘总表。';loadTalentTasks();}catch(e){msg.textContent='搜索队列暂不可用。';}
+  const payload={task_id:taskId,operational_job_ref:operational.job_ref,core_job_ref:profile.core_job_ref,requested_contact_count:quota,max_review_pool_count:0,auto_publish:true,hr_allocations:allocations,budgets:{max_sources:2,max_queries_per_source:Math.min(30,Math.max(12,Math.ceil(quota/5))),max_pages_per_query:2,max_results_per_source:Math.min(1000,Math.max(250,quota*5)),max_total_observations:observations,max_enrichment_candidates:Math.min(200,Math.max(50,quota)),max_provider_api_requests:20,max_enrichment_api_requests:10,time_budget_seconds:Math.min(1800,Math.max(600,quota*9)),api_time_budget_seconds:90,request_timeout_seconds:10}};
+  try{const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();if(!response.ok){msg.textContent='任务被拒绝：'+(body.error||'unknown');return;}msg.textContent='已开始。系统将在搜索成功后自动生成今日招聘表，无需再次点击发布。';loadTalentTasks();}catch(e){msg.textContent='搜索队列暂不可用。';}
 }
 async function retryTalentPublish(taskId){try{const r=await api('/api/talent/search-tasks/'+encodeURIComponent(taskId)+'/publish',{method:'POST'}),j=await r.json();if(!r.ok)throw new Error(j.detail||j.error||'Publication failed');toast(`✅ 已将今日 ${j.cohort_count||''} 个职位 cohort 排入本地 Worker；Railway 未写数据库或 Lark`);await Promise.all([loadTalentTasks(),loadChannelTab()]);}catch(e){toast('✗ '+e.message,false);}}
+async function resetTalentPublication(publicationId){
+  if(!publicationId)return;
+  if(!confirm('Cancel this unpublished recruiting table run? Frozen search results will be retained, but this run will not be published.'))return;
+  try{
+    const r=await api('/api/talent/publications/'+encodeURIComponent(publicationId)+'/reset',{method:'POST',body:JSON.stringify({confirm:'RESET_UNPUBLISHED'})}),j=await r.json();
+    if(!r.ok)throw new Error(j.detail||j.error||'Reset failed');
+    toast('Unpublished recruiting table run reset. No Lark table or candidate history was deleted.');
+    await loadTalentTasks();
+  }catch(e){toast(e.message,true);}
+}
 async function loadTalentTasks(){
   const root=document.getElementById('tdSearchTasks');
   if(!root)return;
   try{
-    const data=await(await api('/api/talent/search-tasks')).json(),tasks=data.tasks||[];
+    const data=await(await api('/api/talent/search-tasks')).json(),tasks=(data.tasks||[]).filter(t=>t.status!=='cancelled');
     if(!tasks.length){root.innerHTML='<div class="muted">还没有搜索任务。</div>';return;}
     const readyTasks=tasks.filter(t=>t.status==='succeeded'&&['ready','failed'].includes(t.publication_status||'not_ready'));
     const seed=readyTasks[0];
     const action=seed?`<button class="btn primary sm" onclick="retryTalentPublish('${esc(seed.task_id)}')">发布今日统一表</button>`:'';
-    root.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">先完成当天所有职位搜索，再发布一次。系统会合并当天全部 Ready 职位；发布后不静默追加。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>招聘职位</th><th>配额</th><th>HR 分配</th><th>搜索</th><th>今日统一表</th></tr></thead><tbody>${tasks.map(t=>{const p=t.payload||{},r=t.result||{},pub=t.publication||{},job=TALENT_OPER_JOBS.find(j=>j.job_ref===p.operational_job_ref),split=(p.hr_allocations||[]).map(x=>x.name+' '+x.count).join(' · '),ready=r.selected_contacts??r.contact_ready??0,search=t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting'),ps=t.publication_status||'not_ready',label=ps==='ready'?'Ready（将纳入今日统一表）':ps==='queued'?'等待本地 Worker':ps==='publishing'?'本地 Worker 正在安全导入并发布':ps==='failed'?'发布失败（顶部按钮按原冻结批次重试）':ps;return`<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td>${esc(search)}</td><td>${ps==='published'?`<a href="${esc(pub.spreadsheet_url||'#')}" target="_blank" rel="noopener">Open Recruiting ${esc(pub.business_date||'')}</a>`:esc(label)}</td></tr>`}).join('')}</tbody></table>`;
+    const taskRows=tasks.map(t=>{
+      const p=t.payload||{},r=t.result||{},pub=t.publication||{};
+      const job=TALENT_OPER_JOBS.find(j=>j.job_ref===p.operational_job_ref);
+      const split=(p.hr_allocations||[]).map(x=>x.name+' '+x.count).join(' · ');
+      const ready=r.selected_contacts??r.contact_ready??0;
+      const search=t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting');
+      const ps=t.publication_status||'not_ready';
+      const label=ps==='ready'?'Ready（将纳入今日统一表）':ps==='queued'?'等待本地 Worker':ps==='publishing'?'本地 Worker 正在导入并发布':ps==='failed'?'发布失败':ps;
+      let publicationCell=esc(label);
+      if(ps==='published')publicationCell=`<a href="${esc(pub.spreadsheet_url||'#')}" target="_blank" rel="noopener">Open Recruiting ${esc(pub.business_date||'')}</a>`;
+      else if(['queued','publishing','failed'].includes(ps)&&pub.publication_id)publicationCell=`${esc(label)} <button class="btn ghost sm" onclick="resetTalentPublication('${esc(pub.publication_id)}')">取消本次发布</button>`;
+      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td>${esc(search)}</td><td>${publicationCell}</td></tr>`;
+    }).join('');
+    root.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">完成搜索后只发布一次；卡住或不需要的未发布任务可以立即取消，不再等待租约。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>招聘职位</th><th>配额</th><th>HR 分配</th><th>搜索</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
   }catch(e){root.innerHTML='<div class="muted">搜索队列暂不可用。</div>';}
 }
 function tdCandidateName(r){let u='';try{const x=new URL(r.public_profile_url||'');if(x.protocol==='https:')u=x.href;}catch(e){}const name=esc(r.candidate_name||'—');return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${name}</a>`:name;}

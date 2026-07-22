@@ -141,7 +141,7 @@ def build_task(command, *, now=None):
         raise ValueError("task command must be an object")
     allowed = {
         "task_id", "operational_job_ref", "core_job_ref", "requested_contact_count",
-        "max_review_pool_count", "hr_allocations", "budgets",
+        "max_review_pool_count", "hr_allocations", "budgets", "auto_publish",
     }
     if set(command) - allowed:
         raise ValueError("task command contains unknown fields")
@@ -169,6 +169,9 @@ def build_task(command, *, now=None):
         command.get("max_review_pool_count", 0),
         "max_review_pool_count", 0, 50,
     )
+    auto_publish = command.get("auto_publish", False)
+    if not isinstance(auto_publish, bool):
+        raise ValueError("auto_publish must be a boolean")
     budgets = normalize_budgets(command.get("budgets"))
     if budgets["max_total_observations"] < requested:
         raise ValueError("max_total_observations is below the requested quota")
@@ -184,6 +187,7 @@ def build_task(command, *, now=None):
         "core_job_ref": core_job_ref,
         "requested_contact_count": requested,
         "max_review_pool_count": max_review,
+        "auto_publish": auto_publish,
         "hr_allocations": hr_allocations,
         "budgets": budgets,
     }

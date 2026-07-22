@@ -879,6 +879,68 @@ def queue_talent_daily_publication(
         conn.close()
 
 
+def reset_talent_daily_publication(publication_id):
+    """Remove an unpublished publication command and release its cohorts.
+
+    Frozen search receipts remain available for audit.  Their publication
+    state is reset to ``not_ready`` so a cancelled cohort cannot be included
+    in a later one-click publication accidentally.
+    """
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """SELECT publication_id,status FROM talent_daily_publication
+                   WHERE publication_id=%s FOR UPDATE""",
+                (publication_id,),
+            )
+            publication = cur.fetchone()
+            if not publication:
+                conn.commit()
+                return {"status": "absent", "reset": False, "task_count": 0}
+            if publication["status"] == "published":
+                raise ValueError("a published recruiting table cannot be reset")
+            cur.execute(
+                """SELECT task_id FROM talent_daily_publication_item
+                   WHERE publication_id=%s ORDER BY cohort_order""",
+                (publication_id,),
+            )
+            task_ids = [row["task_id"] for row in cur.fetchall()]
+            if task_ids:
+                cur.execute(
+                    """UPDATE talent_search_task
+                       SET status='cancelled', last_error_code='cancelled_by_manager',
+                           publication_status='not_ready', publication='{}'::jsonb,
+                           worker_id=NULL, lease_token_sha256=NULL, claimed_at=NULL,
+                           lease_expires_at=NULL, published_at=NULL, updated_at=now()
+                       WHERE task_id = ANY(%s::uuid[])
+                         AND publication_status <> 'published'""",
+                    (task_ids,),
+                )
+            cur.execute(
+                "DELETE FROM talent_daily_publication_item WHERE publication_id=%s",
+                (publication_id,),
+            )
+            cur.execute(
+                "DELETE FROM talent_daily_publication WHERE publication_id=%s",
+                (publication_id,),
+            )
+        conn.commit()
+        return {
+            "status": "reset",
+            "reset": True,
+            "task_count": len(task_ids),
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def claim_talent_daily_publication(worker_id, lease_seconds):
     """Lease one manager-approved daily batch to the local Windows worker."""
     conn = get_conn()

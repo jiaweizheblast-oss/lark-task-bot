@@ -717,6 +717,30 @@ def api_talent_search_task_publish(task_id):
     return jsonify(result)
 
 
+@app.route(
+    "/api/talent/publications/<publication_id>/reset",
+    methods=["POST"],
+)
+def api_talent_publication_reset(publication_id):
+    """Manager-only reset for a publication that never reached published."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    if body != {"confirm": "RESET_UNPUBLISHED"}:
+        return jsonify({"error": "reset_confirmation_required"}), 422
+    try:
+        result = db.reset_talent_daily_publication(publication_id)
+    except ValueError as exc:
+        return jsonify({
+            "error": "publication_reset_rejected",
+            "detail": str(exc),
+        }), 409
+    except Exception as exc:
+        print("[talent_publication_reset] unavailable:", type(exc).__name__)
+        return jsonify({"error": "publication_reset_unavailable"}), 503
+    return jsonify(result)
+
+
 @app.route("/api/integration/v1/talent/search-tasks/claim", methods=["POST"])
 def api_talent_search_task_claim():
     if not _talent_worker_auth():
@@ -807,6 +831,32 @@ def api_talent_search_task_complete(task_id):
         "lark_calls": 0,
         "database_writes": 0,
     }
+    task_payload = row.get("payload") or {}
+    if (
+        completed.get("status") == "succeeded"
+        and task_payload.get("auto_publish") is True
+    ):
+        try:
+            publication = _queue_talent_search_publication(task_id)
+        except ValueError as exc:
+            if "Wait for every search created today" in str(exc):
+                publication = {
+                    **publication,
+                    "status": "waiting_for_other_searches",
+                }
+            else:
+                publication = {
+                    **publication,
+                    "status": "ready",
+                    "auto_publish_error": str(exc),
+                }
+        except Exception as exc:
+            print("[talent_auto_publish] unavailable:", type(exc).__name__)
+            publication = {
+                **publication,
+                "status": "ready",
+                "auto_publish_error": "publication_queue_unavailable",
+            }
     return jsonify({**completed, "publication": publication})
 
 

@@ -68,7 +68,15 @@ def main():
     bot.db.fail_talent_search_task = lambda *args: True
     bot._queue_talent_search_publication = lambda task_id: (
         publication_calls.append(task_id)
-        or {"ok": True, "status": "queued", "expected_rows": 100}
+        or {
+            "ok": True, "status": "queued", "expected_rows": 100,
+            "lark_calls": 0,
+        }
+    )
+    reset_calls = []
+    bot.db.reset_talent_daily_publication = lambda publication_id: (
+        reset_calls.append(publication_id)
+        or {"status": "reset", "reset": True, "task_count": 1}
     )
 
     client = bot.app.test_client()
@@ -78,6 +86,7 @@ def main():
         "core_job_ref": "job-core-001",
         "requested_contact_count": 100,
         "max_review_pool_count": 10,
+        "auto_publish": True,
         "hr_allocations": [
             {"name": "Asha", "count": 60},
             {"name": "Neha", "count": 40},
@@ -139,10 +148,11 @@ def main():
         headers=worker_headers,
     )
     assert completed.status_code == 200
-    assert publication_calls == []
-    assert completed.get_json()["publication"]["status"] == "ready"
+    assert publication_calls == [task["task_id"]]
+    assert completed.get_json()["publication"]["status"] == "queued"
     assert completed.get_json()["publication"]["lark_calls"] == 0
 
+    publication_calls.clear()
     queued = client.post(
         f"/api/talent/search-tasks/{task['task_id']}/publish",
         headers={"X-Auth": PANEL_PASSWORD},
@@ -150,6 +160,24 @@ def main():
     assert queued.status_code == 200
     assert queued.get_json()["status"] == "queued"
     assert publication_calls == [task["task_id"]]
+
+    reset_url = "/api/talent/publications/22222222-2222-4222-8222-222222222222/reset"
+    assert client.post(reset_url).status_code == 401
+    assert client.post(
+        reset_url,
+        json={"confirm": "wrong"},
+        headers={"X-Auth": PANEL_PASSWORD},
+    ).status_code == 422
+    reset = client.post(
+        reset_url,
+        json={"confirm": "RESET_UNPUBLISHED"},
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert reset.status_code == 200
+    assert reset.get_json() == {
+        "status": "reset", "reset": True, "task_count": 1,
+    }
+    assert reset_calls == ["22222222-2222-4222-8222-222222222222"]
 
     unsafe = dict(result)
     unsafe["database_changed"] = True
