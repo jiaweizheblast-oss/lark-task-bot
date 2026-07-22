@@ -12,7 +12,11 @@ import psycopg2
 import psycopg2.extras
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-SCHEMA_MIGRATION_VERSION = "20260722_recruiting_core_v1"
+SCHEMA_MIGRATIONS = (
+    ("20260722_recruiting_core_v1", "schema.sql"),
+    ("20260722_talent_publication_queue_v1", "schema_20260722_talent_publication_queue_v1.sql"),
+    ("20260722_talent_daily_publication_v2", "schema_20260722_talent_daily_publication_v2.sql"),
+)
 
 
 def get_conn():
@@ -33,9 +37,6 @@ def init_db():
     transaction guarantees that a failed migration cannot commit halfway.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "schema.sql"), "r", encoding="utf-8") as f:
-        sql = f.read()
-    checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
     conn = get_conn()
     conn.autocommit = False
     try:
@@ -49,23 +50,26 @@ def init_db():
                 checksum_sha256 TEXT NOT NULL,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )""")
-            cur.execute(
-                "SELECT checksum_sha256 FROM schema_migrations WHERE version=%s",
-                (SCHEMA_MIGRATION_VERSION,),
-            )
-            applied = cur.fetchone()
-            if applied:
-                if applied[0] != checksum:
-                    raise RuntimeError(
-                        "Applied migration %s does not match the packaged checksum; "
-                        "publish a new immutable migration version"
-                        % SCHEMA_MIGRATION_VERSION
-                    )
-            else:
+            for version, filename in SCHEMA_MIGRATIONS:
+                with open(os.path.join(here, filename), "r", encoding="utf-8") as f:
+                    sql = f.read()
+                checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
+                cur.execute(
+                    "SELECT checksum_sha256 FROM schema_migrations WHERE version=%s",
+                    (version,),
+                )
+                applied = cur.fetchone()
+                if applied:
+                    if applied[0] != checksum:
+                        raise RuntimeError(
+                            "Applied migration %s does not match the packaged checksum; "
+                            "publish a new immutable migration version" % version
+                        )
+                    continue
                 cur.execute(sql)
                 cur.execute(
                     "INSERT INTO schema_migrations(version,checksum_sha256) VALUES(%s,%s)",
-                    (SCHEMA_MIGRATION_VERSION, checksum),
+                    (version, checksum),
                 )
         conn.commit()
     except Exception:
@@ -73,7 +77,7 @@ def init_db():
         raise
     finally:
         conn.close()
-    print("[db] schema ready: %s" % SCHEMA_MIGRATION_VERSION)
+    print("[db] schema ready: %s" % SCHEMA_MIGRATIONS[-1][0])
 
 
 # ---------------- 用户 ----------------
@@ -591,6 +595,17 @@ def get_job_request_by_core_ref(core_job_ref):
         return cur.fetchone()
 
 
+def get_job_request_by_ref(job_ref):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT * FROM job_requests WHERE job_ref=%s",
+            (job_ref,),
+        )
+        return cur.fetchone()
+
+
 def enqueue_talent_search_task(task):
     """Persist one immutable, idempotent read-only preview command."""
     with get_conn() as conn, conn.cursor(
@@ -743,13 +758,15 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
         cur.execute(
             """UPDATE talent_search_task
                SET status=%s, result=%s::jsonb, result_sha256=%s,
-                   lease_token_sha256=NULL, lease_expires_at=NULL,
-                   updated_at=now()
+                    publication_status=%s,
+                    lease_token_sha256=NULL, lease_expires_at=NULL,
+                    updated_at=now()
                WHERE task_id=%s AND status='claimed' AND worker_id=%s
                  AND lease_token_sha256=%s AND lease_expires_at > now()
                RETURNING status""",
             (
                 terminal_status, psycopg2.extras.Json(result), result_sha256,
+                "ready" if terminal_status == "succeeded" else "not_ready",
                 task_id, worker_id, lease_hash,
             ),
         )
@@ -758,6 +775,250 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
             {"status": row["status"], "idempotent": False}
             if row else None
         )
+
+
+def get_talent_daily_publication(publication_id):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT * FROM talent_daily_publication WHERE publication_id=%s",
+            (publication_id,),
+        )
+        return cur.fetchone()
+
+
+def queue_talent_daily_publication(
+    publication_id, business_date, publication, task_ids,
+):
+    """Atomically queue one immutable business-date multi-job publication."""
+    ordered_ids = list(task_ids)
+    if not ordered_ids or len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError("publication task identities are empty or duplicated")
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """SELECT * FROM talent_daily_publication
+                   WHERE business_date=%s FOR UPDATE""",
+                (business_date,),
+            )
+            existing = cur.fetchone()
+            if existing:
+                if existing["payload_sha256"] != publication["payload_sha256"]:
+                    raise ValueError(
+                        "today already has a different immutable publication batch"
+                    )
+                conn.commit()
+                return existing
+            cur.execute(
+                """SELECT task_id,status,publication_status
+                   FROM talent_search_task
+                   WHERE task_id = ANY(%s::uuid[])
+                   FOR UPDATE""",
+                (ordered_ids,),
+            )
+            rows = cur.fetchall()
+            if len(rows) != len(ordered_ids):
+                raise ValueError("one or more publication search tasks are missing")
+            for row in rows:
+                if (
+                    row["status"] != "succeeded"
+                    or row["publication_status"] not in {"ready", "failed"}
+                ):
+                    raise ValueError(
+                        "every publication cohort must be successful and ready"
+                    )
+            cur.execute(
+                """INSERT INTO talent_daily_publication
+                   (publication_id,business_date,revision,status,payload,payload_sha256)
+                   VALUES (%s,%s,%s,'queued',%s::jsonb,%s)
+                   RETURNING *""",
+                (
+                    publication_id,
+                    business_date,
+                    int(publication.get("revision") or 1),
+                    psycopg2.extras.Json(publication),
+                    publication["payload_sha256"],
+                ),
+            )
+            queued = cur.fetchone()
+            psycopg2.extras.execute_values(
+                cur,
+                """INSERT INTO talent_daily_publication_item
+                   (publication_id,task_id,cohort_order) VALUES %s""",
+                [
+                    (publication_id, task_id, index)
+                    for index, task_id in enumerate(ordered_ids, start=1)
+                ],
+            )
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET publication_status='queued',
+                       publication=%s::jsonb, updated_at=now()
+                   WHERE task_id = ANY(%s::uuid[])""",
+                (
+                    psycopg2.extras.Json({
+                        "publication_id": str(publication_id),
+                        "business_date": str(business_date),
+                        "payload_sha256": publication["payload_sha256"],
+                    }),
+                    ordered_ids,
+                ),
+            )
+        conn.commit()
+        return queued
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def claim_talent_daily_publication(worker_id, lease_seconds):
+    """Lease one manager-approved daily batch to the local Windows worker."""
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """UPDATE talent_daily_publication
+                   SET status='queued', worker_id=NULL,
+                       lease_token_sha256=NULL, claimed_at=NULL,
+                       lease_expires_at=NULL, updated_at=now()
+                   WHERE status='publishing' AND lease_expires_at < now()
+                     AND attempt_count < 3"""
+            )
+            cur.execute(
+                """UPDATE talent_daily_publication
+                   SET status='failed',
+                       last_error_code='publication_lease_attempts_exhausted',
+                       lease_token_sha256=NULL, lease_expires_at=NULL,
+                       updated_at=now()
+                   WHERE status='publishing' AND lease_expires_at < now()
+                     AND attempt_count >= 3"""
+            )
+            cur.execute(
+                """UPDATE talent_search_task t
+                   SET publication_status=p.status, updated_at=now()
+                   FROM talent_daily_publication_item i
+                   JOIN talent_daily_publication p
+                     ON p.publication_id=i.publication_id
+                   WHERE t.task_id=i.task_id
+                     AND p.status IN ('queued','failed')
+                     AND t.publication_status='publishing'"""
+            )
+            cur.execute(
+                """SELECT * FROM talent_daily_publication
+                   WHERE status='queued'
+                   ORDER BY updated_at
+                   FOR UPDATE SKIP LOCKED LIMIT 1"""
+            )
+            row = cur.fetchone()
+            if not row:
+                conn.commit()
+                return None
+            lease_token = secrets.token_urlsafe(32)
+            lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+            cur.execute(
+                """UPDATE talent_daily_publication
+                   SET status='publishing', worker_id=%s,
+                       lease_token_sha256=%s, claimed_at=now(),
+                       lease_expires_at=now() + (%s * interval '1 second'),
+                       attempt_count=attempt_count+1, updated_at=now()
+                   WHERE publication_id=%s RETURNING *""",
+                (worker_id, lease_hash, lease_seconds, row["publication_id"]),
+            )
+            claimed = cur.fetchone()
+            cur.execute(
+                """UPDATE talent_search_task t
+                   SET publication_status='publishing', updated_at=now()
+                   FROM talent_daily_publication_item i
+                   WHERE i.publication_id=%s AND i.task_id=t.task_id""",
+                (row["publication_id"],),
+            )
+        conn.commit()
+        return claimed, lease_token
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def heartbeat_talent_daily_publication(
+    publication_id, worker_id, lease_token, lease_seconds,
+):
+    lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE talent_daily_publication
+               SET lease_expires_at=now() + (%s * interval '1 second'),
+                   updated_at=now()
+               WHERE publication_id=%s AND status='publishing' AND worker_id=%s
+                 AND lease_token_sha256=%s AND lease_expires_at > now()
+               RETURNING publication_id""",
+            (lease_seconds, publication_id, worker_id, lease_hash),
+        )
+        return cur.fetchone() is not None
+
+
+def finish_talent_daily_publication(
+    publication_id, worker_id, lease_token, status, publication,
+):
+    """Finish only the local worker lease that owns this publication."""
+    if status not in {"published", "failed"}:
+        raise ValueError("invalid terminal publication status")
+    lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """UPDATE talent_daily_publication
+                   SET status=%s, receipt=%s::jsonb,
+                       published_at=CASE WHEN %s='published' THEN now() ELSE published_at END,
+                       lease_token_sha256=NULL, lease_expires_at=NULL,
+                       updated_at=now()
+                   WHERE publication_id=%s AND status='publishing' AND worker_id=%s
+                     AND lease_token_sha256=%s AND lease_expires_at > now()
+                   RETURNING status,receipt,published_at""",
+                (
+                    status, psycopg2.extras.Json(publication or {}), status,
+                    publication_id, worker_id, lease_hash,
+                ),
+            )
+            completed = cur.fetchone()
+            if completed:
+                cur.execute(
+                    """UPDATE talent_search_task t
+                       SET publication_status=%s, publication=%s::jsonb,
+                           published_at=CASE WHEN %s='published' THEN now()
+                                             ELSE published_at END,
+                           updated_at=now()
+                       FROM talent_daily_publication_item i
+                       WHERE i.publication_id=%s AND i.task_id=t.task_id""",
+                    (
+                        status,
+                        psycopg2.extras.Json(publication or {}),
+                        status,
+                        publication_id,
+                    ),
+                )
+        conn.commit()
+        return completed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def fail_talent_search_task(task_id, worker_id, lease_token, error_code):
@@ -930,6 +1191,7 @@ def list_candidates(day=None, limit=500):
                         a.entry_date AS apply_date,a.channel,a.source_detail,
                         a.job_request_id,a.current_stage AS status,a.note,
                         a.hr_owner AS filled_by,a.source,a.external_ref AS ext_ref,
+                        a.candidate_url,a.cv_url,
                         a.lark_record_id,a.record_version,a.created_at,a.updated_at,
                         j.title AS job_title,e.effective_date AS stage_date,e.rejection_reason
                  FROM candidate_application a
@@ -970,7 +1232,8 @@ def list_candidate_applications_active():
                               a.candidate_id,c.name,a.entry_date AS apply_date,
                               a.channel,a.source_detail,a.job_request_id,
                               a.current_stage AS status,a.note,a.hr_owner AS filled_by,
-                              a.external_ref AS ext_ref,a.lark_record_id,a.record_version,
+                              a.external_ref AS ext_ref,a.candidate_url,a.cv_url,
+                              a.lark_record_id,a.record_version,
                               j.title AS job_title,j.job_ref,j.status AS job_status,
                               e.effective_date AS stage_date,e.rejection_reason
                        FROM candidate_application a
@@ -981,8 +1244,30 @@ def list_candidate_applications_active():
                          FROM candidate_application_stage_event
                          WHERE application_id=a.id ORDER BY created_at DESC,id DESC LIMIT 1
                        ) e ON true
-                       WHERE a.current_stage NOT IN ('Hired','Rejected','Withdrawn','已录用','已拒绝')
+                       WHERE a.current_stage NOT IN
+                         ('Hired','Rejected','Withdrawn','Resigned','已录用','已拒绝')
                        ORDER BY a.entry_date DESC,a.id DESC""")
+        return cur.fetchall()
+
+
+def list_candidate_application_snapshot():
+    """Current manager snapshot for every candidate × hiring requisition.
+
+    Baseline rows are intentionally included. They describe today's portfolio
+    even though events that happened before the recruiting-core go-live date
+    cannot be reconstructed safely.
+    """
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """SELECT a.application_ref,a.job_request_id,
+                      a.current_stage AS status,a.channel,
+                      a.hr_owner AS filled_by,a.baseline_import,
+                      a.source_received_on,a.entry_date,
+                      j.title AS job_title,j.status AS job_status
+               FROM candidate_application a
+               LEFT JOIN job_requests j ON j.id=a.job_request_id
+               ORDER BY a.entry_date DESC,a.id DESC"""
+        )
         return cur.fetchall()
 
 
@@ -1032,33 +1317,41 @@ def get_candidate_application_by_lark(record_id):
         return cur.fetchone()
 
 
-_TERMINAL_APPLICATION_STAGES = {"Hired", "Rejected", "Withdrawn"}
+_TERMINAL_APPLICATION_STAGES = {"Rejected", "Withdrawn", "Resigned"}
 _APPLICATION_STAGE_ORDER = {
-    "New Lead": 0,
+    "Pending": 0,
     "Contacted / Awaiting Reply": 1,
     "HR Screening": 2,
-    "Interview 1": 3,
-    "Interview 2 / Final": 4,
-    "Offer": 5,
-    "Hired": 6,
+    "Interview": 3,
+    "Offer": 4,
+    "Hired": 5,
+    "Resigned": 6,
+}
+
+_LEGACY_APPLICATION_STAGE = {
+    "": "Pending", "New Lead": "Pending", "Interview 1": "Interview",
+    "Interview 2 / Final": "Interview", "On Hold": "Withdrawn",
 }
 
 
+def _canonical_application_stage(value):
+    stage = str(value or "").strip()
+    return _LEGACY_APPLICATION_STAGE.get(stage, stage)
+
+
 def _validate_application_stage_change(current_stage, next_stage):
-    current = str(current_stage or "New Lead")
-    target = str(next_stage or "New Lead")
+    current = _canonical_application_stage(current_stage)
+    target = _canonical_application_stage(next_stage)
     if current == target:
         return
     if current in _TERMINAL_APPLICATION_STAGES:
         raise ValueError(
             "%s is terminal; a manager correction event is required to reopen it" % current
         )
-    if target in {"On Hold", "Rejected", "Withdrawn"}:
+    if current == "Hired" and target != "Resigned":
+        raise ValueError("A hired candidate can only move to Resigned")
+    if target in {"Rejected", "Withdrawn"}:
         return
-    if current == "On Hold":
-        if target in _APPLICATION_STAGE_ORDER:
-            return
-        raise ValueError("On Hold can resume only to an approved recruiting stage")
     if target not in _APPLICATION_STAGE_ORDER:
         raise ValueError("Current Stage is not approved")
     if _APPLICATION_STAGE_ORDER.get(target, -1) < _APPLICATION_STAGE_ORDER.get(current, -1):
@@ -1072,7 +1365,8 @@ def apply_candidate_application_command(
     entry_date, name, channel, source_detail, job_request_id, stage,
     note="", hr_owner="", rejection_reason="", application_ref="",
     expected_version=0, lark_record_id="", source="Excel", changed_by="",
-    occurred_at=None, baseline_import=False,
+    occurred_at=None, baseline_import=False, candidate_url="", cv_url="",
+    stage_effective_date=None,
 ):
     """Apply one signed HR row as one serializable, idempotent transaction.
 
@@ -1086,8 +1380,12 @@ def apply_candidate_application_command(
     payload_sha256 = str(payload_sha256 or "").strip()
     if not all((event_id, artifact_id, row_ref, payload_sha256)):
         raise ValueError("The signed submission identity is incomplete")
-    if stage == "Rejected" and not str(rejection_reason or "").strip():
-        raise ValueError("Rejection Reason is required when Current Stage is Rejected")
+    stage = _canonical_application_stage(stage)
+    if stage not in _APPLICATION_STAGE_ORDER and stage not in {"Rejected", "Withdrawn"}:
+        raise ValueError("Status is not approved")
+    candidate_url = str(candidate_url or "").strip()
+    cv_url = str(cv_url or "").strip()
+    stage_effective_date = stage_effective_date or entry_date
     occurred_at = occurred_at or datetime.datetime.now(datetime.timezone.utc)
 
     conn = get_conn(); conn.autocommit = False
@@ -1125,6 +1423,9 @@ def apply_candidate_application_command(
                     )
                 if str(application.get("name") or "").strip() != str(name or "").strip():
                     raise ValueError("Candidate is protected for an existing application")
+                stored_candidate_url = str(application.get("candidate_url") or "").strip()
+                if stored_candidate_url and candidate_url != stored_candidate_url:
+                    raise ValueError("Candidate URL is protected for an existing application")
                 if application.get("job_request_id") != job_request_id:
                     raise ValueError("Job is immutable; create a new application for another requisition")
                 if (str(application.get("channel") or "").strip() != str(channel or "").strip()
@@ -1144,6 +1445,8 @@ def apply_candidate_application_command(
                 metadata_changed = any((
                     str(application.get("note") or "") != str(note or ""),
                     str(application.get("hr_owner") or "") != str(hr_owner or ""),
+                    (not stored_candidate_url and bool(candidate_url)),
+                    str(application.get("cv_url") or "") != cv_url,
                     bool(lark_record_id) and str(application.get("lark_record_id") or "") != str(lark_record_id),
                 ))
                 if stage_changed:
@@ -1153,18 +1456,21 @@ def apply_candidate_application_command(
                             note,changed_by,event_ref,occurred_at,baseline_import)
                            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE)""",
                         (application["id"], application.get("current_stage") or "", stage,
-                         entry_date, rejection_reason, note, changed_by or hr_owner,
+                         stage_effective_date, rejection_reason, note, changed_by or hr_owner,
                          event_id, occurred_at),
                     )
                 if stage_changed or metadata_changed:
                     cur.execute(
                         """UPDATE candidate_application
                            SET current_stage=%s,note=%s,hr_owner=%s,
+                               candidate_url=CASE WHEN candidate_url='' THEN %s ELSE candidate_url END,
+                               cv_url=%s,
                                lark_record_id=CASE WHEN %s='' THEN lark_record_id ELSE %s END,
                                stage_started_at=CASE WHEN %s THEN %s ELSE stage_started_at END,
                                record_version=record_version+1,updated_at=now()
                            WHERE id=%s RETURNING record_version""",
-                        (stage, note, hr_owner, lark_record_id, lark_record_id,
+                        (stage, note, hr_owner, candidate_url, cv_url,
+                         lark_record_id, lark_record_id,
                          stage_changed, occurred_at, application["id"]),
                     )
                     version = cur.fetchone()["record_version"]
@@ -1213,17 +1519,22 @@ def apply_candidate_application_command(
                     )
                     candidate_id = cur.fetchone()["id"]
                 application_ref = "APP-" + secrets.token_hex(8).upper()
-                is_baseline = bool(baseline_import or stage != "New Lead")
+                # A newly accepted candidate is a new intake even when HR
+                # first records them at a later stage (for example Interview).
+                # Baseline is reserved for an explicit historical import.
+                is_baseline = bool(baseline_import)
                 cur.execute(
                     """INSERT INTO candidate_application
                        (application_ref,candidate_id,job_request_id,entry_date,channel,
                         source_detail,current_stage,note,hr_owner,source,external_ref,
-                        lark_record_id,record_version,baseline_import,source_received_on,
+                        candidate_url,cv_url,lark_record_id,record_version,
+                        baseline_import,source_received_on,
                         stage_started_at,system_imported_at)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s)
                        RETURNING id""",
                     (application_ref, candidate_id, job_request_id, entry_date, channel,
-                     source_detail, stage, note, hr_owner, source, row_ref, lark_record_id,
+                     source_detail, stage, note, hr_owner, source, row_ref,
+                     candidate_url, cv_url, lark_record_id,
                      is_baseline, None if is_baseline else entry_date, occurred_at, occurred_at),
                 )
                 application_id = cur.fetchone()["id"]
@@ -1232,7 +1543,7 @@ def apply_candidate_application_command(
                        (application_id,from_stage,to_stage,effective_date,rejection_reason,
                         note,changed_by,event_ref,occurred_at,baseline_import)
                        VALUES(%s,'',%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (application_id, stage, entry_date, rejection_reason, note,
+                    (application_id, stage, stage_effective_date, rejection_reason, note,
                      changed_by or hr_owner, event_id, occurred_at, is_baseline),
                 )
                 result = {
@@ -1405,11 +1716,11 @@ def list_candidate_metric_rows_range(dfrom, dto):
                UNION ALL
                SELECT e.effective_date AS record_date,a.channel,a.job_request_id,
                       0::integer AS new_resumes,
-                      CASE WHEN e.to_stage IN ('Interview 1','Interview 2 / Final','Offer','Hired')
-                                  AND e.from_stage NOT IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                      CASE WHEN e.to_stage IN ('Interview','Offer','Hired')
+                                  AND e.from_stage NOT IN ('Interview','Offer','Hired')
                            THEN 1 ELSE 0 END AS passed_screening,
-                      CASE WHEN e.to_stage IN ('Interview 1','Interview 2 / Final','Offer','Hired')
-                                  AND e.from_stage NOT IN ('Interview 1','Interview 2 / Final','Offer','Hired')
+                      CASE WHEN e.to_stage IN ('Offer','Hired')
+                                  AND e.from_stage NOT IN ('Offer','Hired')
                            THEN 1 ELSE 0 END AS recommended,
                       CASE WHEN e.to_stage='Rejected' AND e.from_stage<>'Rejected'
                            THEN 1 ELSE 0 END AS rejected
@@ -1418,8 +1729,10 @@ def list_candidate_metric_rows_range(dfrom, dto):
                WHERE e.baseline_import=FALSE
                  AND e.effective_date BETWEEN %s AND %s
                  AND (
-                   (e.to_stage IN ('Interview 1','Interview 2 / Final','Offer','Hired')
-                    AND e.from_stage NOT IN ('Interview 1','Interview 2 / Final','Offer','Hired'))
+                   (e.to_stage IN ('Interview','Offer','Hired')
+                    AND e.from_stage NOT IN ('Interview','Offer','Hired'))
+                   OR (e.to_stage IN ('Offer','Hired')
+                    AND e.from_stage NOT IN ('Offer','Hired'))
                    OR (e.to_stage='Rejected' AND e.from_stage<>'Rejected')
                  )
                ORDER BY record_date""",

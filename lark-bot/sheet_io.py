@@ -847,13 +847,13 @@ def build_analytics_xlsx(a):
         c.font = hf; c.fill = hfill
     disp = [
         ("新增简历", sc["new"], (pc["new"] if pc else ""), chg("new")),
-        ("初筛通过", sc["passed"], (pc["passed"] if pc else ""), chg("passed")),
-        ("推荐", sc["recommended"], (pc["recommended"] if pc else ""), chg("recommended")),
+        ("Entered Interview", sc["passed"], (pc["passed"] if pc else ""), chg("passed")),
+        ("Reached Offer", sc["recommended"], (pc["recommended"] if pc else ""), chg("recommended")),
         ("拒绝", sc["rejected"], (pc["rejected"] if pc else ""), chg("rejected")),
-        ("初筛通过率", pct(sc["conversion"]), (pct(pc["conversion"]) if pc else ""), chg("conversion", True)),
-        ("推荐率", pct(sc["recommend_rate"]), (pct(pc["recommend_rate"]) if pc else ""), chg("recommend_rate", True)),
+        ("Interview Rate", pct(sc["conversion"]), (pct(pc["conversion"]) if pc else ""), chg("conversion", True)),
+        ("Offer Rate", pct(sc["recommend_rate"]), (pct(pc["recommend_rate"]) if pc else ""), chg("recommend_rate", True)),
         ("简历/天", sc["resumes_per_day"], (pc["resumes_per_day"] if pc else ""), chg("resumes_per_day")),
-        ("推荐/周", sc["recommended_per_week"], (pc["recommended_per_week"] if pc else ""), chg("recommended_per_week")),
+        ("Offers / Week", sc["recommended_per_week"], (pc["recommended_per_week"] if pc else ""), chg("recommended_per_week")),
         ("简历量进度", pct(sc["resume_target_progress"]), "", ""),
     ]
     for r in disp:
@@ -866,7 +866,7 @@ def build_analytics_xlsx(a):
     # ---- 渠道明细 ----
     ws2 = wb.create_sheet("渠道明细")
     hascost = a.get("has_cost")
-    head2 = ["渠道", "新增", "占比", "初筛", "转化率", "推荐", "推荐率", "拒绝"]
+    head2 = ["Channel", "New Applications", "Share", "Entered Interview", "Interview Rate", "Reached Offer", "Offer Rate", "Rejected"]
     if hascost:
         head2 += ["成本", "每份成本"]
     ws2.append(head2)
@@ -881,7 +881,7 @@ def build_analytics_xlsx(a):
 
     # ---- 趋势 ----
     ws3 = wb.create_sheet("趋势")
-    ws3.append(["时间", "新增", "初筛", "推荐", "拒绝", "转化率", "推荐率"])
+    ws3.append(["Period", "New Applications", "Entered Interview", "Reached Offer", "Rejected", "Interview Rate", "Offer Rate"])
     for c in ws3[1]:
         c.font = hf; c.fill = hfill
     for b in a["timeseries"]:
@@ -890,7 +890,7 @@ def build_analytics_xlsx(a):
 
     # ---- 职位进度 ----
     ws4 = wb.create_sheet("职位进度")
-    ws4.append(["职位", "窗口新增", "目标简历量", "简历量进度", "窗口推荐", "目标录用"])
+    ws4.append(["Hiring Job", "Window Applications", "Application Target", "Application Progress", "Reached Offer", "Headcount Target"])
     for c in ws4[1]:
         c.font = hf; c.fill = hfill
     for j in a["jobs"]:

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import bot
 
@@ -11,10 +11,18 @@ def main():
     bot.PANEL_PASSWORD = PANEL_PASSWORD
     bot.NEXUS_TALENT_WORKER_TOKEN = WORKER_TOKEN
     stored = {}
+    settings = {}
+    publication_calls = []
 
     bot.db.get_job_request_by_core_ref = lambda ref: {
         "core_job_ref": ref,
         "status": "open",
+    }
+    bot.db.get_job_request_by_ref = lambda ref: {
+        "job_ref": ref,
+        "record_type": "operational",
+        "status": "open",
+        "search_profile_ref": "job-core-001",
     }
 
     def enqueue(task):
@@ -38,6 +46,8 @@ def main():
         return row, inserted
 
     bot.db.enqueue_talent_search_task = enqueue
+    bot.db.get_setting = lambda key: settings.get(key)
+    bot.db.set_setting = lambda key, value: settings.__setitem__(key, value)
     bot.db.list_talent_search_tasks = lambda limit=50: list(stored.values())
     bot.db.claim_talent_search_task = lambda worker, lease: (
         next(iter(stored.values())),
@@ -45,18 +55,33 @@ def main():
     )
     bot.db.heartbeat_talent_search_task = lambda *args: True
     bot.db.get_talent_search_task = lambda task_id: stored.get(task_id)
-    bot.db.complete_talent_search_task = lambda *args: {
-        "status": "succeeded",
-        "idempotent": False,
-    }
+    def complete(*args):
+        result = args[3]
+        task_id = args[0]
+        stored[task_id]["status"] = "succeeded"
+        stored[task_id]["result"] = result
+        stored[task_id]["result_sha256"] = args[4]
+        stored[task_id]["publication_status"] = "ready"
+        return {"status": "succeeded", "idempotent": False}
+
+    bot.db.complete_talent_search_task = complete
     bot.db.fail_talent_search_task = lambda *args: True
+    bot._queue_talent_search_publication = lambda task_id: (
+        publication_calls.append(task_id)
+        or {"ok": True, "status": "queued", "expected_rows": 100}
+    )
 
     client = bot.app.test_client()
     command = {
         "task_id": "82f78cc2-62f2-4e32-bc64-866575136fdd",
+        "operational_job_ref": "REQ-20260722-TEST0001",
         "core_job_ref": "job-core-001",
         "requested_contact_count": 100,
         "max_review_pool_count": 10,
+        "hr_allocations": [
+            {"name": "Asha", "count": 60},
+            {"name": "Neha", "count": 40},
+        ],
         "budgets": {"max_total_observations": 800},
     }
     assert client.post("/api/talent/search-tasks", json=command).status_code == 401
@@ -85,9 +110,18 @@ def main():
     result = {
         "schema_version": "talent-search-result-v1",
         "task_id": task["task_id"],
+        "operational_job_ref": task["operational_job_ref"],
         "core_job_ref": task["core_job_ref"],
         "quota_fulfilled": True,
         "applicable": True,
+        "selected_contacts": 100,
+        "hr_allocations": task["hr_allocations"],
+        "frozen_bundle": {
+            "plan_id": "086f7b6a-20a2-4a23-83dd-b3288d4df846",
+            "plan_sha256": "c" * 64,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+            "stored_on_worker": True,
+        },
         "database_changed": False,
         "daily_batches_created": 0,
         "review_tasks_created": 0,
@@ -105,6 +139,17 @@ def main():
         headers=worker_headers,
     )
     assert completed.status_code == 200
+    assert publication_calls == []
+    assert completed.get_json()["publication"]["status"] == "ready"
+    assert completed.get_json()["publication"]["lark_calls"] == 0
+
+    queued = client.post(
+        f"/api/talent/search-tasks/{task['task_id']}/publish",
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert queued.status_code == 200
+    assert queued.get_json()["status"] == "queued"
+    assert publication_calls == [task["task_id"]]
 
     unsafe = dict(result)
     unsafe["database_changed"] = True

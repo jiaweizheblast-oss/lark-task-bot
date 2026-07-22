@@ -52,21 +52,24 @@ commit `aa898d8`, with the Talent Discovery manager-only mirror added.
 The existing startup runs `schema.sql` idempotently, so the new snapshot table
 and search queue are created during deployment.
 
-## Windows search worker
+## Windows search and publication worker
 
-The first worker release accepts only `preview_search`. It cannot apply a
-frozen plan, create a DailyBatch, publish Lark, call ContactOut, or open a
-LinkedIn profile. Copy `config/nexus.worker.local.ps1.example` to the Git
-ignored `config/nexus.worker.local.ps1`, set the endpoint and worker token,
-start Chrome with local CDP enabled, then run:
+Search tasks remain read-only. A separate, manager-approved daily publication
+command may be enabled only on the authorised Windows host; Railway never
+applies plans or publishes Lark. Copy `config/nexus.worker.local.ps1.example`
+to the Git-ignored `config/nexus.worker.local.ps1`, set the endpoint and worker
+token, start Chrome with local CDP enabled, then run read-only search polling:
 
 ```powershell
 .\scripts\start_nexus_search_worker.ps1
 ```
 
-For a single poll during setup, add `-Once`. A task remains pending while no
-worker is online. Claims use short leases and heartbeats; expired leases are
-recoverable and no task is tried more than three times.
+For a single poll during setup, add `-Once`. After the native daily workbook
+path has been accepted, enable manager-approved frozen-plan apply and publish
+with `-EnablePublicationWrites`. This switch grants capability but does not
+create a command. Claims use short leases and heartbeats; expired leases are
+recoverable and no task is tried more than three times. See
+`DEPLOY_DAILY_RECRUITING_V2.md` for the transaction and recovery contract.
 
 ## First signed sync from AI Talent Discovery
 

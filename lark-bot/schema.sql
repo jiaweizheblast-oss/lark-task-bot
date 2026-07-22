@@ -278,11 +278,13 @@ CREATE TABLE IF NOT EXISTS candidate_application (
     entry_date         DATE NOT NULL,
     channel            TEXT NOT NULL,
     source_detail      TEXT NOT NULL DEFAULT '',
-    current_stage      TEXT NOT NULL DEFAULT 'New Lead',
+    current_stage      TEXT NOT NULL DEFAULT 'Pending',
     note               TEXT NOT NULL DEFAULT '',
     hr_owner           TEXT NOT NULL DEFAULT '',
     source             TEXT NOT NULL DEFAULT 'manual',
     external_ref       TEXT NOT NULL DEFAULT '',
+    candidate_url      TEXT NOT NULL DEFAULT '',
+    cv_url             TEXT NOT NULL DEFAULT '',
     lark_record_id     TEXT NOT NULL DEFAULT '',
     record_version     INTEGER NOT NULL DEFAULT 1,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -426,6 +428,10 @@ ALTER TABLE candidate_application
     ADD COLUMN IF NOT EXISTS stage_started_at TIMESTAMPTZ;
 ALTER TABLE candidate_application
     ADD COLUMN IF NOT EXISTS system_imported_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE candidate_application
+    ADD COLUMN IF NOT EXISTS candidate_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE candidate_application
+    ADD COLUMN IF NOT EXISTS cv_url TEXT NOT NULL DEFAULT '';
 
 ALTER TABLE candidate_application_stage_event
     ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ NOT NULL DEFAULT now();
@@ -504,6 +510,9 @@ CREATE TABLE IF NOT EXISTS talent_search_task (
     payload_sha256      TEXT NOT NULL,
     result              JSONB,
     result_sha256       TEXT,
+    publication_status  TEXT NOT NULL DEFAULT 'not_ready',
+    publication         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    published_at        TIMESTAMPTZ,
     worker_id           TEXT,
     lease_token_sha256  TEXT,
     claimed_at          TIMESTAMPTZ,
@@ -515,8 +524,17 @@ CREATE TABLE IF NOT EXISTS talent_search_task (
     expires_at          TIMESTAMPTZ NOT NULL,
     CONSTRAINT ck_talent_search_task_status CHECK (
       status IN ('pending','claimed','succeeded','shortfall','failed','cancelled')
+    ),
+    CONSTRAINT ck_talent_search_publication_status CHECK (
+      publication_status IN ('not_ready','ready','publishing','published','failed')
     )
 );
+ALTER TABLE talent_search_task
+    ADD COLUMN IF NOT EXISTS publication_status TEXT NOT NULL DEFAULT 'not_ready';
+ALTER TABLE talent_search_task
+    ADD COLUMN IF NOT EXISTS publication JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE talent_search_task
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_talent_search_task_claim
     ON talent_search_task (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_talent_search_task_job

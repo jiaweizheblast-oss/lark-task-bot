@@ -46,8 +46,8 @@ def test_admin_reset_route():
     bot.PANEL_PASSWORD = "reset-test-password"
     cfg = {
         "app_token": "app", "pipeline_table_id": "pipeline",
-        "manual_table_id": "manual", "url": "https://example.test/base",
-        "last_sync": "fixture", "schema_version": "channel-analytics-v2",
+        "url": "https://example.test/base",
+        "last_sync": "fixture", "schema_version": "recruiting-daily-v20",
     }
     calls = []
     bot._lark_cfg = lambda: cfg
@@ -79,18 +79,16 @@ def test_admin_reset_route():
     result = reset.get_json()
     assert result["ok"] is True
     assert result["lark_pipeline_rows"] == 4
-    assert result["lark_manual_rows"] == 2
     assert result["jobs_preserved"] is True
     assert calls == [
         ("lark", "app", "pipeline"),
-        ("lark", "app", "manual"),
         ("database",),
     ]
     bot._lark_cfg = original_cfg
     bot.lark_bitable.delete_all_table_records = original_lark_reset
     bot.db.reset_channel_analytics_test_data = original_db_reset
 
-    panel = Path("panel.html").read_text(encoding="utf-8")
+    panel = (Path(__file__).resolve().parent / "panel.html").read_text(encoding="utf-8")
     assert "Reset Test Data" in panel
     assert "RESET CHANNEL ANALYTICS TEST DATA" in panel
     assert "Talent Discovery are preserved" in panel

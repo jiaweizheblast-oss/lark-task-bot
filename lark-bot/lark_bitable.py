@@ -167,11 +167,11 @@ def _channel_fields_spec(job_titles, channels):
     return fields
 
 
-def _pipeline_fields_spec(job_titles, channels, stages):
+def _pipeline_fields_spec(job_titles, channels, stages, hr_names=()):
     fields = []
     for spec in pipeline_schema.columns_for("lark"):
         field = {"field_name": spec["header"], "type": FT_TEXT}
-        if spec["key"] == "record_date":
+        if spec.get("kind") == "created_time":
             # Correct from first creation: HR must never see an editable text
             # placeholder for Entry Date.
             field["type"] = FT_CREATED_TIME
@@ -180,6 +180,7 @@ def _pipeline_fields_spec(job_titles, channels, stages):
             options = (
                 channels if spec["key"] == "channel"
                 else job_titles if spec["key"] == "job"
+                else hr_names if spec["key"] == "filled_by"
                 else stages
             )
             if options:
@@ -191,14 +192,16 @@ def _pipeline_fields_spec(job_titles, channels, stages):
             )
         elif spec["key"] == "record_date":
             field["description"] = "System-owned date when the candidate first enters the pipeline."
-        elif spec["key"] == "stage_date":
-            field["description"] = "System-owned date when Current Stage last changed."
+        elif spec["key"] == "candidate_url":
+            field["description"] = "System-filled for discovered candidates; optional for HR-added candidates."
+        elif spec["key"] == "cv_url":
+            field["description"] = "Paste the Lark Drive or approved CV link here."
         fields.append(field)
     return fields
 
 
-def create_channel_base(name, job_titles, channels, stages, folder_token=""):
-    """Create one Base containing the primary Pipeline and optional bulk counts."""
+def create_channel_base(name, job_titles, channels, stages, folder_token="", hr_names=(), table_name=""):
+    """Create one Base containing one candidate-level recruiting table."""
     tok, err = tenant_token()
     if err:
         return {"ok": False, "error": err}
@@ -217,13 +220,26 @@ def create_channel_base(name, job_titles, channels, stages, folder_token=""):
         "POST",
         "/open-apis/bitable/v1/apps/%s/tables" % app_token,
         token=tok,
-        body={"table": {"name": pipeline_schema.PIPELINE_TABLE_NAME,
+        body={"table": {"name": table_name or name,
                          "default_view_name": pipeline_schema.PIPELINE_VIEW_NAME,
-                         "fields": _pipeline_fields_spec(job_titles, channels, stages)}},
+                         "fields": _pipeline_fields_spec(job_titles, channels, stages, hr_names)}},
     )
     if pipeline_response.get("code") != 0:
         return {"ok": False, "error": "建 Pipeline 表失败：%s" % (pipeline_response.get("msg") or pipeline_response),
                 "app_token": app_token, "url": url, "raw": pipeline_response}
+    pipeline_table_id = (pipeline_response.get("data") or {}).get("table_id")
+    schema = ensure_channel_base_schema(
+        app_token, pipeline_table_id,
+        job_titles=job_titles, channels=channels, stages=stages, hr_names=hr_names,
+    )
+    return {
+        "ok": True, "app_token": app_token,
+        "pipeline_table_id": pipeline_table_id,
+        "url": table_url(url, pipeline_table_id), "schema": schema,
+    }
+
+    # Pre-v20 compatibility code below is intentionally unreachable. New
+    # workspaces never create a manual-count table.
     manual_response = _req(
         "POST", "/open-apis/bitable/v1/apps/%s/tables" % app_token, token=tok,
         body={"table": {"name": pipeline_schema.MANUAL_TABLE_NAME,
@@ -839,7 +855,7 @@ def normalize_table_field_names(app_token, table_id, specs, skip_keys=()):
 
 
 def synchronize_choice_field_options(
-    app_token, table_id, specs, *, job_titles=(), channels=(), stages=(),
+    app_token, table_id, specs, *, job_titles=(), channels=(), stages=(), hr_names=(),
 ):
     """Keep website, XLSX, Pipeline, and manual-table dropdowns identical."""
     tok, err = tenant_token()
@@ -851,6 +867,7 @@ def synchronize_choice_field_options(
     desired_by_key = {
         "channel": list(channels),
         "job": list(job_titles),
+        "filled_by": list(hr_names),
         "status": list(stages),
     }
     updated = []
@@ -1325,3 +1342,197 @@ def update_pipeline_record_fields(app_token, table_id, record_id, fields):
         return {"ok": False, "error": "回写 Pipeline 失败：%s" %
                 (response.get("msg") or response), "raw": response}
     return {"ok": True, "updated": True}
+
+
+# v20 single-table overrides.  They intentionally appear last so a rolling
+# deployment can still import the previous helper names while all new calls use
+# the stricter one-table contract.
+def _ensure_v20_fields(app_token, table_id, job_titles, channels, stages, hr_names):
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err}
+    listed = _list_fields(app_token, table_id)
+    if not listed.get("ok"):
+        return listed
+    names = {str(item.get("field_name") or "") for item in listed["fields"]}
+    created = []
+    specs = _pipeline_fields_spec(job_titles, channels, stages, hr_names)
+    for field in specs:
+        if field["field_name"] in names:
+            continue
+        response = _field_create(
+            "/open-apis/bitable/v1/apps/%s/tables/%s/fields" %
+            (app_token, table_id), tok, field,
+        )
+        if response.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Unable to create %s: %s" %
+                         (field["field_name"], response.get("msg") or response),
+                "raw": response, "created": created,
+            }
+        created.append(field["field_name"])
+    return {"ok": True, "created": created}
+
+
+def verify_channel_base_schema(
+    app_token, pipeline_table_id, manual_table_id="",
+    *, job_titles=(), channels=(), stages=(), hr_names=(),
+):
+    del manual_table_id
+    if not app_token or not pipeline_table_id:
+        return {"ok": False, "error": "Recruiting Base configuration is incomplete"}
+    listed = _list_fields(app_token, pipeline_table_id)
+    if not listed.get("ok"):
+        return listed
+    fields = listed["fields"]
+    names = {str(item.get("field_name") or "") for item in fields}
+    missing = [
+        spec["header"] for spec in pipeline_schema.columns_for("lark")
+        if spec["header"] not in names
+    ]
+    problems = ["Missing fields: %s" % ", ".join(missing)] if missing else []
+    desired_by_key = {
+        "channel": list(channels), "job": list(job_titles),
+        "filled_by": list(hr_names), "status": list(stages),
+    }
+    for spec in pipeline_schema.columns_for("lark"):
+        desired = desired_by_key.get(spec.get("key"))
+        if desired is None:
+            continue
+        field = _find_field(fields, spec)
+        if not field:
+            continue
+        current = [
+            str(option.get("name") or "")
+            for option in (field.get("property") or {}).get("options") or []
+        ]
+        if current != desired:
+            problems.append("Out-of-sync options: %s" % spec["header"])
+    date_spec = next(
+        spec for spec in pipeline_schema.PIPELINE_COLUMNS
+        if spec["key"] == "record_date"
+    )
+    date_field = _find_field(fields, date_spec)
+    if not date_field or int(date_field.get("type") or 0) != FT_CREATED_TIME:
+        problems.append("Date must be a read-only Lark Created Time field")
+    return {"ok": not problems, "errors": problems}
+
+
+def ensure_channel_base_schema(
+    app_token, pipeline_table_id, manual_table_id="",
+    *, job_titles=(), channels=(), stages=(), hr_names=(),
+):
+    del manual_table_id
+    if not app_token or not pipeline_table_id:
+        return {"ok": False, "error": "Recruiting Base configuration is incomplete"}
+    specs = pipeline_schema.columns_for("lark")
+    additions = _ensure_v20_fields(
+        app_token, pipeline_table_id, job_titles, channels, stages, hr_names,
+    )
+    if not additions.get("ok"):
+        return additions
+    names = normalize_table_field_names(
+        app_token, pipeline_table_id, specs, skip_keys=("record_date",),
+    )
+    choices = synchronize_choice_field_options(
+        app_token, pipeline_table_id, specs,
+        job_titles=job_titles, channels=channels, stages=stages,
+        hr_names=hr_names,
+    )
+    cleanup = cleanup_empty_default_tables(
+        app_token, protected_table_ids=(pipeline_table_id,),
+    )
+    verification = verify_channel_base_schema(
+        app_token, pipeline_table_id,
+        job_titles=job_titles, channels=channels, stages=stages,
+        hr_names=hr_names,
+    )
+    return {
+        "ok": bool(names.get("ok") and choices.get("ok")
+                   and cleanup.get("ok") and verification.get("ok")),
+        "field_additions": additions, "field_names": names, "choices": choices,
+        "verification": verification, "default_table_cleanup": cleanup,
+    }
+
+
+def batch_create_recruiting_records(app_token, table_id, rows):
+    """Idempotently append discovered candidates to the daily table.
+
+    Candidate URL + Hiring Job is the publication identity. A retry first reads
+    the table and skips identities already present, so a partial Lark response
+    cannot duplicate a candidate on the next attempt.
+    """
+    if not app_token or not table_id:
+        return {"ok": False, "error": "Today's Recruiting table is not configured"}
+    existing = list_pipeline_records(app_token, table_id)
+    if not existing.get("ok"):
+        return existing
+    existing_keys = set()
+    for record in existing.get("records") or []:
+        fields = record.get("fields") or {}
+        url = str(fields.get("Candidate URL") or "").strip().casefold()
+        job = str(fields.get("Hiring Job") or "").strip().casefold()
+        if url and job:
+            existing_keys.add((url, job))
+    pending, seen = [], set(existing_keys)
+    for index, row in enumerate(rows or [], start=1):
+        if not isinstance(row, dict):
+            return {"ok": False, "error": "Publication row %d is invalid" % index}
+        name = " ".join(str(row.get("candidate_name") or "").split())
+        url = str(row.get("candidate_url") or "").strip()
+        channel = str(row.get("channel") or "").strip()
+        detail = str(row.get("source_detail") or "").strip()
+        job = str(row.get("job_title") or "").strip()
+        hr_name = " ".join(str(row.get("assigned_hr") or "").split())
+        key = (url.casefold(), job.casefold())
+        if (not name or not url.startswith("https://") or not channel
+                or not job or not hr_name):
+            return {"ok": False, "error": "Publication row %d is incomplete" % index}
+        if channel == "Other" and not detail:
+            return {"ok": False, "error": "Publication row %d needs source detail" % index}
+        if channel != "Other" and detail:
+            return {"ok": False, "error": "Publication row %d has unexpected source detail" % index}
+        if key in seen:
+            continue
+        seen.add(key)
+        fields = {
+            "Candidate Name": name,
+            "Candidate URL": url,
+            "Source Channel": channel,
+            "Hiring Job": job,
+            "Assigned HR": hr_name,
+        }
+        if detail:
+            fields[pipeline_schema.OTHER_SOURCE_DETAIL] = detail
+        pending.append({"fields": fields})
+    if not pending:
+        return {"ok": True, "created": 0, "skipped": len(rows or []), "idempotent": True}
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err, "created": 0}
+    created = 0
+    for start in range(0, len(pending), 500):
+        batch = pending[start:start + 500]
+        response = _req(
+            "POST",
+            "/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_create"
+            % (app_token, table_id),
+            token=tok,
+            body={"records": batch},
+        )
+        if response.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Daily Recruiting rows stopped after %d: %s" %
+                         (created, response.get("msg") or response),
+                "created": created,
+                "raw": response,
+            }
+        created += len(batch)
+    return {
+        "ok": True,
+        "created": created,
+        "skipped": len(rows or []) - created,
+        "idempotent": created == 0,
+    }

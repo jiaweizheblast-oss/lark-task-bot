@@ -330,17 +330,18 @@ def help_text():
     )
 
 
-def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
-    """One clear, English-only Bot entry for Channel Analytics."""
+def channel_sheet_card(url="", panel_url="", configured=False, last_sync="",
+                       business_date=""):
+    """One clear Bot entry for the single daily recruiting table."""
     elements = []
     if configured and url:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-            "HR updates Candidate Pipeline or Unidentified Batch Counts here. "
-            "Editing the Base does not write to the website until an administrator sends "
-            "`/submit_channel_sheet`."}})
+            "This is the only recruiting table for **" + (business_date or "today") + "**. "
+            "It contains system-discovered candidates and HR-added candidates. "
+            "After HR finishes, send `/submit_channel_sheet` once to synchronize it."}})
         elements.append({"tag": "action", "actions": [{
             "tag": "button", "type": "primary",
-            "text": {"tag": "plain_text", "content": "Open Channel Analytics Workspace"}, "url": url,
+            "text": {"tag": "plain_text", "content": "Open Today's Recruiting Table"}, "url": url,
         }]})
         status_text = (
             "Last successful synchronization: " + last_sync
@@ -351,8 +352,8 @@ def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
         }]})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-            "The online workspace is not configured. An administrator must create it from "
-            "**Channel Analytics → Lark connection settings**."}})
+            "Today's Recruiting table is not ready. Run and freeze today's Talent Discovery "
+            "search first; the controlled publication step will then create the table."}})
     if panel_url:
         elements.append({"tag": "action", "actions": [{
             "tag": "button", "text": {"tag": "plain_text", "content": "Open Channel Analytics"},
@@ -360,7 +361,7 @@ def channel_sheet_card(url="", panel_url="", configured=False, last_sync=""):
         }]})
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "Channel Analytics Workspace"}},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "Daily Recruiting Table"}},
         "elements": elements,
     }
 
@@ -388,7 +389,6 @@ def channel_sync_result_card(result):
             opening + "\n"
             f"- Candidate applications created: {int(result.get('created') or 0)}\n"
             f"- Candidate applications updated: {int(result.get('updated') or 0)}\n"
-            f"- Unidentified batch rows applied: {int(result.get('applied') or 0)}\n"
             f"- Blank rows skipped: {int(result.get('skipped') or 0)}\n"
             f"- Rows requiring correction: {len(result.get('errors') or [])}"
         )

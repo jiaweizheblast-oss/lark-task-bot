@@ -17,6 +17,7 @@ import secrets
 import hmac
 import datetime
 import threading
+import uuid
 import requests
 import psycopg2
 from urllib.parse import quote
@@ -66,8 +67,6 @@ WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间
 ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
 NEXUS_INTEGRATION_SIGNING_KEY = os.environ.get("NEXUS_INTEGRATION_SIGNING_KEY", "")
 NEXUS_TALENT_WORKER_TOKEN = os.environ.get("NEXUS_TALENT_WORKER_TOKEN", "")
-TG_AUTOMATION_API_URL = os.environ.get("TG_AUTOMATION_API_URL", "").strip().rstrip("/")
-TG_AUTOMATION_API_KEY = os.environ.get("TG_AUTOMATION_API_KEY", "").strip()
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -561,35 +560,6 @@ def _panel_auth():
     return pw == PANEL_PASSWORD
 
 
-def _tg_headers():
-    headers = {"X-NEXUS-ACTOR": "nexus-panel"}
-    if TG_AUTOMATION_API_KEY:
-        headers["X-NEXUS-API-KEY"] = TG_AUTOMATION_API_KEY
-    return headers
-
-
-def _tg_request(method, path, **kwargs):
-    if not TG_AUTOMATION_API_URL:
-        return None, {"error": "tg_automation_not_configured"}
-    headers = dict(_tg_headers())
-    headers.update(kwargs.pop("headers", {}) or {})
-    try:
-        response = requests.request(
-            method,
-            TG_AUTOMATION_API_URL + path,
-            headers=headers,
-            timeout=25,
-            **kwargs,
-        )
-    except requests.RequestException:
-        return None, {"error": "tg_automation_unavailable"}
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {"error": "tg_automation_invalid_response"}
-    return response, payload
-
-
 def _talent_worker_auth():
     if len(NEXUS_TALENT_WORKER_TOKEN) < 32:
         return False
@@ -611,6 +581,8 @@ def _search_task_json(row, *, include_payload=True, include_result=True):
         "worker_id": row.get("worker_id"),
         "attempt_count": row.get("attempt_count", 0),
         "last_error_code": row.get("last_error_code"),
+        "publication_status": row.get("publication_status") or "not_ready",
+        "publication": row.get("publication") or {},
     }
     for field in (
         "created_at", "updated_at", "expires_at", "claimed_at",
@@ -684,12 +656,28 @@ def api_talent_search_task_create():
         return jsonify({"error": "unauthorized"}), 401
     try:
         task = talent_search_queue.build_task(request.get_json(silent=True) or {})
-        job = db.get_job_request_by_core_ref(task["core_job_ref"])
-        if not job:
+        search_profile = db.get_job_request_by_core_ref(task["core_job_ref"])
+        if not search_profile:
             return jsonify({"error": "unknown_core_job_ref"}), 422
-        if job["status"] != "open":
-            return jsonify({"error": "job_not_active"}), 409
+        if search_profile["status"] != "open":
+            return jsonify({"error": "search_profile_not_active"}), 409
+        operational_job = db.get_job_request_by_ref(task["operational_job_ref"])
+        if (not operational_job
+                or operational_job.get("record_type") != "operational"):
+            return jsonify({"error": "unknown_operational_job_ref"}), 422
+        if operational_job.get("status") != "open":
+            return jsonify({"error": "operational_job_not_open"}), 409
+        if operational_job.get("search_profile_ref") != task["core_job_ref"]:
+            return jsonify({"error": "job_search_profile_mismatch"}), 409
         row, inserted = db.enqueue_talent_search_task(task)
+        if inserted:
+            current_names = _channel_roster()
+            seen = {name.casefold() for name in current_names}
+            for allocation in task["hr_allocations"]:
+                if allocation["name"].casefold() not in seen:
+                    current_names.append(allocation["name"])
+                    seen.add(allocation["name"].casefold())
+            db.set_setting("channel_roster", "\n".join(current_names))
     except ValueError as exc:
         return jsonify({"error": "invalid_search_task", "detail": str(exc)}), 422
     except Exception as exc:
@@ -712,6 +700,21 @@ def api_talent_search_task_list():
             for row in db.list_talent_search_tasks(limit=50)
         ]
     })
+
+
+@app.route("/api/talent/search-tasks/<task_id>/publish", methods=["POST"])
+def api_talent_search_task_publish(task_id):
+    """Manager approval queues local apply/publish; Railway never writes Lark."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        result = _queue_talent_search_publication(task_id)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    except Exception as exc:
+        print("[talent_search_publish_queue] unavailable:", type(exc).__name__)
+        return jsonify({"ok": False, "error": "Publication queue is unavailable"}), 503
+    return jsonify(result)
 
 
 @app.route("/api/integration/v1/talent/search-tasks/claim", methods=["POST"])
@@ -778,7 +781,9 @@ def api_talent_search_task_complete(task_id):
         result = talent_search_queue.validate_result(
             body["result"],
             task_id=str(row["task_id"]),
+            operational_job_ref=(row.get("payload") or {}).get("operational_job_ref"),
             core_job_ref=row["core_job_ref"],
+            hr_allocations=(row.get("payload") or {}).get("hr_allocations"),
         )
         completed = db.complete_talent_search_task(
             task_id, worker_id, lease_token, result,
@@ -791,7 +796,18 @@ def api_talent_search_task_complete(task_id):
         return jsonify({"error": "search_queue_unavailable"}), 503
     if not completed:
         return jsonify({"error": "lease_conflict"}), 409
-    return jsonify(completed)
+    publication = {
+        "status": (
+            "ready"
+            if result.get("quota_fulfilled") is True
+            and result.get("applicable") is True
+            else "not_ready"
+        ),
+        "requires_manager_confirmation": True,
+        "lark_calls": 0,
+        "database_writes": 0,
+    }
+    return jsonify({**completed, "publication": publication})
 
 
 @app.route("/api/integration/v1/talent/search-tasks/<task_id>/fail", methods=["POST"])
@@ -809,6 +825,106 @@ def api_talent_search_task_fail(task_id):
     except ValueError as exc:
         return jsonify({"error": "invalid_failure", "detail": str(exc)}), 422
     if not ok:
+        return jsonify({"error": "lease_conflict"}), 409
+    return jsonify({"status": "failed"})
+
+
+@app.route("/api/integration/v1/talent/publications/claim", methods=["POST"])
+def api_talent_publication_claim():
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        if set(body) != {"worker_id", "lease_seconds"}:
+            raise ValueError("invalid publication claim fields")
+        worker_id = talent_search_queue.valid_worker_id(body["worker_id"])
+        lease_seconds = talent_search_queue.valid_lease_seconds(body["lease_seconds"])
+        claimed = db.claim_talent_daily_publication(worker_id, lease_seconds)
+    except ValueError as exc:
+        return jsonify({"error": "invalid_claim", "detail": str(exc)}), 422
+    except Exception as exc:
+        print("[talent_publication_claim] unavailable:", type(exc).__name__)
+        return jsonify({"error": "publication_queue_unavailable"}), 503
+    if not claimed:
+        return jsonify({"task": None}), 200
+    row, lease_token = claimed
+    return jsonify({"task": row["publication"], "lease_token": lease_token})
+
+
+@app.route(
+    "/api/integration/v1/talent/publications/<publication_id>/heartbeat",
+    methods=["POST"],
+)
+def api_talent_publication_heartbeat(publication_id):
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body, worker_id, lease_token = _worker_lease_body()
+        if set(body) != {"worker_id", "lease_token", "lease_seconds"}:
+            raise ValueError("invalid publication heartbeat fields")
+        lease_seconds = talent_search_queue.valid_lease_seconds(body["lease_seconds"])
+        ok = db.heartbeat_talent_daily_publication(
+            publication_id, worker_id, lease_token, lease_seconds,
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_heartbeat", "detail": str(exc)}), 422
+    if not ok:
+        return jsonify({"error": "lease_conflict"}), 409
+    return jsonify({"status": "extended"})
+
+
+@app.route(
+    "/api/integration/v1/talent/publications/<publication_id>/complete",
+    methods=["POST"],
+)
+def api_talent_publication_complete(publication_id):
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body, worker_id, lease_token = _worker_lease_body()
+        if set(body) != {"worker_id", "lease_token", "receipt"}:
+            raise ValueError("invalid publication completion fields")
+        row = db.get_talent_daily_publication(publication_id)
+        if not row:
+            return jsonify({"error": "publication_not_found"}), 404
+        receipt = talent_search_queue.validate_publication_receipt(
+            body["receipt"], command=row.get("payload") or {},
+        )
+        completed = db.finish_talent_daily_publication(
+            publication_id, worker_id, lease_token, "published", receipt,
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_receipt", "detail": str(exc)}), 422
+    except Exception as exc:
+        print("[talent_publication_complete] unavailable:", type(exc).__name__)
+        return jsonify({"error": "publication_queue_unavailable"}), 503
+    if not completed:
+        return jsonify({"error": "lease_conflict"}), 409
+    return jsonify({"status": "published", "publication": receipt})
+
+
+@app.route(
+    "/api/integration/v1/talent/publications/<publication_id>/fail",
+    methods=["POST"],
+)
+def api_talent_publication_fail(publication_id):
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body, worker_id, lease_token = _worker_lease_body()
+        if set(body) != {"worker_id", "lease_token", "error_code"}:
+            raise ValueError("invalid publication failure fields")
+        error_code = talent_search_queue.valid_error_code(body["error_code"])
+        completed = db.finish_talent_daily_publication(
+            publication_id,
+            worker_id,
+            lease_token,
+            "failed",
+            {"error_code": error_code},
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_failure", "detail": str(exc)}), 422
+    if not completed:
         return jsonify({"error": "lease_conflict"}), 409
     return jsonify({"status": "failed"})
 
@@ -859,90 +975,6 @@ def api_config():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"tz_label": TZ_LABEL, "tz_offset": COMPANY_TZ_OFFSET,
                     "work_start": WORK_START, "work_end": WORK_END})
-
-
-@app.route("/api/tg/status")
-def api_tg_status():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    response, payload = _tg_request("GET", "/health")
-    if response is None:
-        return jsonify({"connected": False, **payload}), 503
-    data = payload.get("data") or {}
-    return jsonify({
-        "connected": response.ok and data.get("status") == "ok",
-        "sending_enabled": bool(data.get("sending_enabled")),
-        "environment": data.get("environment"),
-    }), 200 if response.ok else 502
-
-
-@app.route("/api/tg/destinations")
-def api_tg_destinations():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    response, payload = _tg_request(
-        "GET", "/api/v1/tg/destinations", params={"is_test": "true"}
-    )
-    if response is None:
-        return jsonify(payload), 503
-    if not response.ok:
-        return jsonify({"error": "tg_destination_lookup_failed"}), 502
-    destinations = [
-        item for item in (payload.get("data") or [])
-        if item.get("is_test") and item.get("status") == "ENABLED"
-    ]
-    return jsonify({"destinations": destinations})
-
-
-@app.route("/api/tg/send-test", methods=["POST"])
-def api_tg_send_test():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    if request.content_length and request.content_length > 11 * 1024 * 1024:
-        return jsonify({"error": "image_too_large"}), 413
-    photo = request.files.get("photo")
-    destination_id = (request.form.get("destination_id") or "").strip()
-    caption = (request.form.get("caption") or "").strip()
-    button_label = (request.form.get("button_label") or "").strip()
-    button_url = (request.form.get("button_url") or "").strip()
-    if not photo or not photo.filename:
-        return jsonify({"error": "photo_required"}), 422
-    if not destination_id:
-        return jsonify({"error": "destination_required"}), 422
-    if not caption or len(caption) > 1024:
-        return jsonify({"error": "caption_invalid"}), 422
-    if bool(button_label) != bool(button_url):
-        return jsonify({"error": "button_incomplete"}), 422
-    buttons = []
-    if button_label and button_url:
-        buttons.append({
-            "label": button_label[:64],
-            "value": button_url,
-            "row": 0,
-            "position": 0,
-        })
-    files = {
-        "photo": (
-            photo.filename,
-            photo.stream,
-            photo.mimetype or "application/octet-stream",
-        )
-    }
-    response, payload = _tg_request(
-        "POST",
-        f"/api/v1/tg/destinations/{destination_id}/send-test-upload",
-        data={"caption": caption, "buttons": json.dumps(buttons)},
-        files=files,
-    )
-    if response is None:
-        return jsonify(payload), 503
-    if not response.ok:
-        upstream_error = payload.get("error") or {}
-        return jsonify({
-            "error": upstream_error.get("code") or "tg_test_send_failed",
-            "message": upstream_error.get("message") or "Telegram test send failed",
-        }), response.status_code if 400 <= response.status_code < 500 else 502
-    return jsonify({"ok": True, "result": payload.get("data") or {}})
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -1306,17 +1338,17 @@ def api_candidate_create():
     rd = _kolkata_today().isoformat()
     stage_date = rd
     application_ref = ""
-    requested_stage = d.get("status") or "New Lead"
+    requested_stage = d.get("status") or "Pending"
     if hasattr(db, "apply_candidate_application_command"):
         client_event = (d.get("submission_event_id") or "").strip() or secrets.token_urlsafe(18)
         row_ref = (d.get("ext_ref") or "").strip() or ("web-" + client_event)
         command_payload = {
             "row_ref": row_ref, "name": (d.get("name") or "").strip(),
+            "candidate_url": (d.get("candidate_url") or "").strip(),
             "channel": d["channel"], "source_detail": (d.get("source_detail") or "").strip(),
             "job_request_id": jid, "stage": requested_stage,
-            "note": (d.get("note") or "").strip(),
             "hr_owner": (d.get("filled_by") or "").strip(),
-            "rejection_reason": (d.get("rejection_reason") or "").strip(),
+            "cv_url": (d.get("cv_url") or "").strip(),
         }
         payload_sha = hashlib.sha256(json.dumps(
             command_payload, ensure_ascii=False, sort_keys=True,
@@ -1328,10 +1360,12 @@ def api_candidate_create():
                 row_ref=row_ref, payload_sha256=payload_sha, transport="website",
                 entry_date=rd, name=command_payload["name"], channel=d["channel"],
                 source_detail=command_payload["source_detail"], job_request_id=jid,
-                stage=requested_stage, note=command_payload["note"],
+                stage=requested_stage, note="",
                 hr_owner=command_payload["hr_owner"],
-                rejection_reason=command_payload["rejection_reason"], source="Website",
-                changed_by="manager-website", baseline_import=requested_stage != "New Lead",
+                rejection_reason="", source="Website",
+                changed_by="manager-website", baseline_import=False,
+                candidate_url=command_payload["candidate_url"],
+                cv_url=command_payload["cv_url"], stage_effective_date=rd,
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 409
@@ -1398,7 +1432,7 @@ def api_candidate_update(cid):
         return jsonify({
             "error": "Source attribution is immutable after an application is created."
         }), 409
-    requested_stage = d.get("status") or "New Lead"
+    requested_stage = d.get("status") or "Pending"
     if application and hasattr(db, "apply_candidate_application_command"):
         client_event = (d.get("submission_event_id") or "").strip()
         if not client_event:
@@ -1407,9 +1441,9 @@ def api_candidate_update(cid):
             "application_ref": application["application_ref"],
             "expected_version": int(d.get("expected_version") or 0),
             "stage": requested_stage,
-            "note": (d.get("note") or "").strip(),
             "hr_owner": (d.get("filled_by") or "").strip(),
-            "rejection_reason": (d.get("rejection_reason") or "").strip(),
+            "candidate_url": (d.get("candidate_url") or "").strip(),
+            "cv_url": (d.get("cv_url") or "").strip(),
         }
         payload_sha = hashlib.sha256(json.dumps(
             command_payload, ensure_ascii=False, sort_keys=True,
@@ -1424,11 +1458,14 @@ def api_candidate_update(cid):
                 channel=application.get("channel") or "",
                 source_detail=application.get("source_detail") or "",
                 job_request_id=application.get("job_request_id"), stage=requested_stage,
-                note=command_payload["note"], hr_owner=command_payload["hr_owner"],
-                rejection_reason=command_payload["rejection_reason"],
+                note="", hr_owner=command_payload["hr_owner"],
+                rejection_reason="",
                 application_ref=application["application_ref"],
                 expected_version=command_payload["expected_version"],
                 source="Website", changed_by="manager-website",
+                candidate_url=command_payload["candidate_url"],
+                cv_url=command_payload["cv_url"],
+                stage_effective_date=_kolkata_today().isoformat(),
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 409
@@ -1647,9 +1684,16 @@ def _build_channel_report(day=None, wfrom=None, wto=None):
     target = datetime.date.fromisoformat(day[:10]) if day else _kolkata_today()
     wf = datetime.date.fromisoformat(wfrom[:10]) if wfrom else None
     wt = datetime.date.fromisoformat(wto[:10]) if wto else None
-    rows = db.channel_rows_upto(target)
+    # The report uses the same identified application/stage-event source as the
+    # manager website. Legacy manual batch counts stay outside this workflow.
+    lower = min(wf or (target - datetime.timedelta(days=29)),
+                target - datetime.timedelta(days=30))
+    rows = db.list_candidate_metric_rows_range(lower.isoformat(), target.isoformat())
     jobs = db.list_job_requests(only_open=False)
-    return channel_report.build_report(rows, target, jobs, window_from=wf, window_to=wt)
+    return channel_report.build_report(
+        rows, target, jobs, window_from=wf, window_to=wt,
+        data_space="identity_derived",
+    )
 
 
 @app.route("/api/channel/report")
@@ -1698,7 +1742,7 @@ _ANALYTICS_SPAN = {"day": 30, "week": 84, "month": 365, "year": 365 * 3}
 
 @app.route("/api/channel/analytics")
 def api_channel_analytics():
-    """Channel Analytics, with manual and identity-derived spaces kept separate."""
+    """Unified HR-table analytics: current snapshot plus immutable activity."""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     g = request.args.get("g", "day")
@@ -1713,16 +1757,23 @@ def api_channel_analytics():
     job_id = int(jid) if jid.isdigit() else None
     span = (dto - dfrom).days + 1
     prev_from = dfrom - datetime.timedelta(days=span)          # 上一周期（同长度、紧邻在前）
-    space = request.args.get("space", "manual")
-    if space == "derived":
-        rows = db.list_candidate_metric_rows_range(prev_from.isoformat(), dto.isoformat())
-    else:
-        space = "manual"
-        rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
+    # Channel Analytics has one source of truth: identified candidate intake
+    # and immutable stage events. The retired manual-count space is never mixed
+    # into these totals, even if an old bookmarked URL still sends space=manual.
+    space = "derived"
+    rows = db.list_candidate_metric_rows_range(prev_from.isoformat(), dto.isoformat())
     jobs = db.list_job_requests(only_open=False)
     costs = db.list_channel_costs()
-    result = channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs)
-    result["data_space"] = "identity_derived" if space == "derived" else "manual_unidentified"
+    data_space = "identity_derived" if space == "derived" else "manual_unidentified"
+    result = channel_report.analytics(
+        rows, jobs, g, dfrom, dto, job_id, prev_from, costs,
+        data_space=data_space,
+    )
+    snapshot = channel_report.current_snapshot(
+        db.list_candidate_application_snapshot(), job_id,
+    )
+    snapshot["as_of"] = today.isoformat()
+    result["snapshot"] = snapshot
     return jsonify(result)
 
 
@@ -1743,15 +1794,15 @@ def api_channel_export():
     job_id = int(jid) if jid.isdigit() else None
     span = (dto - dfrom).days + 1
     prev_from = dfrom - datetime.timedelta(days=span)
-    space = request.args.get("space", "manual")
-    if space == "derived":
-        rows = db.list_candidate_metric_rows_range(prev_from.isoformat(), dto.isoformat())
-    else:
-        rows = db.list_channel_records_range(prev_from.isoformat(), dto.isoformat())
+    space = "derived"
+    rows = db.list_candidate_metric_rows_range(prev_from.isoformat(), dto.isoformat())
     jobs = db.list_job_requests(only_open=False)
     costs = db.list_channel_costs()
-    a = channel_report.analytics(rows, jobs, g, dfrom, dto, job_id, prev_from, costs)
-    a["data_space"] = "identity_derived" if space == "derived" else "manual_unidentified"
+    data_space = "identity_derived" if space == "derived" else "manual_unidentified"
+    a = channel_report.analytics(
+        rows, jobs, g, dfrom, dto, job_id, prev_from, costs,
+        data_space=data_space,
+    )
     data = sheet_io.build_analytics_xlsx(a)
     fname = "招聘分析_%s_%s.xlsx" % (a["window"]["from"], a["window"]["to"])
     return Response(
@@ -1959,9 +2010,12 @@ def api_checkin_submit(token):
 
 @app.route("/api/channel/template")
 def api_channel_template():
-    """下载来源中立的 Candidate Pipeline workbook。"""
+    """Retired: the daily Lark table is the only HR exchange artifact."""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "error": "Channel Excel generation is retired; use today's Lark Recruiting table."
+    }), 410
     day = _kolkata_today().isoformat()
     by = request.args.get("by", "")
     open_jobs = db.list_job_requests(only_open=True)
@@ -1995,6 +2049,9 @@ def api_channel_upload():
     填报人以上传时选定的受控 owner 为准（表内声明仅作展示）。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "error": "Channel Excel upload is retired; submit today's Lark Recruiting table."
+    }), 410
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "没有收到文件"}), 400
@@ -2027,15 +2084,21 @@ def _lark_cfg():
     pipeline_table_id = s.get("lark_channel_pipeline_table_id", "")
     return {"app_token": s.get("lark_channel_app_token", ""),
             "pipeline_table_id": pipeline_table_id,
-            "manual_table_id": s.get("lark_channel_manual_table_id", ""),
             "url": lark_bitable.table_url(s.get("lark_channel_url", ""), pipeline_table_id),
             "last_sync": s.get("lark_channel_last_sync", ""),
+            "business_date": s.get("lark_channel_business_date", ""),
             "schema_version": s.get("lark_channel_schema_version", "")}
 
 
 def _ensure_lark_channel_schema(cfg=None):
-    """Run the one-time, idempotent Base repair before any operational use."""
+    """Idempotently enforce the single daily Recruiting table contract.
+
+    This path never creates, migrates, or deletes a second summary table and
+    never removes candidate rows.
+    """
     cfg = cfg or _lark_cfg()
+    if not cfg.get("app_token") or not cfg.get("pipeline_table_id"):
+        return {"ok": False, "error": "Today's Recruiting table is not configured"}
     open_jobs = db.list_job_requests(only_open=True)
     referenced_job_ids = set(
         db.list_lark_referenced_job_request_ids()
@@ -2051,60 +2114,228 @@ def _ensure_lark_channel_schema(cfg=None):
     jobs_by_id = {job.get("id"): job for job in (*open_jobs, *historical_jobs)}
     jobs = list(jobs_by_id.values())
     job_titles = [job["title"] for job in jobs]
+    hr_names = _channel_roster()
     catalog_sha = hashlib.sha256(json.dumps(
-        [{"job_ref": job.get("job_ref"), "title": job.get("title"),
-          "catalog_revision": job.get("catalog_revision", 1)} for job in jobs],
+        {
+            "schema_version": pipeline_schema.SCHEMA_VERSION,
+            "jobs": [
+                {"job_ref": job.get("job_ref"), "title": job.get("title"),
+                 "catalog_revision": job.get("catalog_revision", 1)}
+                for job in jobs
+            ],
+            "hr_names": hr_names,
+            "channels": channel_report.CHANNELS,
+            "statuses": channel_report.PIPELINE_STATUS,
+        },
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
     settings = db.get_settings()
     if (settings.get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION
             and settings.get("lark_channel_catalog_sha") == catalog_sha):
         verified = lark_bitable.verify_channel_base_schema(
-            cfg.get("app_token"), cfg.get("pipeline_table_id"), cfg.get("manual_table_id"),
+            cfg.get("app_token"), cfg.get("pipeline_table_id"),
             job_titles=job_titles, channels=channel_report.CHANNELS,
-            stages=channel_report.PIPELINE_STATUS,
+            stages=channel_report.PIPELINE_STATUS, hr_names=hr_names,
         )
         if verified.get("ok"):
             return {"ok": True, "already_ensured": True, "verification": verified}
         # A database marker is not proof. Repair the actual Base and only retain
         # the marker after a fresh post-migration metadata check succeeds.
         db.set_setting("lark_channel_schema_ensured", "")
-    if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
+    if not cfg.get("app_token") or not cfg.get("pipeline_table_id"):
         return {"ok": False, "error": "在线渠道表尚未完整配置"}
-    manual_migration = None
-    if not cfg.get("last_sync"):
-        manual_migration = lark_bitable.prepare_canonical_manual_table(
-            cfg["app_token"], cfg["manual_table_id"], job_titles, channel_report.CHANNELS)
-        if not manual_migration.get("ok"):
-            return {"ok": False, "error": manual_migration.get("error"),
-                    "manual_table_migration": manual_migration}
-        if manual_migration.get("changed"):
-            old_table_id = manual_migration["old_table_id"]
-            new_table_id = manual_migration["table_id"]
-            db.set_setting("lark_channel_manual_table_id", new_table_id)
-            cfg = dict(cfg)
-            cfg["manual_table_id"] = new_table_id
-            manual_migration["old_table_cleanup"] = lark_bitable.delete_table(
-                cfg["app_token"], old_table_id)
-    test_cleanup = None
-    if not cfg.get("last_sync"):
-        # Run this before removing the legacy System ID column so an existing
-        # identified row can never match the disposable-test-row fingerprint.
-        test_cleanup = lark_bitable.delete_known_unsynced_test_rows(
-            cfg["app_token"], cfg["pipeline_table_id"]
-        )
-        if not test_cleanup.get("ok"):
-            return {"ok": False, "discarded_test_rows": test_cleanup,
-                    "error": test_cleanup.get("error") or "Test-row cleanup failed"}
     result = lark_bitable.ensure_channel_base_schema(
-        cfg["app_token"], cfg["pipeline_table_id"], cfg["manual_table_id"],
+        cfg["app_token"], cfg["pipeline_table_id"],
         job_titles=job_titles, channels=channel_report.CHANNELS,
-        stages=channel_report.PIPELINE_STATUS,
+        stages=channel_report.PIPELINE_STATUS, hr_names=hr_names,
     )
-    if manual_migration is not None:
-        result["manual_table_migration"] = manual_migration
-    if test_cleanup is not None:
-        result["discarded_test_rows"] = test_cleanup
+    if result.get("ok"):
+        db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
+        db.set_setting("lark_channel_catalog_sha", catalog_sha)
+    return result
+
+
+def _queue_talent_search_publication(task_id):
+    """Queue every ready cohort for one immutable Kolkata business date."""
+    seed = db.get_talent_search_task(task_id)
+    if not seed or seed.get("status") != "succeeded":
+        raise ValueError("Only a successful search task can be queued")
+    if seed.get("publication_status") == "published":
+        receipt = dict(seed.get("publication") or {})
+        return {"ok": True, "status": "published", "idempotent": True, **receipt}
+    if seed.get("publication_status") in {"queued", "publishing"}:
+        return {
+            "ok": True,
+            "status": seed["publication_status"],
+            "idempotent": True,
+            "lark_calls": 0,
+            "database_writes": 0,
+        }
+    business_date = _kolkata_today()
+    company_tz = datetime.timezone(
+        datetime.timedelta(hours=COMPANY_TZ_OFFSET)
+    )
+
+    def task_business_date(value):
+        raw = (value.get("payload") or {}).get("created_at")
+        try:
+            instant = datetime.datetime.fromisoformat(
+                str(raw).replace("Z", "+00:00")
+            )
+        except ValueError as error:
+            raise ValueError("Search task created_at is invalid") from error
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError("Search task created_at must include a UTC offset")
+        return instant.astimezone(company_tz).date()
+
+    if task_business_date(seed) != business_date:
+        raise ValueError(
+            "Only successful searches created on today's business date can publish"
+        )
+    today_rows = [
+        row for row in db.list_talent_search_tasks(limit=500)
+        if task_business_date(row) == business_date
+    ]
+    unfinished = [
+        row for row in today_rows
+        if row.get("status") in {"pending", "claimed"}
+    ]
+    if unfinished:
+        raise ValueError(
+            "Wait for every search created today to finish before publishing"
+        )
+    eligible_rows = [
+        row for row in today_rows
+        if row.get("status") == "succeeded"
+        and row.get("publication_status") in {"ready", "failed"}
+    ]
+    if not eligible_rows or not any(
+        str(row["task_id"]) == str(task_id) for row in eligible_rows
+    ):
+        raise ValueError("The selected search is not ready for today's publication")
+    seed_job_ref = (seed.get("payload") or {}).get("operational_job_ref")
+    by_job = {}
+    for row in sorted(
+        eligible_rows,
+        key=lambda value: (
+            str(value.get("created_at") or ""),
+            str(value.get("task_id")),
+        ),
+    ):
+        job_ref = (row.get("payload") or {}).get("operational_job_ref")
+        by_job[job_ref] = row
+    by_job[seed_job_ref] = seed
+    ready_rows = sorted(
+        by_job.values(),
+        key=lambda value: (
+            str((value.get("payload") or {}).get("operational_job_ref")),
+            str(value.get("task_id")),
+        ),
+    )
+    cohorts = []
+    for row in ready_rows:
+        operational_job_ref = (row.get("payload") or {}).get(
+            "operational_job_ref"
+        )
+        job = db.get_job_request_by_ref(operational_job_ref)
+        if (
+            not job
+            or job.get("record_type") != "operational"
+            or job.get("status") != "open"
+        ):
+            raise ValueError(
+                "Every linked operational Job Requisition must still be Open"
+            )
+        if job.get("search_profile_ref") != row["core_job_ref"]:
+            raise ValueError(
+                "A Job Requisition search profile changed after preview"
+            )
+        cohorts.append(talent_search_queue.build_publication_cohort(
+            row,
+            hiring_job_label=job.get("title"),
+        ))
+    publication_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        "nexus-daily-recruiting:"
+        + business_date.isoformat()
+        + ":"
+        + ":".join(
+            item["search_task_id"] + ":" + item["search_result_sha256"]
+            for item in cohorts
+        ),
+    ))
+    command = talent_search_queue.build_publication_task(
+        cohorts,
+        publication_id=publication_id,
+        business_date=business_date.isoformat(),
+    )
+    queued = db.queue_talent_daily_publication(
+        publication_id,
+        business_date,
+        command,
+        [item["search_task_id"] for item in cohorts],
+    )
+    if not queued:
+        raise RuntimeError("Daily publication disappeared before it was queued")
+    return {
+        "ok": True,
+        "status": queued.get("status") or "queued",
+        "idempotent": False,
+        "business_date": command["business_date"],
+        "publication_id": publication_id,
+        "cohort_count": len(cohorts),
+        "expected_rows": command["total_contact_count"],
+        "requires_local_worker": True,
+        "lark_calls": 0,
+        "database_writes": 0,
+    }
+
+
+def _ensure_lark_channel_schema(cfg=None):
+    """Enforce the v20 one-table daily recruiting contract."""
+    cfg = cfg or _lark_cfg()
+    if not cfg.get("app_token") or not cfg.get("pipeline_table_id"):
+        return {"ok": False, "error": "Today's Recruiting table is not configured"}
+    open_jobs = db.list_job_requests(only_open=True)
+    referenced = set(
+        db.list_lark_referenced_job_request_ids()
+        if hasattr(db, "list_lark_referenced_job_request_ids") else ()
+    )
+    historical = [
+        job for job in db.list_job_requests(only_open=False)
+        if job.get("id") in referenced
+    ]
+    jobs_by_id = {job.get("id"): job for job in (*open_jobs, *historical)}
+    jobs = list(jobs_by_id.values())
+    job_titles = [job["title"] for job in jobs]
+    roster = _channel_roster()
+    catalog_sha = hashlib.sha256(json.dumps(
+        {
+            "jobs": [
+                {"job_ref": job.get("job_ref"), "title": job.get("title"),
+                 "catalog_revision": job.get("catalog_revision", 1)}
+                for job in jobs
+            ],
+            "hr_names": roster,
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    settings = db.get_settings()
+    if (settings.get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION
+            and settings.get("lark_channel_catalog_sha") == catalog_sha):
+        verified = lark_bitable.verify_channel_base_schema(
+            cfg["app_token"], cfg["pipeline_table_id"],
+            job_titles=job_titles, channels=channel_report.CHANNELS,
+            stages=channel_report.PIPELINE_STATUS, hr_names=roster,
+        )
+        if verified.get("ok"):
+            return {"ok": True, "already_ensured": True,
+                    "verification": verified}
+    result = lark_bitable.ensure_channel_base_schema(
+        cfg["app_token"], cfg["pipeline_table_id"],
+        job_titles=job_titles, channels=channel_report.CHANNELS,
+        stages=channel_report.PIPELINE_STATUS, hr_names=roster,
+    )
     if result.get("ok"):
         db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
         db.set_setting("lark_channel_catalog_sha", catalog_sha)
@@ -2125,10 +2356,15 @@ def api_lark_status():
         return jsonify({"error": "unauthorized"}), 401
     c = _lark_cfg()
     settings = db.get_settings()
-    return jsonify({"configured": bool(c["app_token"] and c["pipeline_table_id"]
-                                       and c["manual_table_id"]
-                                       and c["schema_version"] == "channel-analytics-v2"),
+    today = _kolkata_today().isoformat()
+    configured = bool(c["app_token"] and c["pipeline_table_id"]
+                      and c["schema_version"] == pipeline_schema.SCHEMA_VERSION
+                      and c.get("business_date") == today)
+    return jsonify({"configured": configured,
+                    "today_ready": configured,
+                    "today": today,
                     "url": c["url"], "last_sync": c["last_sync"],
+                    "business_date": c.get("business_date") or "",
                     "schema_version": c["schema_version"],
                     "schema_ensured": settings.get("lark_channel_schema_ensured") == pipeline_schema.SCHEMA_VERSION,
                     "bot_name": RECRUITMENT_BOT_NAME,
@@ -2190,7 +2426,7 @@ def api_lark_ensure_schema():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     cfg = _lark_cfg()
-    if not cfg.get("app_token") or not cfg.get("pipeline_table_id") or not cfg.get("manual_table_id"):
+    if not cfg.get("app_token") or not cfg.get("pipeline_table_id"):
         return jsonify({"error": "在线渠道表尚未完整配置"}), 409
     result = _ensure_lark_channel_schema(cfg)
     return jsonify(result), 200 if result.get("ok") else 502
@@ -2202,16 +2438,19 @@ def api_channel_bot_status():
     if not _talent_worker_auth():
         return jsonify({"error": "unauthorized"}), 401
     cfg = _lark_cfg()
+    today = _kolkata_today().isoformat()
     configured = bool(
         cfg.get("app_token") and cfg.get("pipeline_table_id")
-        and cfg.get("manual_table_id")
-        and cfg.get("schema_version") == "channel-analytics-v2"
+        and cfg.get("schema_version") == pipeline_schema.SCHEMA_VERSION
+        and cfg.get("business_date") == today
     )
     schema = _ensure_lark_channel_schema(cfg) if configured else {"ok": False}
     return jsonify({
         "ok": True, "configured": configured,
         "url": cfg.get("url") or "", "last_sync": cfg.get("last_sync") or "",
         "schema_version": cfg.get("schema_version") or "",
+        "business_date": cfg.get("business_date") or "",
+        "today": today,
         "schema_ensured": bool(schema.get("ok")),
     })
 
@@ -2221,11 +2460,15 @@ def api_channel_bot_submit():
     """Authenticated Recruitment Bot submission using the shared service."""
     if not _talent_worker_auth():
         return jsonify({"error": "unauthorized"}), 401
-    schema = _ensure_lark_channel_schema()
+    cfg = _lark_cfg()
+    today = _kolkata_today().isoformat()
+    if cfg.get("business_date") != today:
+        return jsonify({"ok": False, "error": "Today's Recruiting table has not been generated"}), 409
+    schema = _ensure_lark_channel_schema(cfg)
     if not schema.get("ok"):
         return jsonify(schema), 409
     result = channel_sheet_service.sync_lark_table(
-        db, lark_bitable, _lark_cfg(),
+        db, lark_bitable, cfg,
         jobs=db.list_job_requests(only_open=False),
         channels=channel_report.CHANNELS,
         default_date=_kolkata_today().isoformat(),
@@ -2240,6 +2483,13 @@ def api_lark_create_table():
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
     current = _lark_cfg()
+    business_date = _kolkata_today().isoformat()
+    if (current.get("app_token") and current.get("pipeline_table_id")
+            and current.get("business_date") == business_date
+            and current.get("schema_version") == pipeline_schema.SCHEMA_VERSION):
+        return jsonify({"ok": True, "idempotent": True,
+                        "business_date": business_date,
+                        "url": current.get("url")}), 200
     if (current.get("app_token") and current.get("pipeline_table_id")
             and current.get("manual_table_id")
             and current.get("schema_version") == "channel-analytics-v2"):
@@ -2247,25 +2497,31 @@ def api_lark_create_table():
                         "url": current.get("url")}), 409
     d = request.get_json(silent=True) or {}
     jobs = db.list_job_requests(only_open=True)
+    dated_name = pipeline_schema.base_name_for(business_date)
     res = lark_bitable.create_channel_base(
-        pipeline_schema.BASE_NAME, [j["title"] for j in jobs], channel_report.CHANNELS,
+        dated_name, [j["title"] for j in jobs], channel_report.CHANNELS,
         channel_report.PIPELINE_STATUS,
         folder_token=(d.get("folder_token") or "").strip(),
+        hr_names=_channel_roster(),
+        table_name=pipeline_schema.table_name_for(business_date),
     )
     if not res.get("ok"):
         return jsonify(res), 502
     db.set_setting("lark_channel_app_token", res["app_token"])
     db.set_setting("lark_channel_pipeline_table_id", res.get("pipeline_table_id") or "")
-    db.set_setting("lark_channel_manual_table_id", res.get("manual_table_id") or "")
     db.set_setting("lark_channel_url", res.get("url") or "")
-    db.set_setting("lark_channel_schema_version", "channel-analytics-v2")
+    db.set_setting("lark_channel_business_date", business_date)
+    db.set_setting("lark_channel_last_sync", "")
+    db.set_setting("lark_channel_schema_version", pipeline_schema.SCHEMA_VERSION)
     if (res.get("schema") or {}).get("ok"):
         db.set_setting("lark_channel_schema_ensured", pipeline_schema.SCHEMA_VERSION)
     shared = None
     share = (d.get("share_email") or "").strip()
     if share:
         shared = lark_bitable.add_member(res["app_token"], share, "email", "full_access")
-    return jsonify({"ok": True, "url": res.get("url"), "table_id": res.get("table_id"), "shared": shared})
+    return jsonify({"ok": True, "url": res.get("url"),
+                    "table_id": res.get("pipeline_table_id"),
+                    "business_date": business_date, "shared": shared})
 
 
 @app.route("/api/lark/push", methods=["POST"])
@@ -2281,13 +2537,17 @@ def api_lark_pull():
     """从 Lark 在线渠道表提交；网站按钮和 Bot 命令共用同一 application service。"""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    schema = _ensure_lark_channel_schema()
+    cfg = _lark_cfg()
+    today = _kolkata_today().isoformat()
+    if cfg.get("business_date") != today:
+        return jsonify({"ok": False, "error": "Today's Recruiting table has not been generated"}), 409
+    schema = _ensure_lark_channel_schema(cfg)
     if not schema.get("ok"):
         return jsonify(schema), 409
     result = channel_sheet_service.sync_lark_table(
         db,
         lark_bitable,
-        _lark_cfg(),
+        cfg,
         jobs=db.list_job_requests(only_open=False),
         channels=channel_report.CHANNELS,
         default_date=_kolkata_today().isoformat(),
@@ -2308,8 +2568,7 @@ def api_channel_reset_test_data():
     if payload.get("confirmation") != "RESET CHANNEL ANALYTICS TEST DATA":
         return jsonify({"error": "confirmation_required"}), 422
     cfg = _lark_cfg()
-    if not (cfg.get("app_token") and cfg.get("pipeline_table_id")
-            and cfg.get("manual_table_id")):
+    if not (cfg.get("app_token") and cfg.get("pipeline_table_id")):
         return jsonify({
             "error": "Channel Analytics Lark workspace is not fully configured; "
                      "nothing was deleted."
@@ -2322,27 +2581,18 @@ def api_channel_reset_test_data():
     )
     if not pipeline.get("ok"):
         return jsonify({"error": pipeline.get("error"), "pipeline": pipeline}), 502
-    manual = lark_bitable.delete_all_table_records(
-        cfg["app_token"], cfg["manual_table_id"]
-    )
-    if not manual.get("ok"):
-        return jsonify({
-            "error": manual.get("error"), "pipeline": pipeline,
-            "manual": manual, "database_changed": False,
-        }), 502
     try:
         database = db.reset_channel_analytics_test_data()
     except Exception as exc:
         return jsonify({
             "error": "Lark rows were cleared, but the database reset failed; "
                      "retry this same reset: %s" % exc,
-            "pipeline": pipeline, "manual": manual,
+            "pipeline": pipeline,
             "database_changed": False,
         }), 500
     return jsonify({
         "ok": True,
         "lark_pipeline_rows": pipeline.get("removed", 0),
-        "lark_manual_rows": manual.get("removed", 0),
         "database": database,
         "jobs_preserved": True,
         "lark_structure_preserved": True,

@@ -13,35 +13,38 @@
 from datetime import date, timedelta
 
 CHANNELS = [
-    # System and owned channels
-    "Talent Discovery", "Company Careers", "Direct Application",
-    "Employee Referral", "Internal Mobility", "Historical Talent Pool",
-    # Primary job platforms
-    "LinkedIn", "Naukri", "Indeed",
-    # Community and messaging channels
-    "Telegram", "WhatsApp", "Facebook", "Instagram", "X / Twitter",
-    "Discord", "GitHub",
-    # iGaming-focused channels and partners
-    "iGamingJobs", "BettingJobs / iGaming Agency",
-    "iGaming Community / Affiliate Network",
-    # Offline / partner channels
-    "Recruitment Agency", "Recruitment Event / Job Fair", "University / Campus",
-    "Other",
+    "LinkedIn", "Naukri", "Telegram", "Facebook", "WhatsApp",
+    "Company Careers", "Employee Referral", "Recruitment Agency",
+    "Job Fair / Offline", "Other",
 ]
 OTHER_CHANNEL = "Other"
 
-# 招聘流水线状态（每个候选人一个状态）。顺序即漏斗层级：越靠后越深。
-# 用于把「每行一个候选人」折算成 channel_daily 同形的日聚合行（candidates_to_daily），
-# 这样整套 analytics()/build_report() 一行都不用改就能吃候选人数据（单一分析引擎）。
+INTERNAL_PENDING_STATUS = "Pending"
 PIPELINE_STATUS = [
-    "New Lead", "Contacted / Awaiting Reply", "HR Screening", "Interview 1",
-    "Interview 2 / Final", "Offer", "Hired", "On Hold", "Rejected", "Withdrawn",
+    "Contacted / Awaiting Reply", "HR Screening", "Interview", "Offer",
+    "Hired", "Rejected", "Withdrawn", "Resigned",
 ]
-_ST_PASSED = {"Interview 1", "Interview 2 / Final", "Offer", "Hired",
-              "初筛通过", "已推荐面试", "已录用"}
-_ST_RECO = {"Interview 1", "Interview 2 / Final", "Offer", "Hired",
-            "已推荐面试", "已录用"}
-_ST_REJECT = {"Rejected", "已拒绝"}
+ALL_PIPELINE_STATUS = [INTERNAL_PENDING_STATUS, *PIPELINE_STATUS]
+_ST_PASSED = {"Interview", "Offer", "Hired", "Resigned"}
+_ST_RECO = {"Interview", "Offer", "Hired", "Resigned"}
+_ST_REJECT = {"Rejected"}
+
+_LEGACY_STAGE_ALIASES = {
+    "": INTERNAL_PENDING_STATUS,
+    "New Lead": INTERNAL_PENDING_STATUS,
+    "Interview 1": "Interview",
+    "Interview 2 / Final": "Interview",
+    "On Hold": "Withdrawn",
+    "初筛通过": "Interview",
+    "已推荐面试": "Interview",
+    "已录用": "Hired",
+    "已拒绝": "Rejected",
+}
+
+
+def canonical_stage(value):
+    stage = str(value or "").strip()
+    return _LEGACY_STAGE_ALIASES.get(stage, stage or INTERNAL_PENDING_STATUS)
 
 
 def validate_source(channel, source_detail=""):
@@ -77,7 +80,7 @@ def candidates_to_daily(cands):
                                "new_resumes": 0, "passed_screening": 0,
                                "recommended": 0, "rejected": 0}
         cell["new_resumes"] += 1
-        st = c.get("status") or "New Lead"
+        st = c.get("status") or INTERNAL_PENDING_STATUS
         if st in _ST_PASSED:
             cell["passed_screening"] += 1
         if st in _ST_RECO:
@@ -87,18 +90,86 @@ def candidates_to_daily(cands):
     return list(agg.values())
 
 
+def current_snapshot(rows, job_id=None):
+    """Aggregate the current application portfolio without inventing history.
+
+    ``rows`` contains one current row per candidate × hiring requisition.  It
+    deliberately includes baseline imports: those rows are valid for today's
+    workload and status distribution even though their earlier stage dates are
+    unknown.  Date-window activity is calculated separately by ``analytics``
+    from immutable intake/stage events.
+    """
+    jid = int(job_id) if job_id else None
+    filtered = [
+        row for row in rows
+        if jid is None or int(row.get("job_request_id") or 0) == jid
+    ]
+    by_status, by_channel, by_hr, by_job = {}, {}, {}, {}
+    baseline_count = 0
+    for row in filtered:
+        stage = canonical_stage(row.get("status") or row.get("current_stage"))
+        channel = str(row.get("channel") or "Unspecified").strip() or "Unspecified"
+        hr = str(row.get("filled_by") or row.get("hr_owner") or "Unassigned").strip() or "Unassigned"
+        job = str(row.get("job_title") or "Unassigned Job").strip() or "Unassigned Job"
+        by_status[stage] = by_status.get(stage, 0) + 1
+        by_channel[channel] = by_channel.get(channel, 0) + 1
+        by_hr[hr] = by_hr.get(hr, 0) + 1
+        by_job[job] = by_job.get(job, 0) + 1
+        baseline_count += int(bool(row.get("baseline_import")))
+
+    active_stages = {
+        INTERNAL_PENDING_STATUS, "Contacted / Awaiting Reply", "HR Screening",
+        "Interview", "Offer",
+    }
+    completed_stages = {"Hired", "Rejected", "Withdrawn", "Resigned"}
+
+    def _series(values, preferred=()):
+        order = {name: index for index, name in enumerate(preferred)}
+        return [
+            {"label": label, "count": count}
+            for label, count in sorted(
+                values.items(),
+                key=lambda item: (
+                    order.get(item[0], len(order)), -item[1], item[0].casefold()
+                ),
+            )
+        ]
+
+    return {
+        "as_of": date.today().isoformat(),
+        "total": len(filtered),
+        "in_progress": sum(by_status.get(stage, 0) for stage in active_stages),
+        "completed": sum(by_status.get(stage, 0) for stage in completed_stages),
+        "hired": by_status.get("Hired", 0),
+        "rejected": by_status.get("Rejected", 0),
+        "withdrawn": by_status.get("Withdrawn", 0),
+        "resigned": by_status.get("Resigned", 0),
+        "unassigned_hr": by_hr.get("Unassigned", 0),
+        "baseline_count": baseline_count,
+        "history_complete_count": len(filtered) - baseline_count,
+        "by_status": _series(by_status, ALL_PIPELINE_STATUS),
+        "by_channel": _series(by_channel, CHANNELS),
+        "by_hr": _series(by_hr),
+        "by_job": _series(by_job),
+        "history_note": (
+            "Baseline rows are included in the current snapshot, but activity "
+            "before the first recorded stage event is not reconstructed."
+        ),
+    }
+
+
 def validate_candidate(payload):
     """候选人行校验。返回 (errors, warnings)。errors 非空 -> 拒收。"""
     errors, warnings = [], []
     errors.extend(validate_source(payload.get("channel"), payload.get("source_detail")))
-    st = payload.get("status") or "New Lead"
-    if st not in PIPELINE_STATUS:
+    st = payload.get("status") or INTERNAL_PENDING_STATUS
+    if st not in ALL_PIPELINE_STATUS:
         errors.append("状态「%s」不在预设项内" % st)
     if not (payload.get("name") or "").strip():
         errors.append("候选人姓名必填")
     if not payload.get("job_request_id"):
         errors.append("请选择关联职位")
-    if st == "Rejected" and not (payload.get("rejection_reason") or "").strip():
+    if False and st == "Rejected" and not (payload.get("rejection_reason") or "").strip():
         errors.append("阶段为 Rejected 时必须填写 Rejection Reason")
     return errors, warnings
 
@@ -245,7 +316,8 @@ def _pct(x):
     return "—" if x is None else f"{x:.0%}"
 
 
-def build_report(rows, target, jobs, window_from=None, window_to=None):
+def build_report(rows, target, jobs, window_from=None, window_to=None,
+                 data_space="identity_derived"):
     bd = breakdown(rows, target)
     ov = overall(rows, target, jobs, window_from, window_to)
     al = anomalies(rows, target, bd)
@@ -268,8 +340,10 @@ def build_report(rows, target, jobs, window_from=None, window_to=None):
     else:
         lines.append("需要关注：暂无异常。")
 
+    is_derived = data_space == "identity_derived"
     return {
-        "space": "manual_unidentified",
+        "space": data_space,
+        "data_space": data_space,
         "timezone": "Asia/Kolkata",
         "text": "\n".join(lines),
         "overall": ov,
@@ -277,8 +351,12 @@ def build_report(rows, target, jobs, window_from=None, window_to=None):
         "alerts": al,
         "best_channel": (best["channel"] if best else None),
         "identity_derived": {
-            "available": False,
-            "note": "逐人建档的渠道指标由 AI-TD 核心按 attribution_source + 去重人头派生，待接入；不与人工数相加。",
+            "available": is_derived,
+            "note": (
+                "Metrics come from identified candidate applications and immutable stage events."
+                if is_derived else
+                "Legacy unidentified batch counts remain separate from identified candidates."
+            ),
         },
     }
 
@@ -395,13 +473,11 @@ def _summ(win, span, jobs):
 def channel_series(rows, granularity):
     """每个渠道各自的时间序列（供趋势图下钻到单个渠道）。"""
     out = {}
-    seen = set()
-    # Retired values remain in historical storage for auditability, but they
-    # are not active choices and must not reappear in current UI filters.
-    for ch in CHANNELS:
-        if ch in seen:
-            continue
-        seen.add(ch)
+    # Keep the current controlled catalog first, then append historical source
+    # labels found in immutable data. Retired labels stay out of new-entry
+    # dropdowns without making old activity disappear from manager analytics.
+    actual = sorted({str(r.get("channel") or "Unspecified") for r in rows})
+    for ch in list(CHANNELS) + [name for name in actual if name not in CHANNELS]:
         out[ch] = timeseries([r for r in rows if r["channel"] == ch], granularity)
     return out
 
@@ -471,7 +547,8 @@ def _roi_insight(chans):
     return "性价比最高：%s（￥%s/份）" % (best["channel"], best["cost_per_resume"])
 
 
-def analytics(rows, jobs, granularity="day", dfrom=None, dto=None, job_id=None, prev_from=None, costs=None):
+def analytics(rows, jobs, granularity="day", dfrom=None, dto=None, job_id=None,
+              prev_from=None, costs=None, data_space="identity_derived"):
     """把窗口内 rows 汇总成看板数据。website 画图、bot 回文字都从这里取（单一数据源）。
     传入 rows 若覆盖到 prev_from，则一并算「上一周期」环比；传入 costs 则算成本/ROI。"""
     if granularity not in ("day", "week", "month", "year"):
@@ -522,16 +599,25 @@ def analytics(rows, jobs, granularity="day", dfrom=None, dto=None, job_id=None, 
         roi = _roi_insight(chans)
         if roi:
             ins = ([roi] + ins)[:4]
+    is_derived = data_space == "identity_derived"
     return {
-        "space": "manual_unidentified", "timezone": "Asia/Kolkata",
+        "space": data_space, "data_space": data_space, "timezone": "Asia/Kolkata",
         "granularity": granularity, "window": {"from": dfrom.isoformat(), "to": dto.isoformat()},
         "summary": summary, "prev_summary": prev_summary, "prev_window": prev_window,
         "timeseries": ts, "channel_series": channel_series(win, granularity),
         "channels": chans, "funnel": fn, "jobs": jp, "has_cost": has_cost,
         "best_channel": (best["channel"] if best else None),
         "insights": ins,
-        "identity_derived": {"available": False,
-            "note": "人工录入口径（未逐人建档）；逐人去重指标由 AI-TD 核心派生后接入，不与此相加。"},
+        "identity_derived": {
+            "available": is_derived,
+            "note": (
+                "Metrics are derived from one candidate × hiring job row and "
+                "immutable intake/stage events."
+                if is_derived else
+                "Legacy unidentified batch counts are separate and are never "
+                "added to identified candidate totals."
+            ),
+        },
     }
 
 
@@ -551,3 +637,79 @@ def analytics_text(a):
     if a.get("best_channel"):
         lines.append("转化最好：" + a["best_channel"])
     return "\n".join(lines)
+
+
+def manager_analytics_text(analytics_payload):
+    """Render the identity-derived manager summary with unambiguous labels."""
+    summary = analytics_payload["summary"]
+    window = analytics_payload["window"]
+    lines = [
+        "Recruiting Analytics: %s to %s | Asia/Kolkata" %
+        (window["from"], window["to"]),
+        "New Applications %d | Entered Interview %d (%s) | "
+        "Reached Offer %d (%s) | Rejected %d" % (
+            summary["new"], summary["passed"], _pct(summary["conversion"]),
+            summary["recommended"], _pct(summary["recommend_rate"]),
+            summary["rejected"],
+        ),
+        "Application pace: %s / day | Offer pace: %s / week" % (
+            summary["resumes_per_day"], summary["recommended_per_week"],
+        ),
+    ]
+    if summary.get("resume_target_progress") is not None:
+        lines.append(
+            "Application target progress: %d / %d = %s" % (
+                summary["new"], summary["target_resumes"],
+                _pct(summary["resume_target_progress"]),
+            )
+        )
+    top = [row for row in analytics_payload["channels"][:3] if row["new"]]
+    if top:
+        lines.append(
+            "Top channels: " + "; ".join(
+                "%s %d applications (%s entered Interview)" % (
+                    row["channel"], row["new"], _pct(row["conversion"]),
+                )
+                for row in top
+            )
+        )
+    return "\n".join(lines)
+
+
+# Keep existing callers stable while replacing the legacy manual-count wording.
+analytics_text = manager_analytics_text
+
+
+_legacy_build_report = build_report
+
+
+def build_report(rows, target, jobs, window_from=None, window_to=None,
+                 data_space="identity_derived"):
+    """Build the manager report while preserving the established JSON shape."""
+    report = _legacy_build_report(
+        rows, target, jobs, window_from, window_to, data_space=data_space,
+    )
+    overall_payload = report["overall"]
+    window = overall_payload["window"]
+    lines = [
+        "Recruiting Activity Report: %s to %s | Asia/Kolkata" %
+        (window["from"], window["to"]),
+        "New Applications: %d" % overall_payload["window_new"],
+        "Reached Offer: %d" % overall_payload["window_recommended"],
+    ]
+    if overall_payload.get("resume_progress") is not None:
+        lines.append(
+            "Application target progress: %d / %d = %s" % (
+                overall_payload["window_new"],
+                overall_payload["target_resumes"],
+                _pct(overall_payload["resume_progress"]),
+            )
+        )
+    if report.get("best_channel"):
+        lines.append("Best qualified channel: " + report["best_channel"])
+    if report.get("alerts"):
+        lines.append("Review: " + "; ".join(report["alerts"][:3]))
+    else:
+        lines.append("Review: no activity anomaly detected.")
+    report["text"] = "\n".join(lines)
+    return report
