@@ -33,28 +33,37 @@ class DeliveryService:
         self.worker_id = worker_id
         self.settings = settings or get_settings()
 
-    def claim_ready(self, limit: int = 20) -> list[str]:
+    def claim_ready(self, limit: int = 20, *, test_only: bool = False) -> list[str]:
         now = utc_now()
+        query = (
+            select(MessageDelivery)
+            .join(Campaign, Campaign.id == MessageDelivery.campaign_id)
+            .join(
+                TelegramDestination,
+                TelegramDestination.id == MessageDelivery.destination_id,
+            )
+            .where(
+                Campaign.status.in_([CampaignStatus.SCHEDULED, CampaignStatus.SENDING]),
+                Campaign.scheduled_at <= now,
+                MessageDelivery.status.in_(
+                    [
+                        DeliveryStatus.PENDING,
+                        DeliveryStatus.RETRYING,
+                        DeliveryStatus.SENDING,
+                    ]
+                ),
+                MessageDelivery.next_attempt_at <= now,
+                (
+                    MessageDelivery.lease_expires_at.is_(None)
+                    | (MessageDelivery.lease_expires_at < now)
+                ),
+            )
+        )
+        if test_only:
+            query = query.where(TelegramDestination.is_test.is_(True))
         rows = list(
             self.db.scalars(
-                select(MessageDelivery)
-                .join(Campaign, Campaign.id == MessageDelivery.campaign_id)
-                .where(
-                    Campaign.status.in_([CampaignStatus.SCHEDULED, CampaignStatus.SENDING]),
-                    Campaign.scheduled_at <= now,
-                    MessageDelivery.status.in_(
-                        [
-                            DeliveryStatus.PENDING,
-                            DeliveryStatus.RETRYING,
-                            DeliveryStatus.SENDING,
-                        ]
-                    ),
-                    MessageDelivery.next_attempt_at <= now,
-                    (
-                        MessageDelivery.lease_expires_at.is_(None)
-                        | (MessageDelivery.lease_expires_at < now)
-                    ),
-                )
+                query
                 .order_by(MessageDelivery.next_attempt_at)
                 .limit(limit)
                 .with_for_update(skip_locked=True)

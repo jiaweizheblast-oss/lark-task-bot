@@ -1092,6 +1092,66 @@ def api_tg_send_test():
     return jsonify({"ok": True, "result": payload.get("data") or {}})
 
 
+@app.route("/api/tg/schedules", methods=["GET", "POST"])
+def api_tg_schedules():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if request.method == "GET":
+        response, payload = _tg_request("GET", "/api/v1/tg/test-schedules")
+        if response is None:
+            return jsonify(payload), 503
+        if not response.ok:
+            return jsonify({"error": "tg_schedule_lookup_failed"}), 502
+        return jsonify({"schedules": payload.get("data") or []})
+
+    if request.content_length and request.content_length > 11 * 1024 * 1024:
+        return jsonify({"error": "image_too_large"}), 413
+    photo = request.files.get("photo")
+    destination_id = (request.form.get("destination_id") or "").strip()
+    caption = (request.form.get("caption") or "").strip()
+    schedule_date = (request.form.get("schedule_date") or "").strip()
+    time_slot = (request.form.get("time_slot") or "").strip()
+    button_label = (request.form.get("button_label") or "").strip()
+    button_url = (request.form.get("button_url") or "").strip()
+    if not photo or not photo.filename:
+        return jsonify({"error": "photo_required"}), 422
+    if not destination_id or not caption or len(caption) > 1024:
+        return jsonify({"error": "schedule_fields_invalid"}), 422
+    if not schedule_date or time_slot not in {"09:00", "15:00", "21:00"}:
+        return jsonify({"error": "schedule_time_invalid"}), 422
+    if bool(button_label) != bool(button_url):
+        return jsonify({"error": "button_incomplete"}), 422
+    files = {
+        "photo": (
+            photo.filename,
+            photo.stream,
+            photo.mimetype or "application/octet-stream",
+        )
+    }
+    response, payload = _tg_request(
+        "POST",
+        "/api/v1/tg/test-schedules",
+        data={
+            "destination_id": destination_id,
+            "caption": caption,
+            "schedule_date": schedule_date,
+            "time_slot": time_slot,
+            "button_label": button_label,
+            "button_url": button_url,
+        },
+        files=files,
+    )
+    if response is None:
+        return jsonify(payload), 503
+    if not response.ok:
+        upstream_error = payload.get("error") or {}
+        return jsonify({
+            "error": upstream_error.get("code") or "tg_schedule_failed",
+            "message": upstream_error.get("message") or "Telegram scheduling failed",
+        }), response.status_code if 400 <= response.status_code < 500 else 502
+    return jsonify({"ok": True, "result": payload.get("data") or {}})
+
+
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     if not _panel_auth():

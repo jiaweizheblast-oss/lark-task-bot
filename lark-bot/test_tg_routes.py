@@ -45,6 +45,16 @@ def main():
             }
         if path.endswith("/send-test-upload"):
             return FakeResponse(), {"data": {"chat_id": "-1001", "message_id": 42}}
+        if path == "/api/v1/tg/test-schedules" and method == "GET":
+            return FakeResponse(), {"data": []}
+        if path == "/api/v1/tg/test-schedules" and method == "POST":
+            return FakeResponse(), {
+                "data": {
+                    "schedule_date": "2026-07-24",
+                    "time_slot": "09:00",
+                    "destination_name": "Test Channel",
+                }
+            }
         raise AssertionError(path)
 
     bot._tg_request = fake_tg_request
@@ -86,6 +96,28 @@ def main():
             "position": 0,
         }
     ]
+
+    schedules = client.get("/api/tg/schedules", headers=auth)
+    assert schedules.status_code == 200
+    assert schedules.get_json()["schedules"] == []
+
+    scheduled = client.post(
+        "/api/tg/schedules",
+        headers=auth,
+        data={
+            "destination_id": "test-channel-id",
+            "caption": "Scheduled website test",
+            "schedule_date": "2026-07-24",
+            "time_slot": "09:00",
+            "button_label": "OPEN BOT",
+            "button_url": "https://t.me/Game21HubBot",
+            "photo": (io.BytesIO(b"image-bytes"), "preview.jpg"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert scheduled.status_code == 200
+    assert scheduled.get_json()["result"]["time_slot"] == "09:00"
+    assert calls[-1][1] == "/api/v1/tg/test-schedules"
 
     print("TG website routes: PASS")
 

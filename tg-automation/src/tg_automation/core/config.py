@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -22,6 +23,8 @@ class Settings(BaseSettings):
     default_timezone: str = "Asia/Kolkata"
     global_sending_enabled: bool = False
     telegram_test_sending_enabled: bool = False
+    embedded_worker_enabled: bool = False
+    media_storage_dir: str = ""
 
     telegram_bot_token: SecretStr | None = None
     telegram_bot_username: str = "Game21HubBot"
@@ -112,6 +115,15 @@ class Settings(BaseSettings):
             if candidate:
                 values.add(int(candidate))
         return values
+
+    @property
+    def resolved_media_storage_dir(self) -> Path:
+        if self.media_storage_dir.strip():
+            return Path(self.media_storage_dir).expanduser().resolve()
+        if self.database_url.startswith("sqlite:///"):
+            database_path = Path(self.database_url.removeprefix("sqlite:///")).resolve()
+            return database_path.parent / "media"
+        return Path("./data/media").resolve()
 
 
 @lru_cache

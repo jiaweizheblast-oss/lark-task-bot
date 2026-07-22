@@ -268,10 +268,16 @@
           <div class="field"><label>Button text (optional)</label><input id="tgButtonLabel" maxlength="64" value="OPEN 21GAME HUB" placeholder="OPEN 21GAME HUB"></div>
           <div class="field"><label>Button link (optional)</label><input id="tgButtonUrl" type="url" value="https://t.me/Game21HubBot" placeholder="https://t.me/Game21HubBot"></div>
         </div>
-        <div class="tip">This first version can only send to destinations marked as test. Production sending remains disabled.</div>
+        <div class="row2">
+          <div class="field"><label>Test date (India time)</label><input id="tgScheduleDate" type="date"></div>
+          <div class="field"><label>Time slot (IST)</label><select id="tgTimeSlot"><option value="09:00">09:00</option><option value="15:00">15:00</option><option value="21:00">21:00</option></select></div>
+        </div>
+        <div class="tip">Only test destinations are available. Production sending remains disabled.</div>
         <button class="btn wide" id="tgSendButton" onclick="sendTgTest()">Send test message</button>
+        <button class="btn wide ghost" id="tgScheduleButton" style="margin-top:8px" onclick="scheduleTgTest()">Schedule test message</button>
         <div class="err" id="tgError"></div>
         <div id="tgResult" class="muted" style="text-align:left;padding:10px 0 0"></div>
+        <div id="tgSchedules" style="text-align:left;padding-top:12px"></div>
       </div>
     </section>
     <section id="view-create" class="hide">
@@ -561,7 +567,17 @@ async function loadTgAutomation(){
     const data=await(await api('/api/tg/destinations')).json(),rows=data.destinations||[];
     select.innerHTML='<option value="">Select a test destination</option>'+rows.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} · ${esc(d.destination_type)}</option>`).join('');
     if(!rows.length)error.textContent='No enabled test channel or group is configured.';
+    const dateInput=document.getElementById('tgScheduleDate');if(dateInput&&!dateInput.value)dateInput.value=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
+    await loadTgSchedules();
   }catch(e){status.textContent='Not connected';select.innerHTML='<option value="">Unavailable</option>';error.textContent=e.message||'TG Automation is unavailable.';}
+}
+
+async function loadTgSchedules(){
+  const root=document.getElementById('tgSchedules');if(!root)return;
+  try{
+    const response=await api('/api/tg/schedules'),data=await response.json();if(!response.ok)throw new Error(data.error||'Unable to load schedules');
+    const rows=data.schedules||[];root.innerHTML='<b>Recent test schedules</b>'+(rows.length?rows.slice(0,8).map(row=>`<div class="tip" style="margin-top:7px"><b>${esc(row.schedule_date||'')}</b> ${esc(row.time_slot||'')} IST · ${esc(row.destination_name||'')} · ${esc(row.delivery_status||row.status||'')}</div>`).join(''):'<div class="muted" style="text-align:left;padding:7px 0 0">No test messages scheduled yet.</div>');
+  }catch(e){root.innerHTML='<div class="muted" style="text-align:left;padding:7px 0 0">Schedules are temporarily unavailable.</div>';}
 }
 
 async function sendTgTest(){
@@ -580,6 +596,24 @@ async function sendTgTest(){
     result.textContent='Sent successfully · chat '+data.result.chat_id+' · message '+data.result.message_id;toast('Telegram test sent');
   }catch(e){error.textContent=e.message||'Test send failed';}
   finally{button.disabled=false;button.textContent='Send test message';}
+}
+
+async function scheduleTgTest(){
+  const error=document.getElementById('tgError'),result=document.getElementById('tgResult'),button=document.getElementById('tgScheduleButton');
+  const destination=document.getElementById('tgDestination').value,photo=document.getElementById('tgPhoto').files[0],caption=document.getElementById('tgCaption').value.trim();
+  const buttonLabel=document.getElementById('tgButtonLabel').value.trim(),buttonUrl=document.getElementById('tgButtonUrl').value.trim(),scheduleDate=document.getElementById('tgScheduleDate').value,timeSlot=document.getElementById('tgTimeSlot').value;
+  error.textContent='';result.textContent='';
+  if(!destination||!photo||!caption||!scheduleDate||!timeSlot){error.textContent='Destination, image, caption, date and time slot are required.';return;}
+  if(Boolean(buttonLabel)!==Boolean(buttonUrl)){error.textContent='Button text and button link must be filled in together.';return;}
+  const form=new FormData();form.append('destination_id',destination);form.append('photo',photo);form.append('caption',caption);form.append('schedule_date',scheduleDate);form.append('time_slot',timeSlot);form.append('button_label',buttonLabel);form.append('button_url',buttonUrl);
+  button.disabled=true;button.textContent='Scheduling...';
+  try{
+    const response=await fetch('/api/tg/schedules',{method:'POST',headers:{'X-Auth':PW},body:form});const data=await response.json().catch(()=>({}));
+    if(response.status===401){logout();throw new Error('Unauthorized');}
+    if(!response.ok)throw new Error(data.message||data.error||'Scheduling failed');
+    result.textContent='Scheduled · '+data.result.schedule_date+' '+data.result.time_slot+' IST · '+data.result.destination_name;toast('Telegram test scheduled');await loadTgSchedules();
+  }catch(e){error.textContent=e.message||'Scheduling failed';}
+  finally{button.disabled=false;button.textContent='Schedule test message';}
 }
 
 async function loadTalent(){

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import uvicorn
 from fastapi import Depends, FastAPI
 from sqlalchemy import text
 
+from apps.worker.main import run_forever
 from tg_automation.analytics.api import router as analytics_router
 from tg_automation.bot_control.api import router as bot_control_router
 from tg_automation.campaigns.api import router as campaign_router
@@ -24,6 +26,7 @@ from tg_automation.integrations.api import router as integration_router
 from tg_automation.media.api import router as media_router
 from tg_automation.operations.api import router as operations_router
 from tg_automation.storage.database import get_engine
+from tg_automation.test_schedules.api import router as test_schedule_router
 from tg_automation.tracking.api import router as tracking_router
 
 settings = get_settings()
@@ -34,7 +37,18 @@ LOGGER = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     bootstrap_test_destinations(settings)
-    yield
+    worker_task = None
+    if settings.embedded_worker_enabled:
+        worker_task = asyncio.create_task(run_forever(), name="tg-delivery-worker")
+        LOGGER.info("Embedded Telegram delivery worker started.")
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_task
+            LOGGER.info("Embedded Telegram delivery worker stopped.")
 
 
 app = FastAPI(
@@ -58,6 +72,7 @@ app.include_router(dashboard_router, prefix=settings.api_prefix, dependencies=pr
 app.include_router(integration_router, prefix=settings.api_prefix, dependencies=protected)
 app.include_router(operations_router, prefix=settings.api_prefix, dependencies=protected)
 app.include_router(tracking_router)
+app.include_router(test_schedule_router, prefix=settings.api_prefix, dependencies=protected)
 
 
 @app.get("/health", tags=["system"])
@@ -67,6 +82,8 @@ def health() -> dict:
             "status": "ok",
             "environment": settings.app_env,
             "sending_enabled": settings.global_sending_enabled,
+            "test_sending_enabled": settings.telegram_test_sending_enabled,
+            "worker_enabled": settings.embedded_worker_enabled,
         }
     )
 

@@ -14,14 +14,16 @@ LOGGER = logging.getLogger(__name__)
 
 async def run_once() -> int:
     settings = get_settings()
-    if not settings.global_sending_enabled:
-        LOGGER.warning("Global sending is disabled; worker did not claim tasks.")
+    if not settings.global_sending_enabled and not settings.telegram_test_sending_enabled:
         return 0
 
     gateway = OfficialTelegramGateway(settings)
     with get_session_factory()() as db:
         service = DeliveryService(db, settings.worker_id, settings)
-        ids = service.claim_ready(limit=settings.worker_batch_size)
+        ids = service.claim_ready(
+            limit=settings.worker_batch_size,
+            test_only=not settings.global_sending_enabled,
+        )
         for delivery_id in ids:
             try:
                 await service.process(delivery_id, gateway)

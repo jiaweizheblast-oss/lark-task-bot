@@ -4,10 +4,16 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from tests.unit.test_campaign_service import build_approved_campaign
+from tg_automation.campaigns.schemas import CampaignCreate
 from tg_automation.campaigns.service import CampaignService
 from tg_automation.core.time import utc_now
 from tg_automation.deliveries.service import DeliveryService
-from tg_automation.storage.enums import CampaignStatus, DeliveryStatus, RecordStatus
+from tg_automation.storage.enums import (
+    CampaignStatus,
+    DeliveryStatus,
+    DestinationType,
+    RecordStatus,
+)
 from tg_automation.storage.models import MessageDelivery, TelegramDestination
 from tg_automation.telegram.schemas import TelegramSendResult
 
@@ -71,3 +77,35 @@ async def test_worker_does_not_send_to_destination_disabled_after_scheduling(ses
     assert delivery.error_code == "DESTINATION_UNAVAILABLE"
     assert gateway.calls == 0
     assert delivery.telegram_message_id is None
+
+
+def test_test_only_worker_does_not_claim_real_destination(session) -> None:
+    test_campaign, _service = build_approved_campaign(session)
+    CampaignService(session).send_now(test_campaign.id, sending_enabled=True)
+    real_destination = TelegramDestination(
+        name="Real Channel",
+        telegram_chat_id="-100999",
+        destination_type=DestinationType.CHANNEL,
+        source_code="real_channel",
+        is_test=False,
+        bot_can_post=True,
+        last_permission_check=utc_now(),
+    )
+    session.add(real_destination)
+    session.commit()
+    real_campaign = CampaignService(session).create(
+        CampaignCreate(
+            content_id=test_campaign.content_id,
+            media_id=test_campaign.media_id,
+            destination_ids=[real_destination.id],
+            scheduled_at=utc_now() + timedelta(hours=1),
+        )
+    )
+    real_campaign = CampaignService(session).approve(real_campaign.id, "approver")
+    CampaignService(session).send_now(real_campaign.id, sending_enabled=True)
+
+    claimed = DeliveryService(session, "test-only-worker").claim_ready(test_only=True)
+
+    assert len(claimed) == 1
+    delivery = session.get(MessageDelivery, claimed[0])
+    assert delivery.campaign_id == test_campaign.id

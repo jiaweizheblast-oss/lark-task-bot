@@ -61,3 +61,10 @@ def test_blank_optional_secrets_are_treated_as_unset() -> None:
     assert settings.telegram_webhook_secret is None
     assert settings.nexus_operator_api_key is None
     assert settings.nexus_admin_api_key is None
+
+
+def test_media_storage_defaults_next_to_sqlite_database(tmp_path) -> None:
+    database_path = tmp_path / "tg.db"
+    settings = Settings(app_env="test", database_url=f"sqlite:///{database_path}")
+
+    assert settings.resolved_media_storage_dir == tmp_path.resolve() / "media"
