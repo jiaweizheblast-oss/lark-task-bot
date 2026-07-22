@@ -305,7 +305,32 @@ SELECT
   c.channel, c.source_detail, c.status, c.note, c.filled_by, c.source,
   c.ext_ref, c.lark_record_id, 1, c.created_at, c.updated_at
 FROM candidate c
-ON CONFLICT (candidate_id, job_request_id) DO NOTHING;
+-- A previous deployment may already have migrated a legacy candidate whose
+-- job_request_id is NULL. PostgreSQL treats NULL values as distinct for the
+-- composite unique constraint, so targeting only that constraint does not
+-- catch the already-existing deterministic application_ref. A targetless
+-- conflict handler safely covers both unique keys and makes a partially
+-- completed migration restartable.
+ON CONFLICT DO NOTHING;
+
+-- Never turn a genuine reference collision into silently missing workflow
+-- data. Every legacy candidate must have a usable application for
+-- its original requisition (including the NULL legacy-requisition case).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM candidate c
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM candidate_application a
+      WHERE a.candidate_id = c.id
+        AND a.job_request_id IS NOT DISTINCT FROM c.job_request_id
+    )
+  ) THEN
+    RAISE EXCEPTION 'candidate_application legacy migration incomplete';
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS candidate_application_stage_event (
     id                 BIGSERIAL PRIMARY KEY,
@@ -328,9 +353,17 @@ INSERT INTO candidate_application_stage_event
 SELECT a.id,e.from_stage,e.to_stage,e.effective_date,e.rejection_reason,e.note,
        e.changed_by,'LEGACY-' || e.event_ref,e.created_at
 FROM candidate_stage_event e
-JOIN candidate_application a
-  ON a.candidate_id=e.candidate_id
- AND a.application_ref='APP-' || lpad(e.candidate_id::text,10,'0')
+JOIN candidate c ON c.id=e.candidate_id
+JOIN LATERAL (
+  SELECT ca.id
+  FROM candidate_application ca
+  WHERE ca.candidate_id=c.id
+    AND ca.job_request_id IS NOT DISTINCT FROM c.job_request_id
+  ORDER BY
+    (ca.application_ref='APP-' || lpad(c.id::text,10,'0')) DESC,
+    ca.id ASC
+  LIMIT 1
+) a ON TRUE
 ON CONFLICT (event_ref) DO NOTHING;
 
 -- ============================================================

@@ -23,12 +23,31 @@ def get_conn():
 
 
 def init_db():
-    """第一次启动时建表（读取同目录 schema.sql）。已存在则跳过。"""
+    """Apply the idempotent schema as one serialized transaction.
+
+    Railway may briefly overlap old and new containers during a deploy. A
+    transaction-scoped advisory lock prevents two current containers from
+    migrating the same PostgreSQL database concurrently, while the explicit
+    transaction guarantees that a failed migration cannot commit halfway.
+    """
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "schema.sql"), "r", encoding="utf-8") as f:
         sql = f.read()
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql)
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("nexus_schema_migration_v1",),
+            )
+            cur.execute(sql)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     print("[db] tables ready")
 
 
@@ -959,8 +978,15 @@ def create_candidate_application(entry_date, name, channel, job_request_id,
                     (entry_date,name,channel,source_detail,job_request_id,note,
                      hr_owner,source,external_ref,lark_record_id))
                 candidate_id = cur.fetchone()["id"]
+            # Serialize application creation per candidate. This protects the
+            # nullable legacy-requisition case, for which a normal PostgreSQL
+            # UNIQUE(candidate_id, job_request_id) constraint treats two NULL
+            # values as distinct.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (candidate_id,))
             cur.execute("""SELECT * FROM candidate_application
-                           WHERE candidate_id=%s AND job_request_id=%s FOR UPDATE""",
+                           WHERE candidate_id=%s
+                             AND job_request_id IS NOT DISTINCT FROM %s
+                           FOR UPDATE""",
                         (candidate_id,job_request_id))
             existing = cur.fetchone()
             if existing:
