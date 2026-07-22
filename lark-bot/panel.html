@@ -236,6 +236,12 @@
           </div>
         </div>
         <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">Automation <span class="caret">▾</span></div>
+          <div class="navitems">
+            <button id="tab-tg" onclick="showTab('tg')">📣 TG Automation</button>
+          </div>
+        </div>
+        <div class="navgroup">
           <div class="navhead" onclick="toggleGroup(this)">Settings <span class="caret">▾</span></div>
           <div class="navitems">
             <button onclick="openReminderSettings()">⏰ Reminders</button>
@@ -249,6 +255,25 @@
     </aside>
     <main class="main">
   <div class="wrap">
+    <section id="view-tg" class="hide">
+      <div class="home-head">
+        <div><h2 style="margin:0">TG Automation</h2><span class="muted" style="padding:3px 0 0">Test publishing only</span></div>
+        <span id="tgStatus" class="muted" style="padding:0">Checking connection…</span>
+      </div>
+      <div class="form-card">
+        <div class="field"><label>Test channel or group *</label><select id="tgDestination"><option value="">Loading…</option></select></div>
+        <div class="field"><label>Image *</label><input id="tgPhoto" type="file" accept="image/jpeg,image/png,image/webp"></div>
+        <div class="field"><label>Caption *</label><textarea id="tgCaption" maxlength="1024" placeholder="Write the public Telegram caption"></textarea></div>
+        <div class="row2">
+          <div class="field"><label>Button text (optional)</label><input id="tgButtonLabel" maxlength="64" value="OPEN 21GAME HUB" placeholder="OPEN 21GAME HUB"></div>
+          <div class="field"><label>Button link (optional)</label><input id="tgButtonUrl" type="url" value="https://t.me/Game21HubBot" placeholder="https://t.me/Game21HubBot"></div>
+        </div>
+        <div class="tip">This first version can only send to destinations marked as test. Production sending remains disabled.</div>
+        <button class="btn wide" id="tgSendButton" onclick="sendTgTest()">Send test message</button>
+        <div class="err" id="tgError"></div>
+        <div id="tgResult" class="muted" style="text-align:left;padding:10px 0 0"></div>
+      </div>
+    </section>
     <section id="view-create" class="hide">
       <div class="form-card">
         <h2>Assign a task</h2>
@@ -522,9 +547,40 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
     PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='Connection failed';}}
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
-  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();const requested=(location.hash||'').replace('#','');showTab(['recruit','talent','jobs'].includes(requested)?requested:'home');}
+  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();const requested=(location.hash||'').replace('#','');showTab(['recruit','talent','jobs','tg'].includes(requested)?requested:'home');}
 async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
-function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent')loadTalent();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();}
+function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend','tg'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent')loadTalent();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();if(t==='tg')loadTgAutomation();}
+
+async function loadTgAutomation(){
+  const status=document.getElementById('tgStatus'),select=document.getElementById('tgDestination'),error=document.getElementById('tgError');
+  error.textContent='';status.textContent='Checking connection…';select.innerHTML='<option value="">Loading…</option>';
+  try{
+    const health=await(await api('/api/tg/status')).json();
+    status.textContent=health.connected?('Connected · production sending '+(health.sending_enabled?'ON':'off')):'Not connected';
+    if(!health.connected)throw new Error(health.error||'TG Automation is unavailable');
+    const data=await(await api('/api/tg/destinations')).json(),rows=data.destinations||[];
+    select.innerHTML='<option value="">Select a test destination</option>'+rows.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} · ${esc(d.destination_type)}</option>`).join('');
+    if(!rows.length)error.textContent='No enabled test channel or group is configured.';
+  }catch(e){status.textContent='Not connected';select.innerHTML='<option value="">Unavailable</option>';error.textContent=e.message||'TG Automation is unavailable.';}
+}
+
+async function sendTgTest(){
+  const error=document.getElementById('tgError'),result=document.getElementById('tgResult'),button=document.getElementById('tgSendButton');
+  const destination=document.getElementById('tgDestination').value,photo=document.getElementById('tgPhoto').files[0],caption=document.getElementById('tgCaption').value.trim();
+  const buttonLabel=document.getElementById('tgButtonLabel').value.trim(),buttonUrl=document.getElementById('tgButtonUrl').value.trim();
+  error.textContent='';result.textContent='';
+  if(!destination||!photo||!caption){error.textContent='Destination, image and caption are required.';return;}
+  if(Boolean(buttonLabel)!==Boolean(buttonUrl)){error.textContent='Button text and button link must be filled in together.';return;}
+  const form=new FormData();form.append('destination_id',destination);form.append('photo',photo);form.append('caption',caption);form.append('button_label',buttonLabel);form.append('button_url',buttonUrl);
+  button.disabled=true;button.textContent='Sending…';
+  try{
+    const response=await fetch('/api/tg/send-test',{method:'POST',headers:{'X-Auth':PW},body:form});const data=await response.json().catch(()=>({}));
+    if(response.status===401){logout();throw new Error('Unauthorized');}
+    if(!response.ok)throw new Error(data.message||data.error||'Test send failed');
+    result.textContent='Sent successfully · chat '+data.result.chat_id+' · message '+data.result.message_id;toast('Telegram test sent');
+  }catch(e){error.textContent=e.message||'Test send failed';}
+  finally{button.disabled=false;button.textContent='Send test message';}
+}
 
 async function loadTalent(){
   let data=null;try{const responses=await Promise.all([api('/api/talent/snapshot'),api('/api/channel/jobs')]);data=await responses[0].json();TALENT_OPER_JOBS=await responses[1].json();if(!Array.isArray(TALENT_OPER_JOBS))TALENT_OPER_JOBS=[];}catch(e){data=null;TALENT_OPER_JOBS=[];}
