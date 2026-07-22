@@ -2184,6 +2184,57 @@ def api_lark_pull():
     return jsonify(result), status
 
 
+@app.route("/api/channel/reset-test-data", methods=["POST"])
+def api_channel_reset_test_data():
+    """Admin-only destructive reset for the current internal test phase."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirmation") != "RESET CHANNEL ANALYTICS TEST DATA":
+        return jsonify({"error": "confirmation_required"}), 422
+    cfg = _lark_cfg()
+    if not (cfg.get("app_token") and cfg.get("pipeline_table_id")
+            and cfg.get("manual_table_id")):
+        return jsonify({
+            "error": "Channel Analytics Lark workspace is not fully configured; "
+                     "nothing was deleted."
+        }), 409
+
+    # Delete external rows first. If Lark fails, the database remains intact so
+    # the manager can safely retry instead of silently losing the source view.
+    pipeline = lark_bitable.delete_all_table_records(
+        cfg["app_token"], cfg["pipeline_table_id"]
+    )
+    if not pipeline.get("ok"):
+        return jsonify({"error": pipeline.get("error"), "pipeline": pipeline}), 502
+    manual = lark_bitable.delete_all_table_records(
+        cfg["app_token"], cfg["manual_table_id"]
+    )
+    if not manual.get("ok"):
+        return jsonify({
+            "error": manual.get("error"), "pipeline": pipeline,
+            "manual": manual, "database_changed": False,
+        }), 502
+    try:
+        database = db.reset_channel_analytics_test_data()
+    except Exception as exc:
+        return jsonify({
+            "error": "Lark rows were cleared, but the database reset failed; "
+                     "retry this same reset: %s" % exc,
+            "pipeline": pipeline, "manual": manual,
+            "database_changed": False,
+        }), 500
+    return jsonify({
+        "ok": True,
+        "lark_pipeline_rows": pipeline.get("removed", 0),
+        "lark_manual_rows": manual.get("removed", 0),
+        "database": database,
+        "jobs_preserved": True,
+        "lark_structure_preserved": True,
+        "talent_discovery_preserved": True,
+    })
+
+
 # ---------------- 日历订阅（iCal）：把任务截止日期同步进个人日历 ----------------
 def _ics_esc(s):
     return (str(s or "")).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")

@@ -1201,6 +1201,74 @@ def list_pipeline_records(app_token, table_id):
     return {"ok": True, "records": out}
 
 
+def delete_all_table_records(app_token, table_id):
+    """Delete every record from one known Channel Analytics table.
+
+    The caller must supply an already configured Pipeline or manual-count table
+    id.  Reads are bounded at Lark's 20,000-row table limit and deletion uses
+    Lark's 500-record
+    batch limit.  Table structure, fields, views, and dropdown options are not
+    changed.
+    """
+    tok, err = tenant_token()
+    if err:
+        return {"ok": False, "error": err, "removed": 0}
+    record_ids, page, complete = [], "", False
+    for _ in range(40):
+        path = (
+            "/open-apis/bitable/v1/apps/%s/tables/%s/records?page_size=500"
+            % (app_token, table_id)
+        )
+        if page:
+            path += "&" + urlencode({"page_token": page})
+        response = _req("GET", path, token=tok)
+        if response.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Unable to list records before reset: %s"
+                         % (response.get("msg") or response),
+                "removed": 0,
+                "raw": response,
+            }
+        data = response.get("data") or {}
+        record_ids.extend(
+            str(item.get("record_id") or "")
+            for item in data.get("items") or []
+            if item.get("record_id")
+        )
+        if data.get("has_more") and data.get("page_token"):
+            page = data["page_token"]
+        else:
+            complete = True
+            break
+    if not complete:
+        return {
+            "ok": False,
+            "error": "The table exceeds the safe 20,000-row reset limit.",
+            "removed": 0,
+        }
+    removed = 0
+    for start in range(0, len(record_ids), 500):
+        batch = record_ids[start:start + 500]
+        response = _req(
+            "POST",
+            "/open-apis/bitable/v1/apps/%s/tables/%s/records/batch_delete"
+            % (app_token, table_id),
+            token=tok,
+            body={"records": batch},
+        )
+        if response.get("code") != 0:
+            return {
+                "ok": False,
+                "error": "Lark record reset stopped after %d rows: %s"
+                         % (removed, response.get("msg") or response),
+                "removed": removed,
+                "raw": response,
+            }
+        removed += len(batch)
+    return {"ok": True, "removed": removed}
+
+
 def _rec_fields(cand, jobs_by_id):
     return {
         "候选人": cand.get("name") or "",

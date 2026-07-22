@@ -301,6 +301,7 @@
           <div style="font-weight:750;font-size:16px">📥 渠道跟进表</div>
           <span style="font-size:12px;color:var(--soft)">网站与 Lark 共用同一份渠道数据；任选一种方式即可，不要重复提交同一修改。</span>
           <span id="larkStatus" class="muted" style="padding:0;font-size:12px;margin-left:auto"></span>
+          <button class="btn danger sm" onclick="resetChannelTestData()" title="Internal testing only; jobs, table structure, and Talent Discovery are preserved">Reset Test Data</button>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:14px">
           <div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel2)">
@@ -1007,6 +1008,17 @@ async function larkReconnect(){
     if(r.ok){toast('✅ 错误连接已安全清除；现在可用正确 Recruitment Bot 凭证重新创建');larkRefreshStatus();}
     else toast('✗ '+(r.error||'重置失败'),true);
   }catch(e){toast('重置失败',true);}
+}
+async function resetChannelTestData(){
+  if(!confirm('Delete ALL Channel Analytics test data now?\n\nThis clears website candidates, stage history, submission receipts, manual batch counts, and rows in both Lark tables.\n\nJob Requisitions, Lark table structure, and Talent Discovery are preserved.'))return;
+  toast('Resetting Channel Analytics test data...');
+  try{
+    const r=await(await api('/api/channel/reset-test-data',{method:'POST',body:JSON.stringify({confirmation:'RESET CHANNEL ANALYTICS TEST DATA'})})).json();
+    if(!r.ok){toast('Reset failed: '+(r.error||'unknown error'),true);return;}
+    const d=r.database||{};
+    toast('Reset complete: Lark Pipeline '+(r.lark_pipeline_rows||0)+' · Lark batch counts '+(r.lark_manual_rows||0)+' · website applications '+(d.applications||0)+' · website batch counts '+(d.manual_batch_counts||0));
+    CANA=null;CANDS=[];await loadCandidates();await loadAnalytics();await larkRefreshStatus();
+  }catch(e){toast('Reset failed; no additional action was taken',true);}
 }
 async function larkPull(){
   if(!confirm('提交 Lark 在线渠道表并同步到网站？系统会按 Lark 记录 ID 更新，重复提交不会新增重复记录。'))return;

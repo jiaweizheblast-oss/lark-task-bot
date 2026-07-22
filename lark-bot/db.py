@@ -858,6 +858,42 @@ def delete_channel_record(rid):
         return cur.rowcount > 0
 
 
+def reset_channel_analytics_test_data():
+    """Clear Channel Analytics test data while preserving all configuration.
+
+    This deliberately keeps job requisitions, search profiles, channel
+    catalogs, roster, Lark Base settings, and every Talent Discovery mirror.
+    All database deletes commit together or roll back together.
+    """
+    conn = get_conn()
+    conn.autocommit = False
+    counts = {}
+    try:
+        with conn.cursor() as cur:
+            for key, statement in (
+                ("application_stage_events",
+                 "DELETE FROM candidate_application_stage_event"),
+                ("legacy_stage_events", "DELETE FROM candidate_stage_event"),
+                ("submission_events", "DELETE FROM channel_submission_event"),
+                ("applications", "DELETE FROM candidate_application"),
+                ("candidates", "DELETE FROM candidate"),
+                ("manual_batch_counts", "DELETE FROM channel_daily"),
+            ):
+                cur.execute(statement)
+                counts[key] = cur.rowcount
+            cur.execute(
+                "UPDATE settings SET value='' WHERE key IN (%s,%s)",
+                ("lark_channel_last_sync", "lark_channel_last_attempt"),
+            )
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_job_request(jid):
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM job_requests WHERE id=%s", (jid,))
