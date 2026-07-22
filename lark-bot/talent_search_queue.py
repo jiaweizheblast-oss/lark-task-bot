@@ -110,7 +110,7 @@ def normalize_budgets(value):
     return result
 
 
-def normalize_hr_allocations(value, *, requested_contact_count):
+def normalize_hr_allocations(value):
     """Validate the small manager-authored HR split embedded in the task.
 
     Allocation is part of the signed search contract so a completed search
@@ -133,8 +133,6 @@ def normalize_hr_allocations(value, *, requested_contact_count):
             "name": name,
             "count": _integer(item.get("count"), f"hr_allocations[{index}].count", 1, 200),
         })
-    if sum(item["count"] for item in result) != requested_contact_count:
-        raise ValueError("HR allocation total must equal requested_contact_count")
     return result
 
 
@@ -157,18 +155,21 @@ def build_task(command, *, now=None):
     operational_job_ref = str(command.get("operational_job_ref") or "").strip()
     if not JOB_REF.fullmatch(operational_job_ref):
         raise ValueError("operational_job_ref is invalid")
+    hr_allocations = normalize_hr_allocations(command.get("hr_allocations"))
+    allocated_total = sum(item["count"] for item in hr_allocations)
     requested = _integer(
-        command.get("requested_contact_count"),
+        command.get("requested_contact_count", allocated_total),
         "requested_contact_count", 1, 200,
     )
+    if requested != allocated_total:
+        raise ValueError(
+            "requested_contact_count must equal the HR allocation total"
+        )
     max_review = _integer(
         command.get("max_review_pool_count", 0),
         "max_review_pool_count", 0, 50,
     )
     budgets = normalize_budgets(command.get("budgets"))
-    hr_allocations = normalize_hr_allocations(
-        command.get("hr_allocations"), requested_contact_count=requested,
-    )
     if budgets["max_total_observations"] < requested:
         raise ValueError("max_total_observations is below the requested quota")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)

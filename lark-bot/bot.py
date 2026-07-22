@@ -67,8 +67,6 @@ WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间
 ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
 NEXUS_INTEGRATION_SIGNING_KEY = os.environ.get("NEXUS_INTEGRATION_SIGNING_KEY", "")
 NEXUS_TALENT_WORKER_TOKEN = os.environ.get("NEXUS_TALENT_WORKER_TOKEN", "")
-TG_AUTOMATION_API_URL = os.environ.get("TG_AUTOMATION_API_URL", "").strip().rstrip("/")
-TG_AUTOMATION_API_KEY = os.environ.get("TG_AUTOMATION_API_KEY", "").strip()
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -562,35 +560,6 @@ def _panel_auth():
     return pw == PANEL_PASSWORD
 
 
-def _tg_headers():
-    headers = {"X-NEXUS-ACTOR": "nexus-panel"}
-    if TG_AUTOMATION_API_KEY:
-        headers["X-NEXUS-API-KEY"] = TG_AUTOMATION_API_KEY
-    return headers
-
-
-def _tg_request(method, path, **kwargs):
-    if not TG_AUTOMATION_API_URL:
-        return None, {"error": "tg_automation_not_configured"}
-    headers = dict(_tg_headers())
-    headers.update(kwargs.pop("headers", {}) or {})
-    try:
-        response = requests.request(
-            method,
-            TG_AUTOMATION_API_URL + path,
-            headers=headers,
-            timeout=25,
-            **kwargs,
-        )
-    except requests.RequestException:
-        return None, {"error": "tg_automation_unavailable"}
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {"error": "tg_automation_invalid_response"}
-    return response, payload
-
-
 def _talent_worker_auth():
     if len(NEXUS_TALENT_WORKER_TOKEN) < 32:
         return False
@@ -1006,150 +975,6 @@ def api_config():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"tz_label": TZ_LABEL, "tz_offset": COMPANY_TZ_OFFSET,
                     "work_start": WORK_START, "work_end": WORK_END})
-
-
-@app.route("/api/tg/status")
-def api_tg_status():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    response, payload = _tg_request("GET", "/health")
-    if response is None:
-        return jsonify({"connected": False, **payload}), 503
-    data = payload.get("data") or {}
-    return jsonify({
-        "connected": response.ok and data.get("status") == "ok",
-        "sending_enabled": bool(data.get("sending_enabled")),
-        "environment": data.get("environment"),
-    }), 200 if response.ok else 502
-
-
-@app.route("/api/tg/destinations")
-def api_tg_destinations():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    response, payload = _tg_request(
-        "GET", "/api/v1/tg/destinations", params={"is_test": "true"}
-    )
-    if response is None:
-        return jsonify(payload), 503
-    if not response.ok:
-        return jsonify({"error": "tg_destination_lookup_failed"}), 502
-    destinations = [
-        item for item in (payload.get("data") or [])
-        if item.get("is_test") and item.get("status") == "ENABLED"
-    ]
-    return jsonify({"destinations": destinations})
-
-
-@app.route("/api/tg/send-test", methods=["POST"])
-def api_tg_send_test():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    if request.content_length and request.content_length > 11 * 1024 * 1024:
-        return jsonify({"error": "image_too_large"}), 413
-    photo = request.files.get("photo")
-    destination_id = (request.form.get("destination_id") or "").strip()
-    caption = (request.form.get("caption") or "").strip()
-    button_label = (request.form.get("button_label") or "").strip()
-    button_url = (request.form.get("button_url") or "").strip()
-    if not photo or not photo.filename:
-        return jsonify({"error": "photo_required"}), 422
-    if not destination_id:
-        return jsonify({"error": "destination_required"}), 422
-    if not caption or len(caption) > 1024:
-        return jsonify({"error": "caption_invalid"}), 422
-    if bool(button_label) != bool(button_url):
-        return jsonify({"error": "button_incomplete"}), 422
-    buttons = []
-    if button_label and button_url:
-        buttons.append({
-            "label": button_label[:64],
-            "value": button_url,
-            "row": 0,
-            "position": 0,
-        })
-    files = {
-        "photo": (
-            photo.filename,
-            photo.stream,
-            photo.mimetype or "application/octet-stream",
-        )
-    }
-    response, payload = _tg_request(
-        "POST",
-        f"/api/v1/tg/destinations/{destination_id}/send-test-upload",
-        data={"caption": caption, "buttons": json.dumps(buttons)},
-        files=files,
-    )
-    if response is None:
-        return jsonify(payload), 503
-    if not response.ok:
-        upstream_error = payload.get("error") or {}
-        return jsonify({
-            "error": upstream_error.get("code") or "tg_test_send_failed",
-            "message": upstream_error.get("message") or "Telegram test send failed",
-        }), response.status_code if 400 <= response.status_code < 500 else 502
-    return jsonify({"ok": True, "result": payload.get("data") or {}})
-
-
-@app.route("/api/tg/schedules", methods=["GET", "POST"])
-def api_tg_schedules():
-    if not _panel_auth():
-        return jsonify({"error": "unauthorized"}), 401
-    if request.method == "GET":
-        response, payload = _tg_request("GET", "/api/v1/tg/test-schedules")
-        if response is None:
-            return jsonify(payload), 503
-        if not response.ok:
-            return jsonify({"error": "tg_schedule_lookup_failed"}), 502
-        return jsonify({"schedules": payload.get("data") or []})
-
-    if request.content_length and request.content_length > 11 * 1024 * 1024:
-        return jsonify({"error": "image_too_large"}), 413
-    photo = request.files.get("photo")
-    destination_id = (request.form.get("destination_id") or "").strip()
-    caption = (request.form.get("caption") or "").strip()
-    schedule_date = (request.form.get("schedule_date") or "").strip()
-    time_slot = (request.form.get("time_slot") or "").strip()
-    button_label = (request.form.get("button_label") or "").strip()
-    button_url = (request.form.get("button_url") or "").strip()
-    if not photo or not photo.filename:
-        return jsonify({"error": "photo_required"}), 422
-    if not destination_id or not caption or len(caption) > 1024:
-        return jsonify({"error": "schedule_fields_invalid"}), 422
-    if not schedule_date or time_slot not in {"09:00", "15:00", "21:00"}:
-        return jsonify({"error": "schedule_time_invalid"}), 422
-    if bool(button_label) != bool(button_url):
-        return jsonify({"error": "button_incomplete"}), 422
-    files = {
-        "photo": (
-            photo.filename,
-            photo.stream,
-            photo.mimetype or "application/octet-stream",
-        )
-    }
-    response, payload = _tg_request(
-        "POST",
-        "/api/v1/tg/test-schedules",
-        data={
-            "destination_id": destination_id,
-            "caption": caption,
-            "schedule_date": schedule_date,
-            "time_slot": time_slot,
-            "button_label": button_label,
-            "button_url": button_url,
-        },
-        files=files,
-    )
-    if response is None:
-        return jsonify(payload), 503
-    if not response.ok:
-        upstream_error = payload.get("error") or {}
-        return jsonify({
-            "error": upstream_error.get("code") or "tg_schedule_failed",
-            "message": upstream_error.get("message") or "Telegram scheduling failed",
-        }), response.status_code if 400 <= response.status_code < 500 else 502
-    return jsonify({"ok": True, "result": payload.get("data") or {}})
 
 
 @app.route("/api/settings", methods=["GET"])

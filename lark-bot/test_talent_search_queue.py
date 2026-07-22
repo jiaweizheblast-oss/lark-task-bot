@@ -26,6 +26,24 @@ def main():
     assert sum(row["count"] for row in task["hr_allocations"]) == 100
     assert task["budgets"]["max_total_observations"] == 800
 
+    derived = copy.deepcopy(command)
+    derived.pop("requested_contact_count")
+    derived["hr_allocations"] = [
+        {"name": "Jennifer", "count": 25},
+        {"name": "Sandrine", "count": 25},
+    ]
+    derived_task = talent_search_queue.build_task(derived)
+    assert derived_task["requested_contact_count"] == 50
+
+    mismatched = copy.deepcopy(derived)
+    mismatched["requested_contact_count"] = 100
+    try:
+        talent_search_queue.build_task(mismatched)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("A separate quota overrode the HR allocation total")
+
     oversized = copy.deepcopy(command)
     oversized["requested_contact_count"] = 201
     try:
@@ -112,7 +130,7 @@ def main():
         raise AssertionError("A shortfall result retained a publishable frozen plan")
 
     print("Nexus persistent search queue contract: PASSED")
-    print("Exact HR allocation and frozen publication cohort: PASSED")
+    print("HR allocation-derived target and frozen publication cohort: PASSED")
     print("Bounded preview and no-write result boundary: PASSED")
 
 
