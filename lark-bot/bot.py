@@ -657,6 +657,23 @@ def _search_task_json(row, *, include_payload=True, include_result=True):
     ):
         current = row.get(field)
         value[field] = current.isoformat() if current is not None else None
+    created_at = row.get("created_at")
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.datetime.fromisoformat(
+                created_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            created_at = None
+    if isinstance(created_at, datetime.datetime) and created_at.tzinfo is not None:
+        company_tz = datetime.timezone(
+            datetime.timedelta(hours=COMPANY_TZ_OFFSET)
+        )
+        value["business_date"] = (
+            created_at.astimezone(company_tz).date().isoformat()
+        )
+    else:
+        value["business_date"] = None
     if include_payload:
         value["payload"] = row.get("payload")
     if include_result:
@@ -736,6 +753,72 @@ def api_talent_search_task_create():
             return jsonify({"error": "operational_job_not_open"}), 409
         if operational_job.get("search_profile_ref") != task["core_job_ref"]:
             return jsonify({"error": "job_search_profile_mismatch"}), 409
+        business_date = _kolkata_today()
+        existing_publication = db.get_talent_daily_publication_by_date(
+            business_date
+        )
+        if existing_publication:
+            status = _publication_status_json(existing_publication)
+            return jsonify({
+                **status,
+                "error": "daily_table_already_exists",
+                "detail": (
+                    "Today already has one recruiting-table run. "
+                    "Open or resume that run instead of creating another."
+                ),
+            }), 409
+        company_tz = datetime.timezone(
+            datetime.timedelta(hours=COMPANY_TZ_OFFSET)
+        )
+        for existing in db.list_talent_search_tasks(limit=100):
+            created_at = existing.get("created_at")
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.datetime.fromisoformat(
+                        created_at.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+            publication_status = (
+                existing.get("publication_status") or "not_ready"
+            )
+            existing_run_active = (
+                existing.get("status") in {"pending", "claimed"}
+                or (
+                    existing.get("status") == "succeeded"
+                    and publication_status
+                    in {"ready", "queued", "publishing", "failed", "published"}
+                )
+            )
+            if (
+                not isinstance(created_at, datetime.datetime)
+                or created_at.tzinfo is None
+                or created_at.astimezone(company_tz).date() != business_date
+                or not existing_run_active
+            ):
+                continue
+            payload = existing.get("payload") or {}
+            same_command = all((
+                payload.get("operational_job_ref")
+                == task["operational_job_ref"],
+                payload.get("core_job_ref") == task["core_job_ref"],
+                payload.get("requested_contact_count")
+                == task["requested_contact_count"],
+                payload.get("hr_allocations") == task["hr_allocations"],
+            ))
+            if same_command:
+                return jsonify({
+                    "status": "unchanged",
+                    "idempotent": True,
+                    "task": _search_task_json(existing),
+                }), 200
+            return jsonify({
+                "error": "daily_search_already_running",
+                "detail": (
+                    "Another search for today's recruiting table is already "
+                    "running. Wait for it to finish instead of clicking again."
+                ),
+            }), 409
         row, inserted = db.enqueue_talent_search_task(task)
         if inserted:
             current_names = _channel_roster()
@@ -838,16 +921,33 @@ def _publication_status_json(row):
     }
 
 
-@app.route("/api/talent/publications/today", methods=["POST"])
+@app.route("/api/talent/publications/today", methods=["GET", "POST"])
 def api_talent_publication_today():
-    """Create today's recruiting workbook without requiring a search."""
+    """Read or create the one recruiting workbook for today's business date."""
 
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    business_date = _kolkata_today()
+    if request.method == "GET":
+        try:
+            existing = db.get_talent_daily_publication_by_date(business_date)
+        except Exception as exc:
+            print("[talent_daily_status] unavailable:", type(exc).__name__)
+            return jsonify({"error": "daily_publication_status_unavailable"}), 503
+        if not existing:
+            return jsonify({
+                "ok": True,
+                "status": "not_started",
+                "idempotent": True,
+                "business_date": business_date.isoformat(),
+                "publication_id": "",
+                "spreadsheet_url": None,
+                "requires_local_worker": False,
+            })
+        return jsonify(_publication_status_json(existing))
     body = request.get_json(silent=True) or {}
     if set(body) - {"hr_names", "manual_rows_per_hr"}:
         return jsonify({"error": "invalid_blank_publication_fields"}), 422
-    business_date = _kolkata_today()
     try:
         existing = db.get_talent_daily_publication_by_date(business_date)
         if existing:

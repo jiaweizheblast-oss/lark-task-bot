@@ -469,6 +469,7 @@
             <div id="tdHrAllocations" style="display:grid;gap:7px;margin-top:8px"></div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><button class="btn" onclick="queueTalentPreview()">开始搜索并生成今日表</button><button class="btn ghost" onclick="createBlankTalentWorkbook()">不搜索，创建/打开今日表</button><span class="muted" style="padding:0;font-size:12px">没有搜索结果也能创建：每位 HR 获得空白录入区和 Recruiting Overview。</span></div>
+          <div id="tdDailyFlowStatus" style="margin-top:10px"></div>
           <div id="tdSearchMessage" style="font-size:12px;margin-top:8px"></div>
         </div>
         <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>搜索任务队列</b><button class="btn ghost sm" onclick="loadTalentTasks()">刷新</button></div><div id="tdSearchTasks"></div></div>
@@ -531,7 +532,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -555,7 +556,7 @@ function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById(
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
   const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();const requested=(location.hash||'').replace('#','');showTab(['recruit','talent','jobs','tg'].includes(requested)?requested:'home');}
 async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
-function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend','tg'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent')loadTalent();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();if(t==='tg')loadTgAutomation();}
+function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend','tg'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent'){loadTalent();loadTalentDailyFlow();}else if(TALENT_FLOW_TIMER){clearTimeout(TALENT_FLOW_TIMER);TALENT_FLOW_TIMER=null;}if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();if(t==='tg')loadTgAutomation();}
 
 function tgCount(){
   const el=document.getElementById('tgCaption'),c=document.getElementById('tgCount');
@@ -709,6 +710,103 @@ function renderTalentSearchConditions(){const {operational,profile}=selectedTale
 function getHrAllocations(){return [...document.querySelectorAll('.td-hr-row')].map(row=>({name:row.querySelector('.td-hr-name').value.trim().replace(/\s+/g,' '),count:Number(row.querySelector('.td-hr-count').value)}));}
 function updateHrAllocationTotal(){const items=getHrAllocations(),total=items.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0),el=document.getElementById('tdHrTotal');if(el){el.textContent=`Search target: ${total}`;el.style.color=total>0?'#16a34a':'#64748b';}}
 function ensureHrAllocationRow(){const root=document.getElementById('tdHrAllocations');if(root&&!root.children.length)addHrAllocation('','');}
+function setTalentFlowLocked(locked){
+  document.querySelectorAll(
+    '#view-talent button[onclick="queueTalentPreview()"], #view-talent button[onclick="createBlankTalentWorkbook()"]'
+  ).forEach(el=>{el.disabled=!!locked;});
+}
+function talentFlowCard(title,detail,tone='info',action=''){
+  const colors={info:['#eff6ff','#1d4ed8'],working:['#fff7ed','#c2410c'],ready:['#ecfdf5','#15803d'],error:['#fef2f2','#b91c1c']};
+  const [background,color]=colors[tone]||colors.info;
+  return `<div style="border:1px solid ${color}33;background:${background};border-radius:10px;padding:12px 14px"><div style="font-weight:800;color:${color}">${esc(title)}</div><div style="font-size:12px;line-height:1.6;margin-top:4px">${esc(detail)}</div>${action?`<div style="margin-top:9px">${action}</div>`:''}</div>`;
+}
+async function loadTalentDailyFlow(){
+  const root=document.getElementById('tdDailyFlowStatus');
+  if(!root)return;
+  let refresh=true;
+  try{
+    const [publicationResponse,taskResponse]=await Promise.all([
+      api('/api/talent/publications/today'),
+      api('/api/talent/search-tasks'),
+    ]);
+    const publication=await publicationResponse.json();
+    const taskData=await taskResponse.json();
+    const today=publication.business_date||'today';
+    const tasks=(taskData.tasks||[]).filter(
+      t=>t.status!=='cancelled'&&t.business_date===today
+    );
+    const latest=tasks[0]||null;
+    let locked=false;
+    if(publication.status==='published'&&publication.spreadsheet_url){
+      locked=true;refresh=false;
+      root.innerHTML=talentFlowCard(
+        `${today} 今日招聘表已完成`,
+        '搜索结果、HR 分配和 Overview 已固定在同一张表中。重复操作不会生成第二张表。',
+        'ready',
+        `<a class="btn sm" href="${esc(publication.spreadsheet_url)}" target="_blank" rel="noopener">打开今日招聘表</a>`
+      );
+    }else if(['queued','publishing'].includes(publication.status)){
+      locked=true;
+      root.innerHTML=talentFlowCard(
+        publication.status==='queued'?'等待本地 Worker':'正在导入并发布',
+        '无需再次点击。完成后这里会自动出现“打开今日招聘表”。',
+        'working'
+      );
+    }else if(publication.status==='failed'){
+      locked=true;refresh=false;
+      root.innerHTML=talentFlowCard(
+        '今日招聘表发布失败',
+        `冻结结果仍被保留，请只修复发布阶段，不要重新搜索。错误：${publication.error_code||'unknown'}`,
+        'error'
+      );
+    }else if(latest&&['pending','claimed'].includes(latest.status)){
+      locked=true;
+      root.innerHTML=talentFlowCard(
+        latest.status==='pending'?'等待本地 Worker 开始搜索':'正在搜索并冻结结果',
+        '无需再次点击；搜索完成后系统会自动进入发布阶段。',
+        'working'
+      );
+    }else if(latest&&latest.status==='succeeded'&&['ready','queued','publishing'].includes(latest.publication_status)){
+      locked=true;
+      root.innerHTML=talentFlowCard(
+        latest.publication_status==='ready'?'搜索结果已冻结，等待发布':'正在准备今日招聘表',
+        '候选人集合已经固定，不会重新搜索或更换。',
+        'working'
+      );
+    }else if(latest&&latest.status==='shortfall'){
+      refresh=false;
+      root.innerHTML=talentFlowCard(
+        '本次搜索未达到目标',
+        '没有发布不完整的正式名单。诊断结果已保留，可调整目标人数后重新开始。',
+        'error'
+      );
+    }else if(latest&&latest.status==='failed'){
+      refresh=false;
+      root.innerHTML=talentFlowCard(
+        '搜索失败',
+        `没有创建 Lark 表，也没有写候选人状态。错误：${latest.last_error_code||'unknown'}`,
+        'error'
+      );
+    }else{
+      root.innerHTML=talentFlowCard(
+        '今日流程尚未开始',
+        '设置职位和 HR 分配后只点击一次；搜索、冻结和发布会自动完成。',
+        'info'
+      );
+    }
+    setTalentFlowLocked(locked);
+  }catch(e){
+    setTalentFlowLocked(false);
+    root.innerHTML=talentFlowCard('无法读取今日流程','请检查网站连接后刷新，不要重复创建任务。','error');
+  }
+  if(TALENT_FLOW_TIMER){clearTimeout(TALENT_FLOW_TIMER);TALENT_FLOW_TIMER=null;}
+  const talentView=document.getElementById('view-talent');
+  if(refresh&&talentView&&!talentView.classList.contains('hide')){
+    TALENT_FLOW_TIMER=setTimeout(async()=>{
+      await Promise.all([loadTalentDailyFlow(),loadTalentTasks()]);
+    },5000);
+  }
+}
 async function queueTalentPreview(){
   const msg=document.getElementById('tdSearchMessage'),{operational,profile}=selectedTalentSearch(),allocations=getHrAllocations(),quota=allocations.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0);msg.textContent='';
   if(!operational||!profile){msg.textContent='请选择一个已关联有效搜索条件的 Open 招聘职位。';return;}
