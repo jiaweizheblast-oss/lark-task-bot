@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = "talent-search-task-v3"
 TASK_TYPE = "preview_search"
 RESULT_SCHEMA_VERSION = "talent-search-result-v1"
-PUBLICATION_SCHEMA_VERSION = "talent-daily-publication-task-v2"
+PUBLICATION_SCHEMA_VERSION = "talent-daily-publication-task-v3"
 PUBLICATION_TASK_TYPE = "apply_and_publish_daily_recruiting_workbook"
 PUBLICATION_RECEIPT_SCHEMA_VERSION = "talent-daily-publication-receipt-v2"
 TERMINAL_STATUSES = {"succeeded", "shortfall", "failed", "cancelled"}
@@ -132,6 +132,46 @@ def normalize_hr_allocations(value):
         result.append({
             "name": name,
             "count": _integer(item.get("count"), f"hr_allocations[{index}].count", 1, 200),
+        })
+    return result
+
+
+def normalize_hr_names(value):
+    if not isinstance(value, list) or not value or len(value) > 20:
+        raise ValueError("hr_names must contain 1 to 20 HR names")
+    result, seen = [], set()
+    for index, raw in enumerate(value, start=1):
+        name = " ".join(str(raw or "").split())
+        if not name or len(name) > 80 or name.isdecimal():
+            raise ValueError(f"hr_names[{index}] is invalid")
+        key = name.casefold()
+        if key in seen:
+            raise ValueError("HR names must be unique")
+        seen.add(key)
+        result.append(name)
+    return result
+
+
+def normalize_open_jobs(value):
+    if not isinstance(value, list) or not value:
+        raise ValueError("open_jobs cannot be empty")
+    result, refs, labels = [], set(), set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "operational_job_ref", "hiring_job_label",
+        }:
+            raise ValueError("open_jobs fields are invalid")
+        job_ref = str(item.get("operational_job_ref") or "").strip()
+        label = " ".join(str(item.get("hiring_job_label") or "").split())
+        if not JOB_REF.fullmatch(job_ref) or not label or len(label) > 255:
+            raise ValueError("open_jobs contains an invalid Job Requisition")
+        if job_ref in refs or label.casefold() in labels:
+            raise ValueError("open_jobs must have unique references and labels")
+        refs.add(job_ref)
+        labels.add(label.casefold())
+        result.append({
+            "operational_job_ref": job_ref,
+            "hiring_job_label": label,
         })
     return result
 
@@ -298,11 +338,16 @@ def build_publication_cohort(row, *, hiring_job_label):
 
 
 def build_publication_task(
-    cohorts, *, publication_id, business_date, now=None,
+    cohorts, *, publication_id, business_date, now=None, hr_names=None,
+    open_jobs=None, manual_rows_per_hr=30,
 ):
-    """Build one immutable business-date command from all approved cohorts."""
-    if not isinstance(cohorts, list) or not cohorts:
-        raise ValueError("at least one publication cohort is required")
+    """Build one immutable daily workbook command.
+
+    Search cohorts are optional.  The signed HR roster and Open Job
+    Requisition catalog are sufficient to create a manual-only workbook.
+    """
+    if not isinstance(cohorts, list):
+        raise ValueError("cohorts must be a list")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if len({item["search_task_id"] for item in cohorts}) != len(cohorts):
         raise ValueError("a search task is duplicated across publication cohorts")
@@ -314,13 +359,50 @@ def build_publication_task(
         _instant(item["frozen_plan_expires_at"], "frozen_plan_expires_at")
         for item in cohorts
     ]
-    expires_at = min(expiries)
+    expires_at = min(expiries) if expiries else current + timedelta(hours=24)
     if expires_at <= current:
         raise ValueError("one or more frozen publication cohorts have expired")
     try:
         parsed_business_date = date.fromisoformat(str(business_date))
     except ValueError as error:
         raise ValueError("business_date must be YYYY-MM-DD") from error
+    if hr_names is None:
+        hr_names = []
+        seen_hr = set()
+        for cohort in cohorts:
+            for allocation in cohort.get("hr_allocations") or []:
+                key = str(allocation.get("name") or "").casefold()
+                if key not in seen_hr:
+                    seen_hr.add(key)
+                    hr_names.append(allocation.get("name"))
+    if open_jobs is None:
+        open_jobs = [
+            {
+                "operational_job_ref": item["operational_job_ref"],
+                "hiring_job_label": item["hiring_job_label"],
+            }
+            for item in cohorts
+        ]
+    hr_names = normalize_hr_names(hr_names)
+    open_jobs = normalize_open_jobs(open_jobs)
+    manual_rows_per_hr = _integer(
+        manual_rows_per_hr, "manual_rows_per_hr", 1, 500
+    )
+    job_catalog = {
+        item["operational_job_ref"]: item["hiring_job_label"].casefold()
+        for item in open_jobs
+    }
+    hr_catalog = {name.casefold() for name in hr_names}
+    for cohort in cohorts:
+        if job_catalog.get(cohort["operational_job_ref"]) != (
+            cohort["hiring_job_label"].casefold()
+        ):
+            raise ValueError("publication cohort is outside the open-job catalog")
+        if not {
+            str(item.get("name") or "").casefold()
+            for item in cohort.get("hr_allocations") or []
+        }.issubset(hr_catalog):
+            raise ValueError("publication cohort is outside the HR roster")
     command = {
         "schema_version": PUBLICATION_SCHEMA_VERSION,
         "task_type": PUBLICATION_TASK_TYPE,
@@ -329,6 +411,9 @@ def build_publication_task(
         "created_at": current.isoformat(),
         "expires_at": expires_at.isoformat(),
         "business_date": parsed_business_date.isoformat(),
+        "hr_names": hr_names,
+        "open_jobs": open_jobs,
+        "manual_rows_per_hr": manual_rows_per_hr,
         "cohorts": cohorts,
         "total_contact_count": sum(
             int(item["requested_contact_count"]) for item in cohorts

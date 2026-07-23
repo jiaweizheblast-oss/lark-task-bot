@@ -106,6 +106,11 @@ def main():
             else "Sales Member"
         ),
     }
+    bot.db.operational_job_catalog = lambda statuses=("open",): [
+        bot.db.get_job_request_by_ref("REQ-20260722-TEST0001"),
+        bot.db.get_job_request_by_ref("REQ-20260722-TEST0002"),
+    ]
+    bot._channel_roster = lambda: ["Asha", "Neha"]
 
     def queue(publication_id, business_date, command, task_ids):
         queued_commands.append(copy.deepcopy(command))
@@ -139,6 +144,8 @@ def main():
     assert "candidate" not in " ".join(queued_commands[0]).casefold()
     assert len(queued_commands[0]["cohorts"]) == 2
     assert queued_commands[0]["total_contact_count"] == 3
+    assert queued_commands[0]["schema_version"] == "talent-daily-publication-task-v3"
+    assert queued_commands[0]["hr_names"] == ["Asha", "Neha"]
     assert [item["hiring_job_label"] for item in queued_commands[0]["cohorts"]] == [
         "Customer Service Representative",
         "Sales Member",

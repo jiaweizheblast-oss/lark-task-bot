@@ -857,13 +857,24 @@ def get_talent_daily_publication(publication_id):
         return cur.fetchone()
 
 
+def get_talent_daily_publication_by_date(business_date):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            "SELECT * FROM talent_daily_publication WHERE business_date=%s",
+            (business_date,),
+        )
+        return cur.fetchone()
+
+
 def queue_talent_daily_publication(
     publication_id, business_date, publication, task_ids,
 ):
     """Atomically queue one immutable business-date multi-job publication."""
     ordered_ids = list(task_ids)
-    if not ordered_ids or len(set(ordered_ids)) != len(ordered_ids):
-        raise ValueError("publication task identities are empty or duplicated")
+    if len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError("publication task identities are duplicated")
     conn = get_conn()
     conn.autocommit = False
     try:
@@ -883,24 +894,25 @@ def queue_talent_daily_publication(
                     )
                 conn.commit()
                 return existing
-            cur.execute(
-                """SELECT task_id,status,publication_status
-                   FROM talent_search_task
-                   WHERE task_id = ANY(%s::uuid[])
-                   FOR UPDATE""",
-                (ordered_ids,),
-            )
-            rows = cur.fetchall()
-            if len(rows) != len(ordered_ids):
-                raise ValueError("one or more publication search tasks are missing")
-            for row in rows:
-                if (
-                    row["status"] != "succeeded"
-                    or row["publication_status"] not in {"ready", "failed"}
-                ):
-                    raise ValueError(
-                        "every publication cohort must be successful and ready"
-                    )
+            if ordered_ids:
+                cur.execute(
+                    """SELECT task_id,status,publication_status
+                       FROM talent_search_task
+                       WHERE task_id = ANY(%s::uuid[])
+                       FOR UPDATE""",
+                    (ordered_ids,),
+                )
+                rows = cur.fetchall()
+                if len(rows) != len(ordered_ids):
+                    raise ValueError("one or more publication search tasks are missing")
+                for row in rows:
+                    if (
+                        row["status"] != "succeeded"
+                        or row["publication_status"] not in {"ready", "failed"}
+                    ):
+                        raise ValueError(
+                            "every publication cohort must be successful and ready"
+                        )
             cur.execute(
                 """INSERT INTO talent_daily_publication
                    (publication_id,business_date,revision,status,payload,payload_sha256)
@@ -915,29 +927,30 @@ def queue_talent_daily_publication(
                 ),
             )
             queued = cur.fetchone()
-            psycopg2.extras.execute_values(
-                cur,
-                """INSERT INTO talent_daily_publication_item
-                   (publication_id,task_id,cohort_order) VALUES %s""",
-                [
-                    (publication_id, task_id, index)
-                    for index, task_id in enumerate(ordered_ids, start=1)
-                ],
-            )
-            cur.execute(
-                """UPDATE talent_search_task
-                   SET publication_status='queued',
-                       publication=%s::jsonb, updated_at=now()
-                   WHERE task_id = ANY(%s::uuid[])""",
-                (
-                    psycopg2.extras.Json({
-                        "publication_id": str(publication_id),
-                        "business_date": str(business_date),
-                        "payload_sha256": publication["payload_sha256"],
-                    }),
-                    ordered_ids,
-                ),
-            )
+            if ordered_ids:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """INSERT INTO talent_daily_publication_item
+                       (publication_id,task_id,cohort_order) VALUES %s""",
+                    [
+                        (publication_id, task_id, index)
+                        for index, task_id in enumerate(ordered_ids, start=1)
+                    ],
+                )
+                cur.execute(
+                    """UPDATE talent_search_task
+                       SET publication_status='queued',
+                           publication=%s::jsonb, updated_at=now()
+                       WHERE task_id = ANY(%s::uuid[])""",
+                    (
+                        psycopg2.extras.Json({
+                            "publication_id": str(publication_id),
+                            "business_date": str(business_date),
+                            "payload_sha256": publication["payload_sha256"],
+                        }),
+                        ordered_ids,
+                    ),
+                )
         conn.commit()
         return queued
     except Exception:

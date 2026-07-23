@@ -737,6 +737,105 @@ def api_talent_search_task_publish(task_id):
     return jsonify(result)
 
 
+def _daily_publication_open_jobs():
+    jobs = db.operational_job_catalog(statuses=("open",))
+    if not jobs:
+        raise ValueError(
+            "Create at least one Open Job Requisition before creating today's table"
+        )
+    return [
+        {
+            "operational_job_ref": str(job["job_ref"]),
+            "hiring_job_label": str(job["title"]),
+        }
+        for job in jobs
+    ]
+
+
+def _publication_status_json(row):
+    payload = dict(row.get("payload") or {})
+    receipt = dict(row.get("receipt") or {})
+    status = row.get("status") or "queued"
+    return {
+        "ok": True,
+        "status": status,
+        "idempotent": True,
+        "business_date": str(row.get("business_date") or ""),
+        "publication_id": str(row.get("publication_id") or ""),
+        "cohort_count": len(payload.get("cohorts") or []),
+        "expected_rows": int(payload.get("total_contact_count") or 0),
+        "spreadsheet_url": receipt.get("spreadsheet_url"),
+        "error_code": receipt.get("error_code"),
+        "can_reset": status == "failed",
+        "requires_local_worker": status in {"queued", "publishing"},
+    }
+
+
+@app.route("/api/talent/publications/today", methods=["POST"])
+def api_talent_publication_today():
+    """Create today's recruiting workbook without requiring a search."""
+
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    if set(body) - {"hr_names", "manual_rows_per_hr"}:
+        return jsonify({"error": "invalid_blank_publication_fields"}), 422
+    business_date = _kolkata_today()
+    try:
+        existing = db.get_talent_daily_publication_by_date(business_date)
+        if existing:
+            return jsonify(_publication_status_json(existing))
+        hr_names = talent_search_queue.normalize_hr_names(body.get("hr_names"))
+        manual_rows = body.get("manual_rows_per_hr", 30)
+        open_jobs = _daily_publication_open_jobs()
+        publication_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "nexus-manual-daily-recruiting:"
+            + business_date.isoformat()
+            + ":"
+            + talent_search_queue.sha256({
+                "hr_names": hr_names,
+                "open_jobs": open_jobs,
+                "manual_rows_per_hr": manual_rows,
+            }),
+        ))
+        command = talent_search_queue.build_publication_task(
+            [],
+            publication_id=publication_id,
+            business_date=business_date.isoformat(),
+            hr_names=hr_names,
+            open_jobs=open_jobs,
+            manual_rows_per_hr=manual_rows,
+        )
+        queued = db.queue_talent_daily_publication(
+            publication_id,
+            business_date,
+            command,
+            [],
+        )
+        db.set_setting("channel_roster", "\n".join(hr_names))
+    except ValueError as exc:
+        return jsonify({
+            "error": "blank_publication_rejected",
+            "detail": str(exc),
+        }), 409
+    except Exception as exc:
+        print("[talent_blank_publication] unavailable:", type(exc).__name__)
+        return jsonify({"error": "blank_publication_unavailable"}), 503
+    return jsonify({
+        "ok": True,
+        "status": queued.get("status") or "queued",
+        "idempotent": False,
+        "business_date": command["business_date"],
+        "publication_id": publication_id,
+        "cohort_count": 0,
+        "expected_rows": 0,
+        "requires_local_worker": True,
+        "lark_calls": 0,
+        "database_writes": 0,
+    }), 201
+
+
 @app.route(
     "/api/talent/publications/<publication_id>/reset",
     methods=["POST"],
@@ -2338,6 +2437,9 @@ def _queue_talent_search_publication(task_id):
         cohorts,
         publication_id=publication_id,
         business_date=business_date.isoformat(),
+        hr_names=_channel_roster(),
+        open_jobs=_daily_publication_open_jobs(),
+        manual_rows_per_hr=30,
     )
     queued = db.queue_talent_daily_publication(
         publication_id,
