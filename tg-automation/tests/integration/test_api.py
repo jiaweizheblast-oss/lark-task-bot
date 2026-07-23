@@ -153,3 +153,24 @@ async def test_nexus_can_schedule_only_a_test_destination(
     assert response.json()["data"]["delivery_status"] == "PENDING"
     assert listed.json()["data"][0]["caption"] == "Scheduled public test"
     assert len(list(tmp_path.glob("scheduled-*.jpg"))) == 1
+
+    duplicate = await client.post(
+        "/api/v1/tg/test-schedules",
+        data={
+            "destination_id": destination_id,
+            "caption": "Accidental duplicate",
+            "schedule_date": tomorrow.isoformat(),
+            "time_slot": "09:00",
+        },
+        files={
+            "photo": (
+                "duplicate.jpg",
+                b"\xff\xd8\xff\xe0duplicate-test-image",
+                "image/jpeg",
+            )
+        },
+    )
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "TEST_SLOT_ALREADY_SCHEDULED"
+    assert len(list(tmp_path.glob("scheduled-*.jpg"))) == 1

@@ -566,9 +566,20 @@ async function loadTgAutomation(){
     const data=await(await api('/api/tg/destinations')).json(),rows=data.destinations||[];
     select.innerHTML='<option value="">Select a test destination</option>'+rows.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} · ${esc(d.destination_type)}</option>`).join('');
     if(!rows.length)error.textContent='No enabled test channel or group is configured.';
-    const dateInput=document.getElementById('tgScheduleDate');if(dateInput&&!dateInput.value)dateInput.value=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
+    setNextTgSlot();
     await loadTgSchedules();
   }catch(e){status.textContent='Not connected';select.innerHTML='<option value="">Unavailable</option>';error.textContent=e.message||'TG Automation is unavailable.';}
+}
+
+function setNextTgSlot(){
+  const dateInput=document.getElementById('tgScheduleDate'),slotInput=document.getElementById('tgTimeSlot');
+  if(!dateInput||!slotInput||dateInput.value)return;
+  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).reduce((out,item)=>(out[item.type]=item.value,out),{});
+  const minutes=Number(parts.hour)*60+Number(parts.minute),slots=[['09:00',540],['15:00',900],['21:00',1260]];
+  const next=slots.find(item=>item[1]>minutes);
+  if(next){dateInput.value=`${parts.year}-${parts.month}-${parts.day}`;slotInput.value=next[0];return;}
+  const tomorrow=new Date(Date.now()+24*60*60*1000),tomorrowParts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(tomorrow).reduce((out,item)=>(out[item.type]=item.value,out),{});
+  dateInput.value=`${tomorrowParts.year}-${tomorrowParts.month}-${tomorrowParts.day}`;slotInput.value='09:00';
 }
 
 async function loadTgSchedules(){

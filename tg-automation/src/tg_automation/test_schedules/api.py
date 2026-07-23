@@ -137,6 +137,29 @@ async def create_test_schedule(
             422,
         )
     scheduled_at = _scheduled_at(schedule_date, time_slot)
+    existing_campaign_id = db.scalar(
+        select(Campaign.id)
+        .join(CampaignDestination, CampaignDestination.campaign_id == Campaign.id)
+        .where(
+            CampaignDestination.destination_id == destination.id,
+            Campaign.scheduled_at == scheduled_at,
+            Campaign.status.in_(
+                [
+                    CampaignStatus.SCHEDULED,
+                    CampaignStatus.SENDING,
+                    CampaignStatus.SENT,
+                ]
+            ),
+        )
+        .limit(1)
+    )
+    if existing_campaign_id:
+        raise DomainError(
+            "TEST_SLOT_ALREADY_SCHEDULED",
+            "This test destination already has a message in that India time slot.",
+            409,
+            {"campaign_id": existing_campaign_id},
+        )
     image = await photo.read(MAX_IMAGE_BYTES + 1)
     _validate_image(photo.content_type, image)
 
