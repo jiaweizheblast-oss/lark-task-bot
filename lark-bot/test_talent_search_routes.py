@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import bot
 
@@ -10,6 +10,7 @@ WORKER_TOKEN = "worker-token-for-search-route-test-at-least-32"
 def main():
     bot.PANEL_PASSWORD = PANEL_PASSWORD
     bot.NEXUS_TALENT_WORKER_TOKEN = WORKER_TOKEN
+    bot._kolkata_today = lambda: date(2026, 7, 23)
     stored = {}
     settings = {}
     publication_calls = []
@@ -46,6 +47,7 @@ def main():
         return row, inserted
 
     bot.db.enqueue_talent_search_task = enqueue
+    bot.db.get_talent_daily_publication_by_date = lambda _day: None
     bot.db.get_setting = lambda key: settings.get(key)
     bot.db.set_setting = lambda key, value: settings.__setitem__(key, value)
     bot.db.list_talent_search_tasks = lambda limit=50: list(stored.values())
@@ -108,6 +110,55 @@ def main():
     )
     assert created.status_code == 201
     task = created.get_json()["task"]["payload"]
+
+    repeated_command = dict(command)
+    repeated_command["task_id"] = "be3aab9e-4f0c-4cc1-a2fb-c65e8e3d39cc"
+    repeated = client.post(
+        "/api/talent/search-tasks",
+        json=repeated_command,
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert repeated.status_code == 200
+    assert repeated.get_json()["idempotent"] is True
+    assert len(stored) == 1
+    assert repeated.get_json()["task"]["business_date"] == "2026-07-23"
+
+    conflicting_command = dict(command)
+    conflicting_command["task_id"] = "0a3c7abc-05c3-435b-b198-19351f1b09af"
+    conflicting_command["requested_contact_count"] = 80
+    conflicting_command["hr_allocations"] = [
+        {"name": "Asha", "count": 40},
+        {"name": "Neha", "count": 40},
+    ]
+    conflicting = client.post(
+        "/api/talent/search-tasks",
+        json=conflicting_command,
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert conflicting.status_code == 409
+    assert conflicting.get_json()["error"] == "daily_search_already_running"
+    assert len(stored) == 1
+
+    stored[command["task_id"]]["status"] = "succeeded"
+    stored[command["task_id"]]["publication_status"] = "ready"
+    frozen_repeat = client.post(
+        "/api/talent/search-tasks",
+        json=repeated_command,
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert frozen_repeat.status_code == 200
+    assert frozen_repeat.get_json()["idempotent"] is True
+    assert len(stored) == 1
+    frozen_conflict = client.post(
+        "/api/talent/search-tasks",
+        json=conflicting_command,
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert frozen_conflict.status_code == 409
+    assert frozen_conflict.get_json()["error"] == "daily_search_already_running"
+    assert len(stored) == 1
+    stored[command["task_id"]]["status"] = "pending"
+    stored[command["task_id"]]["publication_status"] = "not_ready"
 
     worker_headers = {"Authorization": f"Bearer {WORKER_TOKEN}"}
     unauthorized = client.post(
@@ -218,6 +269,8 @@ def main():
     assert rejected.status_code == 422
 
     print("Nexus manager queue and worker routes: PASSED")
+    print("Repeated one-click search is idempotent: PASSED")
+    print("Conflicting second search while today's run is active: REJECTED")
     print("Unauthorized and unsafe worker submissions: REJECTED")
 
 

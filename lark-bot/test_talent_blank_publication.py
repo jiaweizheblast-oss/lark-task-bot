@@ -49,6 +49,21 @@ def main():
     bot.db.queue_talent_daily_publication = queue
     client = bot.app.test_client()
     headers = {"X-Auth": bot.PANEL_PASSWORD}
+    assert client.get("/api/talent/publications/today").status_code == 401
+    empty_status = client.get(
+        "/api/talent/publications/today",
+        headers=headers,
+    )
+    assert empty_status.status_code == 200
+    assert empty_status.get_json() == {
+        "ok": True,
+        "status": "not_started",
+        "idempotent": True,
+        "business_date": "2026-07-23",
+        "publication_id": "",
+        "spreadsheet_url": None,
+        "requires_local_worker": False,
+    }
     first = client.post(
         "/api/talent/publications/today",
         json={
@@ -73,6 +88,13 @@ def main():
     assert repeated.status_code == 200
     assert repeated.get_json()["idempotent"] is True
     assert repeated.get_json()["publication_id"] == first.get_json()["publication_id"]
+    queued_status = client.get(
+        "/api/talent/publications/today",
+        headers=headers,
+    )
+    assert queued_status.status_code == 200
+    assert queued_status.get_json()["status"] == "queued"
+    assert queued_status.get_json()["requires_local_worker"] is True
 
     stored["row"]["status"] = "failed"
     stored["row"]["receipt"] = {"error_code": "publication_failed"}
@@ -90,6 +112,7 @@ def main():
     print("Manager can create today's workbook without any search: PASSED")
     print("Open Job Requisitions and HR roster are signed into the task: PASSED")
     print("Repeated create/open request is idempotent: PASSED")
+    print("Today's publication status is readable without creating a duplicate: PASSED")
     print("Failed publication is reported for safe reset instead of false queueing: PASSED")
 
 
