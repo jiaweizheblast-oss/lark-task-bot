@@ -7,7 +7,7 @@ import bot
 def main():
     bot.PANEL_PASSWORD = "blank-publication-panel-password"
     bot._kolkata_today = lambda: datetime.date(2026, 7, 23)
-    stored = {"row": None, "roster": None}
+    stored = {"row": None, "roster": None, "reset": None}
     bot.db.get_talent_daily_publication_by_date = (
         lambda _business_date: copy.deepcopy(stored["row"])
     )
@@ -59,6 +59,14 @@ def main():
         return copy.deepcopy(stored["row"])
 
     bot.db.queue_talent_daily_publication = queue
+    bot.db.reset_talent_daily_publication = lambda publication_id: (
+        stored.update(row=None, reset=publication_id)
+        or {
+            "status": "reset",
+            "reset": True,
+            "task_count": 0,
+        }
+    )
     client = bot.app.test_client()
     headers = {"X-Auth": bot.PANEL_PASSWORD}
     assert client.get("/api/talent/publications/today").status_code == 401
@@ -120,12 +128,31 @@ def main():
     assert failed.get_json()["can_reset"] is True
     assert failed.get_json()["requires_local_worker"] is False
     assert failed.get_json()["error_code"] == "publication_failed"
+    reset = client.post(
+        f"/api/talent/publications/{first.get_json()['publication_id']}/reset",
+        json={"confirm": "RESET_UNPUBLISHED"},
+        headers=headers,
+    )
+    assert reset.status_code == 200
+    assert reset.get_json()["status"] == "reset"
+    assert stored["reset"] == first.get_json()["publication_id"]
+    recreated = client.post(
+        "/api/talent/publications/today",
+        json={
+            "hr_names": ["JENNIFER", "SANDRINE"],
+            "manual_rows_per_hr": 30,
+        },
+        headers=headers,
+    )
+    assert recreated.status_code == 201
+    assert recreated.get_json()["expected_rows"] == 0
 
     print("Manager can create today's workbook without any search: PASSED")
     print("Open Job Requisitions and HR roster are signed into the task: PASSED")
     print("Repeated create/open request is idempotent: PASSED")
     print("Today's publication status is readable without creating a duplicate: PASSED")
     print("Failed publication is reported for safe reset instead of false queueing: PASSED")
+    print("Failed manual-only publication can be reset and recreated safely: PASSED")
 
 
 if __name__ == "__main__":

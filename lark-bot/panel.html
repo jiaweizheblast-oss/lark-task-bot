@@ -780,10 +780,17 @@ async function loadTalentDailyFlow(){
       );
     }else if(publication.status==='failed'){
       locked=true;refresh=false;
+      const manualOnly=Number(publication.cohort_count||0)===0;
+      const recoveryAction=manualOnly&&publication.can_reset
+        ? '<button class="btn sm" onclick="createBlankTalentWorkbook()">填写 HR 后重置并创建今日空表</button>'
+        : '';
       root.innerHTML=talentFlowCard(
         '今日招聘表发布失败',
-        `冻结结果仍被保留，请只修复发布阶段，不要重新搜索。错误：${publication.error_code||'unknown'}`,
-        'error'
+        manualOnly
+          ? `本次没有搜索候选人，可以安全重置失败的未发布指令，再按当前 HR 名单创建今日空表。错误：${publication.error_code||'unknown'}`
+          : `冻结结果仍被保留，请只修复发布阶段，不要重新搜索。错误：${publication.error_code||'unknown'}`,
+        'error',
+        recoveryAction
       );
     }else if(latest&&['pending','claimed'].includes(latest.status)){
       locked=true;
