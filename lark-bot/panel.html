@@ -454,7 +454,7 @@
       <div class="toolbar">
         <div><div style="font-weight:750;font-size:16px">🔎 Talent Discovery</div>
         <div class="muted" id="tdSync" style="padding:2px 0 0;font-size:12px">读取签名镜像…</div></div>
-        <div class="sp"></div><button class="btn ghost sm" onclick="loadTalent()">🔄 刷新</button>
+        <div class="sp"></div><span id="tdWorkerStatus" style="font-size:12px;font-weight:700;color:#b45309">● Worker 检查中</span><button class="btn ghost sm" onclick="loadTalent();loadTalentDailyFlow()">🔄 刷新</button>
       </div>
       <div id="tdEmpty" class="acard hide" style="text-align:center;color:var(--soft);line-height:1.7">还没有收到 AI Talent Discovery 的签名同步。候选人核心数据不会写入 Nexus 的可编辑候选人表。</div>
       <div id="tdBody" class="hide">
@@ -532,7 +532,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -710,6 +710,24 @@ function renderTalentSearchConditions(){const {operational,profile}=selectedTale
 function getHrAllocations(){return [...document.querySelectorAll('.td-hr-row')].map(row=>({name:row.querySelector('.td-hr-name').value.trim().replace(/\s+/g,' '),count:Number(row.querySelector('.td-hr-count').value)}));}
 function updateHrAllocationTotal(){const items=getHrAllocations(),total=items.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0),el=document.getElementById('tdHrTotal');if(el){el.textContent=`Search target: ${total}`;el.style.color=total>0?'#16a34a':'#64748b';}}
 function ensureHrAllocationRow(){const root=document.getElementById('tdHrAllocations');if(root&&!root.children.length)addHrAllocation('','');}
+async function loadTalentWorkerStatus(){
+  const el=document.getElementById('tdWorkerStatus');
+  try{
+    const response=await api('/api/talent/worker-status'),data=await response.json();
+    TALENT_WORKER_ONLINE=!!(response.ok&&data.online);
+    if(el){
+      el.textContent=TALENT_WORKER_ONLINE
+        ?`● Worker 在线${data.status==='working'?' · 正在处理':''}`
+        :'● Worker 离线';
+      el.style.color=TALENT_WORKER_ONLINE?'#15803d':'#b45309';
+      el.title=data.last_seen_at?`Last heartbeat: ${data.last_seen_at}`:'Windows 登录后 Worker 会自动启动';
+    }
+  }catch(e){
+    TALENT_WORKER_ONLINE=false;
+    if(el){el.textContent='● Worker 状态不可用';el.style.color='#b91c1c';}
+  }
+  return TALENT_WORKER_ONLINE;
+}
 function setTalentFlowLocked(locked){
   document.querySelectorAll(
     '#view-talent button[onclick="queueTalentPreview()"], #view-talent button[onclick="createBlankTalentWorkbook()"]'
@@ -725,6 +743,7 @@ async function loadTalentDailyFlow(){
   if(!root)return;
   let refresh=true;
   try{
+    await loadTalentWorkerStatus();
     const [publicationResponse,taskResponse]=await Promise.all([
       api('/api/talent/publications/today'),
       api('/api/talent/search-tasks'),
@@ -794,9 +813,17 @@ async function loadTalentDailyFlow(){
         'info'
       );
     }
-    setTalentFlowLocked(locked);
+    setTalentFlowLocked(locked||!TALENT_WORKER_ONLINE);
+    if(!locked&&!TALENT_WORKER_ONLINE){
+      root.innerHTML=talentFlowCard(
+        '本地 Worker 离线',
+        'Windows 登录后 Worker 会自动启动。变为绿色“Worker 在线”后只点击一次；当前不会创建悬挂搜索或发布任务。',
+        'working'
+      );
+    }
   }catch(e){
-    setTalentFlowLocked(false);
+    TALENT_WORKER_ONLINE=false;
+    setTalentFlowLocked(true);
     root.innerHTML=talentFlowCard('无法读取今日流程','请检查网站连接后刷新，不要重复创建任务。','error');
   }
   if(TALENT_FLOW_TIMER){clearTimeout(TALENT_FLOW_TIMER);TALENT_FLOW_TIMER=null;}
@@ -809,6 +836,7 @@ async function loadTalentDailyFlow(){
 }
 async function queueTalentPreview(){
   const msg=document.getElementById('tdSearchMessage'),{operational,profile}=selectedTalentSearch(),allocations=getHrAllocations(),quota=allocations.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0);msg.textContent='';
+  if(!TALENT_WORKER_ONLINE){msg.textContent='本地 Worker 离线；请等待页面显示绿色“Worker 在线”后只点击一次。';return;}
   if(!operational||!profile){msg.textContent='请选择一个已关联有效搜索条件的 Open 招聘职位。';return;}
   if(!Number.isInteger(quota)||quota<1||quota>200){msg.textContent='正式候选人数须为 1–200。';return;}
   const names=allocations.map(x=>x.name.toLocaleLowerCase());
@@ -822,6 +850,7 @@ async function createBlankTalentWorkbook(){
   const names=getHrAllocations().map(x=>x.name).filter(Boolean);
   const keys=names.map(x=>x.toLocaleLowerCase());
   msg.textContent='';
+  if(!TALENT_WORKER_ONLINE){msg.textContent='本地 Worker 离线；当前不会创建悬挂发布任务。';return;}
   if(!names.length||new Set(keys).size!==names.length){msg.textContent='请填写至少一名且不重复的 HR 姓名；候选人数可以留空。';return;}
   try{
     const r=await api('/api/talent/publications/today',{method:'POST',body:JSON.stringify({hr_names:names,manual_rows_per_hr:30})}),j=await r.json();

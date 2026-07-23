@@ -18,6 +18,7 @@ SCHEMA_MIGRATIONS = (
     ("20260722_recruiting_core_v2", "schema_20260722_recruiting_core_v2.sql"),
     ("20260722_talent_publication_queue_v1", "schema_20260722_talent_publication_queue_v1.sql"),
     ("20260722_talent_daily_publication_v2", "schema_20260722_talent_daily_publication_v2.sql"),
+    ("20260723_talent_worker_presence_v1", "schema_20260723_talent_worker_presence_v1.sql"),
 )
 
 
@@ -647,6 +648,47 @@ def list_talent_search_tasks(limit=50):
             (limit,),
         )
         return cur.fetchall()
+
+
+def upsert_talent_worker_presence(
+    worker_id, status, capabilities, version, started_at,
+):
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            """INSERT INTO talent_worker_presence
+               (worker_id, status, capabilities, version, started_at,
+                last_seen_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, now(), now())
+               ON CONFLICT (worker_id) DO UPDATE SET
+                 status=EXCLUDED.status,
+                 capabilities=EXCLUDED.capabilities,
+                 version=EXCLUDED.version,
+                 started_at=EXCLUDED.started_at,
+                 last_seen_at=now(),
+                 updated_at=now()
+               RETURNING *""",
+            (
+                worker_id,
+                status,
+                psycopg2.extras.Json(capabilities),
+                version,
+                started_at,
+            ),
+        )
+        return cur.fetchone()
+
+
+def get_latest_talent_worker_presence():
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            """SELECT * FROM talent_worker_presence
+               ORDER BY last_seen_at DESC LIMIT 1"""
+        )
+        return cur.fetchone()
 
 
 def get_talent_search_task(task_id):

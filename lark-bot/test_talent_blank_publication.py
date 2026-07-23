@@ -11,6 +11,14 @@ def main():
     bot.db.get_talent_daily_publication_by_date = (
         lambda _business_date: copy.deepcopy(stored["row"])
     )
+    bot.db.get_latest_talent_worker_presence = lambda: {
+        "worker_id": "windows-test",
+        "status": "idle",
+        "capabilities": {"search": True, "publication": True},
+        "version": "test-worker",
+        "started_at": datetime.datetime.now(datetime.timezone.utc),
+        "last_seen_at": datetime.datetime.now(datetime.timezone.utc),
+    }
     bot.db.operational_job_catalog = lambda statuses=("open",): [
         {
             "job_ref": "REQ-20260723-SALES",

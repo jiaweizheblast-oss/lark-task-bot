@@ -48,6 +48,14 @@ def main():
 
     bot.db.enqueue_talent_search_task = enqueue
     bot.db.get_talent_daily_publication_by_date = lambda _day: None
+    bot.db.get_latest_talent_worker_presence = lambda: {
+        "worker_id": "windows-test",
+        "status": "idle",
+        "capabilities": {"search": True, "publication": True},
+        "version": "test-worker",
+        "started_at": datetime.now(timezone.utc),
+        "last_seen_at": datetime.now(timezone.utc),
+    }
     bot.db.get_setting = lambda key: settings.get(key)
     bot.db.set_setting = lambda key, value: settings.__setitem__(key, value)
     bot.db.list_talent_search_tasks = lambda limit=50: list(stored.values())

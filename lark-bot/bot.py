@@ -67,6 +67,10 @@ WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间
 ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
 NEXUS_INTEGRATION_SIGNING_KEY = os.environ.get("NEXUS_INTEGRATION_SIGNING_KEY", "")
 NEXUS_TALENT_WORKER_TOKEN = os.environ.get("NEXUS_TALENT_WORKER_TOKEN", "")
+TALENT_WORKER_ONLINE_SECONDS = max(
+    20,
+    min(300, int(os.environ.get("TALENT_WORKER_ONLINE_SECONDS", "45") or 45)),
+)
 TG_AUTOMATION_API_URL = os.environ.get("TG_AUTOMATION_API_URL", "").strip().rstrip("/")
 TG_AUTOMATION_API_KEY = os.environ.get("TG_AUTOMATION_API_KEY", "").strip()
 
@@ -635,6 +639,126 @@ def _talent_worker_auth():
     return hmac.compare_digest(value, expected)
 
 
+def _talent_worker_status(required_capability=None):
+    try:
+        row = db.get_latest_talent_worker_presence()
+    except Exception as exc:
+        print("[talent_worker_status] unavailable:", type(exc).__name__)
+        row = None
+    if not row:
+        return {
+            "online": False,
+            "status": "offline",
+            "worker_id": None,
+            "version": None,
+            "capabilities": {},
+            "started_at": None,
+            "last_seen_at": None,
+            "stale_after_seconds": TALENT_WORKER_ONLINE_SECONDS,
+        }
+    last_seen = row.get("last_seen_at")
+    if isinstance(last_seen, str):
+        try:
+            last_seen = datetime.datetime.fromisoformat(
+                last_seen.replace("Z", "+00:00")
+            )
+        except ValueError:
+            last_seen = None
+    capabilities = dict(row.get("capabilities") or {})
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age_seconds = (
+        (now - last_seen).total_seconds()
+        if isinstance(last_seen, datetime.datetime) and last_seen.tzinfo is not None
+        else None
+    )
+    # Railway and the Windows host may differ by a few seconds without being stale.
+    fresh = (
+        age_seconds is not None
+        and -5 <= age_seconds <= TALENT_WORKER_ONLINE_SECONDS
+    )
+    capable = (
+        required_capability is None
+        or capabilities.get(required_capability) is True
+    )
+    online = bool(fresh and capable and row.get("status") != "stopping")
+    started_at = row.get("started_at")
+    return {
+        "online": online,
+        "status": row.get("status") if online else "offline",
+        "worker_id": row.get("worker_id"),
+        "version": row.get("version") or "",
+        "capabilities": capabilities,
+        "started_at": (
+            started_at.isoformat()
+            if isinstance(started_at, datetime.datetime)
+            else started_at
+        ),
+        "last_seen_at": last_seen.isoformat() if last_seen else None,
+        "stale_after_seconds": TALENT_WORKER_ONLINE_SECONDS,
+    }
+
+
+@app.route("/api/talent/worker-status", methods=["GET"])
+def api_talent_worker_status():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(_talent_worker_status())
+
+
+@app.route("/api/integration/v1/talent/workers/heartbeat", methods=["POST"])
+def api_talent_worker_presence_heartbeat():
+    if not _talent_worker_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        if set(body) != {
+            "worker_id", "status", "capabilities", "version", "started_at",
+        }:
+            raise ValueError("invalid worker heartbeat fields")
+        worker_id = talent_search_queue.valid_worker_id(body["worker_id"])
+        status = str(body["status"] or "")
+        if status not in {"starting", "idle", "working", "stopping"}:
+            raise ValueError("invalid worker status")
+        capabilities = body["capabilities"]
+        if (
+            not isinstance(capabilities, dict)
+            or set(capabilities) != {"search", "publication"}
+            or any(type(value) is not bool for value in capabilities.values())
+        ):
+            raise ValueError("invalid worker capabilities")
+        version = str(body["version"] or "")
+        if len(version) > 80:
+            raise ValueError("invalid worker version")
+        started_at = datetime.datetime.fromisoformat(
+            str(body["started_at"]).replace("Z", "+00:00")
+        )
+        if started_at.tzinfo is None:
+            raise ValueError("worker started_at must include a timezone")
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if started_at > now + datetime.timedelta(minutes=5):
+            raise ValueError("worker started_at is in the future")
+        row = db.upsert_talent_worker_presence(
+            worker_id,
+            status,
+            capabilities,
+            version,
+            started_at,
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({
+            "error": "invalid_worker_heartbeat",
+            "detail": str(exc),
+        }), 422
+    except Exception as exc:
+        print("[talent_worker_heartbeat] unavailable:", type(exc).__name__)
+        return jsonify({"error": "worker_heartbeat_unavailable"}), 503
+    return jsonify({
+        "status": "accepted",
+        "worker_id": row["worker_id"],
+        "server_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+
+
 def _search_task_json(row, *, include_payload=True, include_result=True):
     value = {
         "task_id": str(row["task_id"]),
@@ -819,6 +943,14 @@ def api_talent_search_task_create():
                     "running. Wait for it to finish instead of clicking again."
                 ),
             }), 409
+        if not _talent_worker_status("search")["online"]:
+            return jsonify({
+                "error": "talent_worker_offline",
+                "detail": (
+                    "The local Talent Worker is offline. Start it once or "
+                    "sign in to Windows and wait for the green Worker status."
+                ),
+            }), 409
         row, inserted = db.enqueue_talent_search_task(task)
         if inserted:
             current_names = _channel_roster()
@@ -859,6 +991,8 @@ def api_talent_search_task_retry(task_id):
         return jsonify({"error": "unauthorized"}), 401
     if (request.get_json(silent=True) or {}) != {"confirm": "RETRY_FAILED"}:
         return jsonify({"error": "retry_confirmation_required"}), 422
+    if not _talent_worker_status("search")["online"]:
+        return jsonify({"error": "talent_worker_offline"}), 409
     try:
         row = db.retry_failed_talent_search_task(task_id)
     except ValueError as exc:
@@ -877,6 +1011,8 @@ def api_talent_search_task_publish(task_id):
     """Manager approval queues local apply/publish; Railway never writes Lark."""
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
+    if not _talent_worker_status("publication")["online"]:
+        return jsonify({"ok": False, "error": "talent_worker_offline"}), 409
     try:
         result = _queue_talent_search_publication(task_id)
     except ValueError as exc:
@@ -952,6 +1088,14 @@ def api_talent_publication_today():
         existing = db.get_talent_daily_publication_by_date(business_date)
         if existing:
             return jsonify(_publication_status_json(existing))
+        if not _talent_worker_status("publication")["online"]:
+            return jsonify({
+                "error": "talent_worker_offline",
+                "detail": (
+                    "The local Talent Worker is offline. No publication was "
+                    "queued; wait for the green Worker status and click once."
+                ),
+            }), 409
         hr_names = talent_search_queue.normalize_hr_names(body.get("hr_names"))
         manual_rows = body.get("manual_rows_per_hr", 30)
         open_jobs = _daily_publication_open_jobs()
