@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = "talent-search-task-v3"
 TASK_TYPE = "preview_search"
 RESULT_SCHEMA_VERSION = "talent-search-result-v1"
-PUBLICATION_SCHEMA_VERSION = "talent-daily-publication-task-v3"
+PUBLICATION_SCHEMA_VERSION = "talent-daily-publication-task-v4"
 PUBLICATION_TASK_TYPE = "apply_and_publish_daily_recruiting_workbook"
 PUBLICATION_RECEIPT_SCHEMA_VERSION = "talent-daily-publication-receipt-v2"
 TERMINAL_STATUSES = {"succeeded", "shortfall", "failed", "cancelled"}
@@ -173,6 +173,24 @@ def normalize_open_jobs(value):
             "operational_job_ref": job_ref,
             "hiring_job_label": label,
         })
+    return result
+
+
+def normalize_source_channels(value):
+    if not isinstance(value, list) or not (1 <= len(value) <= 100):
+        raise ValueError("source_channels must contain 1 to 100 options")
+    result, seen = [], set()
+    for index, raw in enumerate(value, start=1):
+        label = " ".join(str(raw or "").split())
+        if not label or len(label) > 80:
+            raise ValueError(f"source_channels[{index}] is invalid")
+        key = label.casefold()
+        if key in seen:
+            raise ValueError("source_channels must be unique")
+        seen.add(key)
+        result.append(label)
+    if "other" not in seen:
+        raise ValueError("source_channels must include Other")
     return result
 
 
@@ -339,7 +357,7 @@ def build_publication_cohort(row, *, hiring_job_label):
 
 def build_publication_task(
     cohorts, *, publication_id, business_date, now=None, hr_names=None,
-    open_jobs=None, manual_rows_per_hr=30,
+    open_jobs=None, source_channels=None, manual_rows_per_hr=30,
 ):
     """Build one immutable daily workbook command.
 
@@ -385,6 +403,7 @@ def build_publication_task(
         ]
     hr_names = normalize_hr_names(hr_names)
     open_jobs = normalize_open_jobs(open_jobs)
+    source_channels = normalize_source_channels(source_channels)
     manual_rows_per_hr = _integer(
         manual_rows_per_hr, "manual_rows_per_hr", 1, 500
     )
@@ -413,6 +432,7 @@ def build_publication_task(
         "business_date": parsed_business_date.isoformat(),
         "hr_names": hr_names,
         "open_jobs": open_jobs,
+        "source_channels": source_channels,
         "manual_rows_per_hr": manual_rows_per_hr,
         "cohorts": cohorts,
         "total_contact_count": sum(

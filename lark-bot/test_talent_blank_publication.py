@@ -27,11 +27,12 @@ def main():
 
     def queue(publication_id, business_date, command, task_ids):
         assert task_ids == []
-        assert command["schema_version"] == "talent-daily-publication-task-v3"
+        assert command["schema_version"] == "talent-daily-publication-task-v4"
         assert command["cohorts"] == []
         assert command["total_contact_count"] == 0
         assert command["hr_names"] == ["JENNIFER", "SANDRINE"]
         assert command["manual_rows_per_hr"] == 30
+        assert command["source_channels"] == list(bot.channel_report.CHANNELS)
         assert [item["hiring_job_label"] for item in command["open_jobs"]] == [
             "Sales Member",
             "Customer Service Representative",

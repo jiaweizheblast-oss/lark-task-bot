@@ -144,7 +144,10 @@ def main():
     assert "candidate" not in " ".join(queued_commands[0]).casefold()
     assert len(queued_commands[0]["cohorts"]) == 2
     assert queued_commands[0]["total_contact_count"] == 3
-    assert queued_commands[0]["schema_version"] == "talent-daily-publication-task-v3"
+    assert queued_commands[0]["schema_version"] == "talent-daily-publication-task-v4"
+    assert queued_commands[0]["source_channels"] == list(
+        bot.channel_report.CHANNELS
+    )
     assert queued_commands[0]["hr_names"] == ["Asha", "Neha"]
     assert [item["hiring_job_label"] for item in queued_commands[0]["cohorts"]] == [
         "Customer Service Representative",
