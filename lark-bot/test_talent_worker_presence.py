@@ -35,8 +35,12 @@ def main():
     payload = {
         "worker_id": "windows-presence-test",
         "status": "idle",
-        "capabilities": {"search": True, "publication": True},
-        "version": "windows-worker-v2",
+        "capabilities": {
+            "search": True,
+            "publication": True,
+            "search_browser_ready": True,
+        },
+        "version": "windows-worker-v3",
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
@@ -52,6 +56,26 @@ def main():
     assert accepted.status_code == 200
     assert accepted.get_json()["status"] == "accepted"
 
+    legacy_payload = dict(payload)
+    legacy_payload["capabilities"] = {
+        "search": True,
+        "publication": True,
+    }
+    legacy = client.post(
+        "/api/integration/v1/talent/workers/heartbeat",
+        json=legacy_payload,
+        headers=worker_headers,
+    )
+    assert legacy.status_code == 200
+    assert stored["row"]["capabilities"]["search_browser_ready"] is False
+
+    accepted = client.post(
+        "/api/integration/v1/talent/workers/heartbeat",
+        json=payload,
+        headers=worker_headers,
+    )
+    assert accepted.status_code == 200
+
     assert client.get("/api/talent/worker-status").status_code == 401
     online = client.get(
         "/api/talent/worker-status",
@@ -62,7 +86,17 @@ def main():
     assert online.get_json()["capabilities"] == {
         "search": True,
         "publication": True,
+        "search_browser_ready": True,
     }
+    assert online.get_json()["search_ready"] is True
+    assert bot._talent_worker_status("search")["online"] is True
+
+    stored["row"]["capabilities"]["search_browser_ready"] = False
+    assert bot._talent_worker_status()["online"] is True
+    assert bot._talent_worker_status()["search_ready"] is False
+    assert bot._talent_worker_status("search")["online"] is False
+    assert bot._talent_worker_status("publication")["online"] is True
+    stored["row"]["capabilities"]["search_browser_ready"] = True
 
     stored["row"]["last_seen_at"] = (
         datetime.datetime.now(datetime.timezone.utc)

@@ -48,10 +48,15 @@ def main():
 
     bot.db.enqueue_talent_search_task = enqueue
     bot.db.get_talent_daily_publication_by_date = lambda _day: None
+    presence_capabilities = {
+        "search": True,
+        "publication": True,
+        "search_browser_ready": True,
+    }
     bot.db.get_latest_talent_worker_presence = lambda: {
         "worker_id": "windows-test",
         "status": "idle",
-        "capabilities": {"search": True, "publication": True},
+        "capabilities": dict(presence_capabilities),
         "version": "test-worker",
         "started_at": datetime.now(timezone.utc),
         "last_seen_at": datetime.now(timezone.utc),
@@ -111,6 +116,19 @@ def main():
         "budgets": {"max_total_observations": 800},
     }
     assert client.post("/api/talent/search-tasks", json=command).status_code == 401
+    presence_capabilities["search_browser_ready"] = False
+    browser_blocked = client.post(
+        "/api/talent/search-tasks",
+        json=command,
+        headers={"X-Auth": PANEL_PASSWORD},
+    )
+    assert browser_blocked.status_code == 409
+    assert (
+        browser_blocked.get_json()["error"]
+        == "talent_search_browser_not_ready"
+    )
+    assert not stored
+    presence_capabilities["search_browser_ready"] = True
     created = client.post(
         "/api/talent/search-tasks",
         json=command,

@@ -652,6 +652,7 @@ def _talent_worker_status(required_capability=None):
             "worker_id": None,
             "version": None,
             "capabilities": {},
+            "search_ready": False,
             "started_at": None,
             "last_seen_at": None,
             "stale_after_seconds": TALENT_WORKER_ONLINE_SECONDS,
@@ -676,11 +677,20 @@ def _talent_worker_status(required_capability=None):
         age_seconds is not None
         and -5 <= age_seconds <= TALENT_WORKER_ONLINE_SECONDS
     )
-    capable = (
-        required_capability is None
-        or capabilities.get(required_capability) is True
+    process_online = bool(fresh and row.get("status") != "stopping")
+    search_ready = bool(
+        process_online
+        and capabilities.get("search") is True
+        and capabilities.get("search_browser_ready") is True
     )
-    online = bool(fresh and capable and row.get("status") != "stopping")
+    if required_capability == "search":
+        capable = search_ready
+    else:
+        capable = (
+            required_capability is None
+            or capabilities.get(required_capability) is True
+        )
+    online = bool(process_online and capable)
     started_at = row.get("started_at")
     return {
         "online": online,
@@ -688,6 +698,7 @@ def _talent_worker_status(required_capability=None):
         "worker_id": row.get("worker_id"),
         "version": row.get("version") or "",
         "capabilities": capabilities,
+        "search_ready": search_ready,
         "started_at": (
             started_at.isoformat()
             if isinstance(started_at, datetime.datetime)
@@ -720,12 +731,25 @@ def api_talent_worker_presence_heartbeat():
         if status not in {"starting", "idle", "working", "stopping"}:
             raise ValueError("invalid worker status")
         capabilities = body["capabilities"]
+        required_capabilities = {"search", "publication"}
+        allowed_capabilities = required_capabilities | {"search_browser_ready"}
         if (
             not isinstance(capabilities, dict)
-            or set(capabilities) != {"search", "publication"}
+            or not required_capabilities.issubset(capabilities)
+            or not set(capabilities).issubset(allowed_capabilities)
             or any(type(value) is not bool for value in capabilities.values())
         ):
             raise ValueError("invalid worker capabilities")
+        capabilities = {
+            "search": capabilities["search"],
+            "publication": capabilities["publication"],
+            # Backward compatible rollout: an old Worker is online for
+            # publication, but cannot claim a search until it reports readiness.
+            "search_browser_ready": capabilities.get(
+                "search_browser_ready",
+                False,
+            ),
+        }
         version = str(body["version"] or "")
         if len(version) > 80:
             raise ValueError("invalid worker version")
@@ -943,12 +967,22 @@ def api_talent_search_task_create():
                     "running. Wait for it to finish instead of clicking again."
                 ),
             }), 409
-        if not _talent_worker_status("search")["online"]:
+        worker_status = _talent_worker_status()
+        if not worker_status["online"]:
             return jsonify({
                 "error": "talent_worker_offline",
                 "detail": (
-                    "The local Talent Worker is offline. Start it once or "
-                    "sign in to Windows and wait for the green Worker status."
+                    "The local Talent Worker is offline. Sign in to Windows "
+                    "and wait for the Worker status."
+                ),
+            }), 409
+        if not worker_status["search_ready"]:
+            return jsonify({
+                "error": "talent_search_browser_not_ready",
+                "detail": (
+                    "The Worker is online, but its dedicated Chrome search "
+                    "browser is not ready yet. Wait for the green search-ready "
+                    "status; no task was queued."
                 ),
             }), 409
         row, inserted = db.enqueue_talent_search_task(task)
@@ -991,8 +1025,11 @@ def api_talent_search_task_retry(task_id):
         return jsonify({"error": "unauthorized"}), 401
     if (request.get_json(silent=True) or {}) != {"confirm": "RETRY_FAILED"}:
         return jsonify({"error": "retry_confirmation_required"}), 422
-    if not _talent_worker_status("search")["online"]:
+    worker_status = _talent_worker_status()
+    if not worker_status["online"]:
         return jsonify({"error": "talent_worker_offline"}), 409
+    if not worker_status["search_ready"]:
+        return jsonify({"error": "talent_search_browser_not_ready"}), 409
     try:
         row = db.retry_failed_talent_search_task(task_id)
     except ValueError as exc:

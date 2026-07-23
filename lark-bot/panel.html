@@ -532,7 +532,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false, TALENT_SEARCH_READY=false;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -715,23 +715,30 @@ async function loadTalentWorkerStatus(){
   try{
     const response=await api('/api/talent/worker-status'),data=await response.json();
     TALENT_WORKER_ONLINE=!!(response.ok&&data.online);
+    TALENT_SEARCH_READY=!!(TALENT_WORKER_ONLINE&&data.search_ready);
     if(el){
-      el.textContent=TALENT_WORKER_ONLINE
-        ?`● Worker 在线${data.status==='working'?' · 正在处理':''}`
-        :'● Worker 离线';
-      el.style.color=TALENT_WORKER_ONLINE?'#15803d':'#b45309';
-      el.title=data.last_seen_at?`Last heartbeat: ${data.last_seen_at}`:'Windows 登录后 Worker 会自动启动';
+      el.textContent=!TALENT_WORKER_ONLINE
+        ?'● Worker 离线'
+        :TALENT_SEARCH_READY
+          ?`● Worker 在线 · 搜索浏览器就绪${data.status==='working'?' · 正在处理':''}`
+          :'● Worker 在线 · 搜索浏览器未就绪';
+      el.style.color=TALENT_SEARCH_READY?'#15803d':'#b45309';
+      el.title=data.last_seen_at
+        ?`Last heartbeat: ${data.last_seen_at}; search browser: ${TALENT_SEARCH_READY?'ready':'not ready'}`
+        :'Windows 登录后 Worker 和专用 Chrome 会自动启动';
     }
   }catch(e){
     TALENT_WORKER_ONLINE=false;
+    TALENT_SEARCH_READY=false;
     if(el){el.textContent='● Worker 状态不可用';el.style.color='#b91c1c';}
   }
   return TALENT_WORKER_ONLINE;
 }
 function setTalentFlowLocked(locked){
-  document.querySelectorAll(
-    '#view-talent button[onclick="queueTalentPreview()"], #view-talent button[onclick="createBlankTalentWorkbook()"]'
-  ).forEach(el=>{el.disabled=!!locked;});
+  const searchButton=document.querySelector('#view-talent button[onclick="queueTalentPreview()"]');
+  const blankButton=document.querySelector('#view-talent button[onclick="createBlankTalentWorkbook()"]');
+  if(searchButton)searchButton.disabled=!!(locked||!TALENT_SEARCH_READY);
+  if(blankButton)blankButton.disabled=!!(locked||!TALENT_WORKER_ONLINE);
 }
 function talentFlowCard(title,detail,tone='info',action=''){
   const colors={info:['#eff6ff','#1d4ed8'],working:['#fff7ed','#c2410c'],ready:['#ecfdf5','#15803d'],error:['#fef2f2','#b91c1c']};
@@ -820,9 +827,16 @@ async function loadTalentDailyFlow(){
         'Windows 登录后 Worker 会自动启动。变为绿色“Worker 在线”后只点击一次；当前不会创建悬挂搜索或发布任务。',
         'working'
       );
+    }else if(!locked&&!TALENT_SEARCH_READY){
+      root.innerHTML=talentFlowCard(
+        '专用搜索浏览器正在准备',
+        'Worker 已在线，但 Chrome 搜索连接尚未就绪。请等待状态变为绿色；此时仍可创建不需要搜索的空白今日表。',
+        'working'
+      );
     }
   }catch(e){
     TALENT_WORKER_ONLINE=false;
+    TALENT_SEARCH_READY=false;
     setTalentFlowLocked(true);
     root.innerHTML=talentFlowCard('无法读取今日流程','请检查网站连接后刷新，不要重复创建任务。','error');
   }
@@ -836,7 +850,7 @@ async function loadTalentDailyFlow(){
 }
 async function queueTalentPreview(){
   const msg=document.getElementById('tdSearchMessage'),{operational,profile}=selectedTalentSearch(),allocations=getHrAllocations(),quota=allocations.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0);msg.textContent='';
-  if(!TALENT_WORKER_ONLINE){msg.textContent='本地 Worker 离线；请等待页面显示绿色“Worker 在线”后只点击一次。';return;}
+  if(!TALENT_SEARCH_READY){msg.textContent='搜索暂不可用；请等待页面显示绿色“Worker 在线 · 搜索浏览器就绪”后只点击一次。';return;}
   if(!operational||!profile){msg.textContent='请选择一个已关联有效搜索条件的 Open 招聘职位。';return;}
   if(!Number.isInteger(quota)||quota<1||quota>200){msg.textContent='正式候选人数须为 1–200。';return;}
   const names=allocations.map(x=>x.name.toLocaleLowerCase());

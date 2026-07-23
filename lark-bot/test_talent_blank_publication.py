@@ -14,7 +14,11 @@ def main():
     bot.db.get_latest_talent_worker_presence = lambda: {
         "worker_id": "windows-test",
         "status": "idle",
-        "capabilities": {"search": True, "publication": True},
+        "capabilities": {
+            "search": True,
+            "publication": True,
+            "search_browser_ready": True,
+        },
         "version": "test-worker",
         "started_at": datetime.datetime.now(datetime.timezone.utc),
         "last_seen_at": datetime.datetime.now(datetime.timezone.utc),
