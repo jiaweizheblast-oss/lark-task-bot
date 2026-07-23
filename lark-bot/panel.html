@@ -476,6 +476,7 @@
           <div id="tdDailyFlowStatus" style="margin-top:10px"></div>
           <div id="tdSearchMessage" style="font-size:12px;margin-top:8px"></div>
         </div>
+        <div id="tdSearchConsole" class="acard" style="margin-bottom:14px"></div>
         <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>搜索任务队列</b><button class="btn ghost sm" onclick="loadTalentTasks()">刷新</button></div><div id="tdSearchTasks"></div></div>
         <div id="tdKpis" class="kpis"></div>
         <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>JOB REQS</b><span class="muted" style="padding:0">只显示 Job Reqs 中已创建并处于 Open 状态的职位</span></div><div id="tdJobs"></div></div>
@@ -536,7 +537,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false, TALENT_SEARCH_READY=false;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], TALENT_WORKER_STATE={}, TALENT_LATEST_TASKS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false, TALENT_SEARCH_READY=false;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -744,6 +745,7 @@ async function loadTalentWorkerStatus(){
     const response=await api('/api/talent/worker-status'),data=await response.json();
     TALENT_WORKER_ONLINE=!!(response.ok&&data.online);
     TALENT_SEARCH_READY=!!(TALENT_WORKER_ONLINE&&data.search_ready);
+    TALENT_WORKER_STATE=response.ok?data:{};
     if(el){
       el.textContent=!TALENT_WORKER_ONLINE
         ?'● Worker 离线'
@@ -758,6 +760,7 @@ async function loadTalentWorkerStatus(){
   }catch(e){
     TALENT_WORKER_ONLINE=false;
     TALENT_SEARCH_READY=false;
+    TALENT_WORKER_STATE={};
     if(el){el.textContent='● Worker 状态不可用';el.style.color='#b91c1c';}
   }
   return TALENT_WORKER_ONLINE;
@@ -794,6 +797,105 @@ function talentTaskProgressText(task){
   const label=job?job.title:(p.operational_job_ref||task.core_job_ref||'Search family');
   return `${label}: ${message}${['pending','claimed'].includes(task.status)?` (${percent}%)`:''}${stale?' · 心跳延迟，租约到期后系统会自动重排，不要重复点击':''}`;
 }
+const TALENT_WORKER_COMMANDS={
+  status:'powershell -ExecutionPolicy Bypass -File "C:\\Users\\Wyn\\Projects\\AI-Talent-Discovery\\scripts\\manage_nexus_worker_startup.ps1" -Action Status',
+  restart:'powershell -ExecutionPolicy Bypass -File "C:\\Users\\Wyn\\Projects\\AI-Talent-Discovery\\scripts\\manage_nexus_worker_startup.ps1" -Action Restart'
+};
+async function copyTalentCommand(kind){
+  const command=TALENT_WORKER_COMMANDS[kind]||'';
+  if(!command)return;
+  try{await navigator.clipboard.writeText(command);toast(kind==='restart'?'Worker 重启命令已复制':'Worker 状态检查命令已复制');}
+  catch(e){window.prompt('复制下面的 PowerShell 命令：',command);}
+}
+function talentPhaseGuidance(task){
+  if(!task)return {current:'尚未开始搜索',next:'选择招聘职位、填写 HR 分配，然后只点击一次“开始搜索并生成今日表”。'};
+  const phase=task.progress_phase||task.status||'queued';
+  const map={
+    queued:['任务已经安全排队','本地 Worker 将领取任务并准备只读搜索。'],
+    pending:['等待本地 Worker','Worker 在线后会自动领取；不要重复点击开始。'],
+    claimed:['Worker 已领取任务','准备公开搜索环境并开始扫描。'],
+    preparing:['正在准备职位条件与搜索预算','开始逐个查询公开搜索引擎。'],
+    scanning:['正在扫描公开搜索结果','继续换查询/备用引擎，随后统一去重与验证。'],
+    validating:['正在去重并核对公开职业与地点证据','冻结本次实际找到的候选人集合。'],
+    freezing:['正在写入并校验冻结结果','所有职位完成后只生成一张今日招聘表。'],
+    succeeded:['搜索结果已冻结并验证','自动进入统一表格发布，不会重新搜索。'],
+    shortfall:['本轮安全预算结束，人数仍有短缺','已找到的人会保留；浏览器就绪后可新建一次续搜补新人。'],
+    failed:['本轮已安全停止','先按下方提示修复原因，再使用“Retry same search”。']
+  };
+  const value=map[phase]||map[task.status]||['正在处理搜索任务','页面会每 5 秒更新，无需重复操作。'];
+  return {current:value[0],next:value[1]};
+}
+function talentAgeText(raw){
+  if(!raw)return'尚未收到';
+  const seconds=Math.max(0,Math.floor((Date.now()-new Date(raw).getTime())/1000));
+  if(seconds<60)return`${seconds} 秒前`;
+  return`${Math.floor(seconds/60)} 分钟前`;
+}
+function talentRecovery(task,counts){
+  const age=task?talentProgressAge(task):null;
+  const enginesTotal=Number(counts.engines_total||0),enginesUnavailable=Number(counts.engines_unavailable||0);
+  const allEnginesUnavailable=enginesTotal>0&&enginesUnavailable>=enginesTotal;
+  if(!TALENT_WORKER_ONLINE){
+    return {tone:'#b91c1c',title:'需要操作：本地 Worker 离线',detail:'先检查状态；如果仍为离线，再重启 Worker。重启后等待页面变绿。正在运行但租约中断的任务会在租约到期后自动重新排队，不要重复创建搜索。',actions:`<button class="btn ghost sm" onclick="copyTalentCommand('status')">复制状态检查命令</button> <button class="btn sm" onclick="copyTalentCommand('restart')">复制重启命令</button>`};
+  }
+  if(!TALENT_SEARCH_READY){
+    return {tone:'#b45309',title:'等待：专用搜索浏览器尚未就绪',detail:'Worker 会自动启动专用 Chrome。请等待约 60 秒；仍未就绪时重启 Worker。遇到 CAPTCHA、登录或访问限制时系统会安全停止，绝不会绕过验证。',actions:`<button class="btn sm" onclick="copyTalentCommand('restart')">复制重启命令</button>`};
+  }
+  if(task&&task.status==='claimed'&&age!==null&&age>150){
+    return {tone:'#b45309',title:'注意：任务进度超过 150 秒没有更新',detail:'不要再次点击开始搜索。Worker 每 45 秒续租；若进程确实中断，租约到期后服务器会自动把任务重新排队。可先检查 Worker 状态，离线时再重启。',actions:`<button class="btn ghost sm" onclick="copyTalentCommand('status')">复制状态检查命令</button> <button class="btn sm" onclick="copyTalentCommand('restart')">复制重启命令</button>`};
+  }
+  if(allEnginesUnavailable){
+    return {tone:'#b45309',title:'所有公开搜索引擎暂时不可用',detail:'本轮已经找到的候选人不会丢失。系统会保留结果并对受限引擎执行约 5 分钟冷却；不要绕过 CAPTCHA。若本轮最终显示 shortfall，搜索环境恢复后新建一次续搜，系统会跨次去重，只累积新人。',actions:''};
+  }
+  if(task&&task.status==='failed'){
+    return {tone:'#b91c1c',title:'搜索已安全停止',detail:`没有发布不完整表格。错误：${task.last_error_code||'unknown'}。Worker 与浏览器均为绿色后，在任务队列使用“Retry same search”；不要新建重复任务。`,actions:''};
+  }
+  if(task&&task.status==='shortfall'){
+    return {tone:'#b45309',title:'本轮找到了一部分人，但未达到目标',detail:'已找到的候选人已保存，不会拿 Review 等内部分类凑数。需要继续补人时只新建一次搜索；兼容的冻结结果会被复用，并自动排除重复候选人。',actions:''};
+  }
+  return {tone:'#15803d',title:'系统运行正常',detail:'Worker 每 15 秒报告在线；执行任务时约每 5 秒上报可见进度，并每 45 秒续租。页面每 5 秒自动刷新。搜索期间无需 Codex，也不要重复点击。',actions:''};
+}
+function renderTalentSearchConsole(tasks=TALENT_LATEST_TASKS){
+  const root=document.getElementById('tdSearchConsole');if(!root)return;
+  const active=tasks.filter(t=>['claimed','pending'].includes(t.status));
+  const task=active.find(t=>t.status==='claimed')||active[0]||tasks[0]||null;
+  const runId=task&&task.search_run_id;
+  const run=runId?tasks.filter(t=>t.search_run_id===runId):task?[task]:[];
+  const counts=run.reduce((out,t)=>{
+    const current=t.progress_counts||{};
+    ['results_scanned','candidates_found','queries_completed','queries_total','engines_total','engines_completed','engines_unavailable'].forEach(k=>out[k]=(out[k]||0)+Number(current[k]||0));
+    return out;
+  },{});
+  const running=run.filter(t=>['pending','claimed'].includes(t.status));
+  const percent=run.length?Math.round(run.reduce((n,t)=>n+Number(t.progress_percent||0),0)/run.length):0;
+  const guidance=talentPhaseGuidance(task);
+  const recovery=talentRecovery(task,counts);
+  const lastProgress=running.map(t=>t.last_progress_at||t.updated_at).filter(Boolean).sort().pop()||(task&&(task.last_progress_at||task.updated_at));
+  const lease=running.find(t=>t.status==='claimed'&&t.lease_expires_at);
+  const leaseText=lease?`租约有效至 ${new Date(lease.lease_expires_at).toLocaleTimeString()}（Worker 每 45 秒自动续租）`:'当前没有活动任务租约';
+  const enginesTotal=Number(counts.engines_total||0),enginesUnavailable=Number(counts.engines_unavailable||0);
+  const enginesReady=Math.max(0,enginesTotal-enginesUnavailable);
+  const workerSeen=TALENT_WORKER_STATE.last_seen_at?talentAgeText(TALENT_WORKER_STATE.last_seen_at):'尚未收到';
+  const statusColor=TALENT_SEARCH_READY?'#15803d':TALENT_WORKER_ONLINE?'#b45309':'#b91c1c';
+  const statusLabel=TALENT_SEARCH_READY?'在线且搜索就绪':TALENT_WORKER_ONLINE?'在线，浏览器准备中':'离线';
+  const metric=(label,value,help)=>`<div style="border:1px solid #e2e8f0;border-radius:10px;padding:10px;background:#fff"><div style="font-size:22px;font-weight:850">${esc(value)}</div><div style="font-size:12px;font-weight:700;margin-top:2px">${esc(label)}</div><div style="font-size:11px;color:#64748b;margin-top:3px">${esc(help)}</div></div>`;
+  root.innerHTML=`
+    <div class="acard-h" style="align-items:flex-start"><div><b>实时搜索控制台</b><div style="font-size:12px;color:#64748b;margin-top:3px">一个页面看清现在做什么、下一步做什么、是否需要你操作</div></div><div style="text-align:right;font-size:12px"><b style="color:${statusColor}">● Worker ${esc(statusLabel)}</b><div style="color:#64748b;margin-top:3px">在线心跳：${esc(workerSeen)} · 正常每 15 秒</div></div></div>
+    <div style="height:10px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin:5px 0 7px"><div style="height:100%;width:${Math.max(0,Math.min(100,percent))}%;background:linear-gradient(90deg,#4f46e5,#14b8a6);transition:width .35s"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:11px"><b>本轮总进度 ${percent}%</b><span style="color:#64748b">${run.length?`${run.filter(t=>['succeeded','shortfall','failed'].includes(t.status)).length}/${run.length} 个职位搜索已结束`:'尚无搜索任务'}</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px">
+      ${metric('已发现候选人',counts.candidates_found||0,'扫描阶段实时值；冻结时会统一去重')}
+      ${metric('已扫描公开结果',counts.results_scanned||0,'只读取公开搜索结果')}
+      ${metric('查询进度',`${counts.queries_completed||0}/${counts.queries_total||0}`,'完成查询 / 计划查询')}
+      ${metric('可用搜索引擎',enginesTotal?`${enginesReady}/${enginesTotal}`:'等待扫描','失败时自动切换备用引擎')}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin-top:10px">
+      <div style="border:1px solid #e2e8f0;border-radius:10px;padding:10px"><b style="font-size:12px">现在正在做什么</b><div style="margin-top:5px">${esc(task&&task.progress_message?task.progress_message:guidance.current)}</div><div style="font-size:11px;color:#64748b;margin-top:5px">最近进度：${esc(talentAgeText(lastProgress))}</div></div>
+      <div style="border:1px solid #e2e8f0;border-radius:10px;padding:10px"><b style="font-size:12px">接下来系统会做什么</b><div style="margin-top:5px">${esc(guidance.next)}</div><div style="font-size:11px;color:#64748b;margin-top:5px">${esc(leaseText)}</div></div>
+    </div>
+    <div style="border:1px solid ${recovery.tone}44;background:${recovery.tone}0d;border-radius:10px;padding:11px;margin-top:10px"><div style="font-weight:800;color:${recovery.tone}">${esc(recovery.title)}</div><div style="font-size:12px;line-height:1.6;margin-top:4px">${esc(recovery.detail)}</div>${recovery.actions?`<div style="margin-top:8px">${recovery.actions}</div>`:''}</div>
+    <details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;font-weight:700">Worker 检查与恢复说明</summary><div style="font-size:12px;line-height:1.7;color:#475569;margin-top:7px">正常：每 15 秒报告在线；执行搜索时约每 5 秒上报页面进度、每 45 秒续租。<br>检查：复制“状态检查命令”，在 Windows PowerShell 执行，STATE=Running 表示计划任务运行。<br>重启：仅在 Worker 离线、浏览器超过 60 秒仍未就绪、或进度超过 150 秒且确认进程异常时执行重启命令。<br>恢复：租约中断会自动重新排队；单个搜索引擎失败会换备用引擎；全部引擎受限会保留已有候选人并冷却。绝不要重复点击或绕过 CAPTCHA。</div></details>`;
+}
 function talentRunSummary(tasks){
   if(!tasks.length)return'';
   const done=tasks.filter(t=>['succeeded','shortfall','failed'].includes(t.status)).length;
@@ -815,6 +917,8 @@ async function loadTalentDailyFlow(){
     const tasks=(taskData.tasks||[]).filter(
       t=>t.status!=='cancelled'&&t.business_date===today
     );
+    TALENT_LATEST_TASKS=tasks;
+    renderTalentSearchConsole(tasks);
     const latest=tasks[0]||null;
     const latestRunId=latest&&latest.search_run_id;
     const runTasks=latestRunId?tasks.filter(t=>t.search_run_id===latestRunId):latest?[latest]:[];
@@ -903,6 +1007,7 @@ async function loadTalentDailyFlow(){
     TALENT_SEARCH_READY=false;
     setTalentFlowLocked(true);
     root.innerHTML=talentFlowCard('无法读取今日流程','请检查网站连接后刷新，不要重复创建任务。','error');
+    renderTalentSearchConsole(TALENT_LATEST_TASKS);
   }
   if(TALENT_FLOW_TIMER){clearTimeout(TALENT_FLOW_TIMER);TALENT_FLOW_TIMER=null;}
   const talentView=document.getElementById('view-talent');
@@ -997,6 +1102,8 @@ async function loadTalentTasks(){
   if(!root)return;
   try{
     const data=await(await api('/api/talent/search-tasks')).json(),tasks=(data.tasks||[]).filter(t=>t.status!=='cancelled');
+    TALENT_LATEST_TASKS=tasks;
+    renderTalentSearchConsole(tasks);
     if(!tasks.length){root.innerHTML='<div class="muted">还没有搜索任务。</div>';return;}
     const latestRunId=tasks.find(t=>t.search_run_id)?.search_run_id||null;
     const latestRun=latestRunId?tasks.filter(t=>t.search_run_id===latestRunId):[];
@@ -1012,12 +1119,14 @@ async function loadTalentTasks(){
       const retry=(t.status==='failed'||(t.status==='pending'&&Number(t.attempt_count||0)>=3))?` <button class="btn ghost sm" onclick="retryFailedTalentSearch('${esc(t.task_id)}')">Retry same search</button>`:'';
       const search=(t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting'))+retry;
       const progress=talentTaskProgressText(t);
+      const pc=t.progress_counts||{},pp=Math.max(0,Math.min(100,Number(t.progress_percent||0)));
+      const progressMeta=`发现 ${Number(pc.candidates_found||0)} · 扫描 ${Number(pc.results_scanned||0)} · 查询 ${Number(pc.queries_completed||0)}/${Number(pc.queries_total||0)}`;
       const ps=t.publication_status||'not_ready';
       const label=ps==='ready'?'Ready（将纳入今日统一表）':ps==='queued'?'等待本地 Worker':ps==='publishing'?'本地 Worker 正在导入并发布':ps==='failed'?'发布失败':ps;
       let publicationCell=esc(label);
       if(ps==='published')publicationCell=`<a href="${esc(pub.spreadsheet_url||'#')}" target="_blank" rel="noopener">Open Recruiting ${esc(pub.business_date||'')}</a>`;
       else if(['queued','publishing','failed'].includes(ps)&&pub.publication_id)publicationCell=`${esc(label)} <button class="btn ghost sm" onclick="resetTalentPublication('${esc(pub.publication_id)}')">取消本次发布</button>`;
-      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td><div>${esc(progress)}</div><div style="margin-top:4px">${search}</div></td><td>${publicationCell}</td></tr>`;
+      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td><div>${esc(progress)}</div><div style="height:6px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin:6px 0 4px"><div style="height:100%;width:${pp}%;background:#4f46e5"></div></div><div style="font-size:11px;color:#64748b">${esc(progressMeta)}</div><div style="margin-top:4px">${search}</div></td><td>${publicationCell}</td></tr>`;
     }).join('');
     root.innerHTML=`${runSummary?`<div style="border:1px solid #bfdbfe;background:#eff6ff;border-radius:9px;padding:9px 11px;margin-bottom:10px;font-size:12px;line-height:1.55">${esc(runSummary)}</div>`:''}<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">完成全部职位族后只发布一次；页面每 5 秒刷新。心跳中断会自动超时重排，不需要重复点击。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>搜索职位族</th><th>配额</th><th>HR 分配</th><th>实时进度</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
   }catch(e){root.innerHTML='<div class="muted">搜索队列暂不可用。</div>';}
