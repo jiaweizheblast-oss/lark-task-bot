@@ -151,7 +151,26 @@ def main():
     assert len(queued_commands) == 1
     assert lark_calls == []
 
+    worker_token = "publication-worker-token-with-at-least-32-characters"
+    publication_payload = copy.deepcopy(queued_commands[0])
+    bot.NEXUS_TALENT_WORKER_TOKEN = worker_token
+    bot.db.claim_talent_daily_publication = lambda worker_id, lease_seconds: (
+        {
+            "publication_id": publication_payload["publication_id"],
+            "payload": publication_payload,
+        },
+        "publication-route-lease-token-with-at-least-32-characters",
+    )
+    claimed = bot.app.test_client().post(
+        "/api/integration/v1/talent/publications/claim",
+        json={"worker_id": "windows-publication-test", "lease_seconds": 120},
+        headers={"Authorization": f"Bearer {worker_token}"},
+    )
+    assert claimed.status_code == 200
+    assert claimed.get_json()["task"] == publication_payload
+
     print("Manager approval queues a local-worker publication: PASSED")
+    print("Publication claim returns the immutable payload: PASSED")
     print("Preview completion and Railway Lark writes: BLOCKED")
 
 

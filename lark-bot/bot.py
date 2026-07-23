@@ -918,7 +918,7 @@ def api_talent_publication_claim():
     if not claimed:
         return jsonify({"task": None}), 200
     row, lease_token = claimed
-    return jsonify({"task": row["publication"], "lease_token": lease_token})
+    return jsonify({"task": row["payload"], "lease_token": lease_token})
 
 
 @app.route(
