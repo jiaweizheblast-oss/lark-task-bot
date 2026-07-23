@@ -1090,6 +1090,7 @@ def _publication_status_json(row):
         "spreadsheet_url": receipt.get("spreadsheet_url"),
         "error_code": receipt.get("error_code"),
         "can_reset": status == "failed",
+        "can_replace_unused": status == "published",
         "requires_local_worker": status in {"queued", "publishing"},
     }
 
@@ -1209,6 +1210,64 @@ def api_talent_publication_reset(publication_id):
         print("[talent_publication_reset] unavailable:", type(exc).__name__)
         return jsonify({"error": "publication_reset_unavailable"}), 503
     return jsonify(result)
+
+
+@app.route(
+    "/api/talent/publications/<publication_id>/replace-unused",
+    methods=["POST"],
+)
+def api_talent_publication_replace_unused(publication_id):
+    """Queue a new revision while retaining the unused old Lark workbook."""
+
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    if body != {"confirm": "REPLACE_UNUSED_PUBLISHED"}:
+        return jsonify({"error": "replacement_confirmation_required"}), 422
+    try:
+        current = db.get_talent_daily_publication(publication_id)
+        if not current:
+            raise ValueError("published recruiting table no longer exists")
+        if current.get("status") != "published":
+            raise ValueError("only a published recruiting table can be replaced")
+        if str(current.get("business_date") or "") != _kolkata_today().isoformat():
+            raise ValueError("only today's unused recruiting table can be replaced")
+        if not _talent_worker_status("publication")["online"]:
+            raise ValueError("the local Talent Worker is offline")
+        next_revision = int(current.get("revision") or 1) + 1
+        replacement_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "nexus-recruiting-replacement:"
+            + str(publication_id)
+            + ":"
+            + str(next_revision),
+        ))
+        replacement = talent_search_queue.build_replacement_publication_task(
+            dict(current.get("payload") or {}),
+            publication_id=replacement_id,
+        )
+        queued = db.replace_published_talent_daily_publication(
+            publication_id,
+            current["payload_sha256"],
+            replacement,
+        )
+    except ValueError as exc:
+        return jsonify({
+            "error": "publication_replacement_rejected",
+            "detail": str(exc),
+        }), 409
+    except Exception as exc:
+        print("[talent_publication_replacement] unavailable:", type(exc).__name__)
+        return jsonify({"error": "publication_replacement_unavailable"}), 503
+    return jsonify({
+        "ok": True,
+        "status": queued.get("status") or "queued",
+        "business_date": replacement["business_date"],
+        "publication_id": replacement_id,
+        "revision": replacement["revision"],
+        "requires_local_worker": True,
+        "old_lark_workbook_retained": True,
+    }), 201
 
 
 @app.route("/api/integration/v1/talent/search-tasks/claim", methods=["POST"])

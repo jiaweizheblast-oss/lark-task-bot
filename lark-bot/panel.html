@@ -769,7 +769,7 @@ async function loadTalentDailyFlow(){
         `${today} 今日招聘表已完成`,
         '搜索结果、HR 分配和 Overview 已固定在同一张表中。重复操作不会生成第二张表。',
         'ready',
-        `<a class="btn sm" href="${esc(publication.spreadsheet_url)}" target="_blank" rel="noopener">打开今日招聘表</a>`
+        `<a class="btn sm" href="${esc(publication.spreadsheet_url)}" target="_blank" rel="noopener">打开今日招聘表</a> ${publication.can_replace_unused?`<button class="btn ghost sm" onclick="replaceUnusedTalentPublication('${esc(publication.publication_id)}')">重建今日表（旧表未提交）</button>`:''}`
       );
     }else if(['queued','publishing'].includes(publication.status)){
       locked=true;
@@ -908,6 +908,22 @@ async function resetTalentPublication(publicationId){
     if(!r.ok)throw new Error(j.detail||j.error||'Reset failed');
     toast('Unpublished recruiting table run reset. No Lark table or candidate history was deleted.');
     await loadTalentTasks();
+  }catch(e){toast(e.message,true);}
+}
+async function replaceUnusedTalentPublication(publicationId){
+  if(!publicationId)return;
+  const accepted=confirm(
+    '仅当旧表从未提交时才可继续。旧 Lark 文件会保留作审计，但之后只有新版本可以提交。系统会沿用同一批冻结候选人、HR 分配、职位和渠道，不会重新搜索。确认重建吗？'
+  );
+  if(!accepted)return;
+  try{
+    const r=await api('/api/talent/publications/'+encodeURIComponent(publicationId)+'/replace-unused',{
+      method:'POST',
+      body:JSON.stringify({confirm:'REPLACE_UNUSED_PUBLISHED'})
+    }),j=await r.json();
+    if(!r.ok)throw new Error(j.detail||j.error||'重建被拒绝');
+    toast('新版本已排入 Worker；旧 Lark 文件已保留。');
+    await Promise.all([loadTalentDailyFlow(),loadTalentTasks()]);
   }catch(e){toast(e.message,true);}
 }
 async function loadTalentTasks(){

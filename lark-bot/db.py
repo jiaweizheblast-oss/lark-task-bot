@@ -19,6 +19,7 @@ SCHEMA_MIGRATIONS = (
     ("20260722_talent_publication_queue_v1", "schema_20260722_talent_publication_queue_v1.sql"),
     ("20260722_talent_daily_publication_v2", "schema_20260722_talent_daily_publication_v2.sql"),
     ("20260723_talent_worker_presence_v1", "schema_20260723_talent_worker_presence_v1.sql"),
+    ("20260724_talent_publication_replacement_v1", "schema_20260724_talent_publication_replacement_v1.sql"),
 )
 
 
@@ -1057,6 +1058,114 @@ def reset_talent_daily_publication(publication_id):
             "reset": True,
             "task_count": len(task_ids),
         }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def replace_published_talent_daily_publication(
+    publication_id,
+    expected_payload_sha256,
+    replacement,
+):
+    """Archive a published command and atomically queue its new revision."""
+
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """SELECT * FROM talent_daily_publication
+                   WHERE publication_id=%s FOR UPDATE""",
+                (publication_id,),
+            )
+            current = cur.fetchone()
+            if not current:
+                raise ValueError("published recruiting table no longer exists")
+            if current["status"] != "published":
+                raise ValueError("only a published recruiting table can be replaced")
+            if current["payload_sha256"] != expected_payload_sha256:
+                raise ValueError("published recruiting table changed; refresh and retry")
+            if str(replacement.get("business_date")) != str(current["business_date"]):
+                raise ValueError("replacement business date does not match")
+            if int(replacement.get("revision") or 0) != int(current["revision"]) + 1:
+                raise ValueError("replacement revision is invalid")
+            replacement_id = replacement["publication_id"]
+            cur.execute(
+                """SELECT task_id FROM talent_daily_publication_item
+                   WHERE publication_id=%s ORDER BY cohort_order""",
+                (publication_id,),
+            )
+            task_ids = [str(row["task_id"]) for row in cur.fetchall()]
+            cur.execute(
+                """INSERT INTO talent_daily_publication_archive
+                   (publication_id,business_date,revision,status,payload,
+                    payload_sha256,receipt,task_ids,replacement_publication_id)
+                   VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s)""",
+                (
+                    current["publication_id"],
+                    current["business_date"],
+                    current["revision"],
+                    current["status"],
+                    psycopg2.extras.Json(current["payload"]),
+                    current["payload_sha256"],
+                    psycopg2.extras.Json(current["receipt"] or {}),
+                    psycopg2.extras.Json(task_ids),
+                    replacement_id,
+                ),
+            )
+            cur.execute(
+                "DELETE FROM talent_daily_publication_item WHERE publication_id=%s",
+                (publication_id,),
+            )
+            cur.execute(
+                "DELETE FROM talent_daily_publication WHERE publication_id=%s",
+                (publication_id,),
+            )
+            cur.execute(
+                """INSERT INTO talent_daily_publication
+                   (publication_id,business_date,revision,status,payload,payload_sha256)
+                   VALUES (%s,%s,%s,'queued',%s::jsonb,%s)
+                   RETURNING *""",
+                (
+                    replacement_id,
+                    current["business_date"],
+                    replacement["revision"],
+                    psycopg2.extras.Json(replacement),
+                    replacement["payload_sha256"],
+                ),
+            )
+            queued = cur.fetchone()
+            if task_ids:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """INSERT INTO talent_daily_publication_item
+                       (publication_id,task_id,cohort_order) VALUES %s""",
+                    [
+                        (replacement_id, task_id, index)
+                        for index, task_id in enumerate(task_ids, start=1)
+                    ],
+                )
+                cur.execute(
+                    """UPDATE talent_search_task
+                       SET publication_status='queued',
+                           publication=%s::jsonb, updated_at=now()
+                       WHERE task_id = ANY(%s::uuid[])""",
+                    (
+                        psycopg2.extras.Json({
+                            "publication_id": replacement_id,
+                            "business_date": str(current["business_date"]),
+                            "payload_sha256": replacement["payload_sha256"],
+                        }),
+                        task_ids,
+                    ),
+                )
+        conn.commit()
+        return queued
     except Exception:
         conn.rollback()
         raise

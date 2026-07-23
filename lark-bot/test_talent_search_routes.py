@@ -11,6 +11,11 @@ def main():
     bot.PANEL_PASSWORD = PANEL_PASSWORD
     bot.NEXUS_TALENT_WORKER_TOKEN = WORKER_TOKEN
     bot._kolkata_today = lambda: date(2026, 7, 23)
+    original_build_task = bot.talent_search_queue.build_task
+    bot.talent_search_queue.build_task = lambda command: original_build_task(
+        command,
+        now=datetime(2026, 7, 23, 12, tzinfo=timezone.utc),
+    )
     stored = {}
     settings = {}
     publication_calls = []

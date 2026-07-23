@@ -448,6 +448,47 @@ def build_publication_task(
     return command
 
 
+def build_replacement_publication_task(
+    existing,
+    *,
+    publication_id,
+    now=None,
+):
+    """Clone an immutable published command into a short-lived new revision.
+
+    The cohort, HR allocation, job catalog, and source catalog remain exactly
+    the same.  Only publication identity, revision, and expiry metadata change.
+    """
+
+    if not isinstance(existing, dict):
+        raise ValueError("existing publication must be an object")
+    command = json.loads(json.dumps(existing))
+    if command.get("schema_version") != PUBLICATION_SCHEMA_VERSION:
+        raise ValueError("unsupported existing publication schema")
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    expires_at = current + timedelta(hours=24)
+    try:
+        new_id = str(uuid.UUID(str(publication_id)))
+    except ValueError as error:
+        raise ValueError("publication_id is invalid") from error
+    old_revision = _integer(command.get("revision"), "revision", 1, 1000000)
+    command["publication_id"] = new_id
+    command["revision"] = old_revision + 1
+    command["created_at"] = current.isoformat()
+    command["expires_at"] = expires_at.isoformat()
+    cohorts = command.get("cohorts")
+    if not isinstance(cohorts, list):
+        raise ValueError("existing publication cohorts are invalid")
+    for cohort in cohorts:
+        if not isinstance(cohort, dict):
+            raise ValueError("existing publication cohort is invalid")
+        cohort["frozen_plan_expires_at"] = expires_at.isoformat()
+    command["cohort_manifest_sha256"] = sha256(cohorts)
+    command.pop("payload_sha256", None)
+    command["payload_sha256"] = sha256(command)
+    return command
+
+
 def validate_publication_receipt(value, *, command):
     if not isinstance(value, dict):
         raise ValueError("publication receipt must be an object")
