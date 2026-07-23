@@ -67,6 +67,8 @@ WORK_END = int(os.environ.get("WORK_END", "22") or 22)            # 工作时间
 ESCALATE_DAYS = int(os.environ.get("OVERDUE_ESCALATE_DAYS", "2") or 2)
 NEXUS_INTEGRATION_SIGNING_KEY = os.environ.get("NEXUS_INTEGRATION_SIGNING_KEY", "")
 NEXUS_TALENT_WORKER_TOKEN = os.environ.get("NEXUS_TALENT_WORKER_TOKEN", "")
+TG_AUTOMATION_API_URL = os.environ.get("TG_AUTOMATION_API_URL", "").strip().rstrip("/")
+TG_AUTOMATION_API_KEY = os.environ.get("TG_AUTOMATION_API_KEY", "").strip()
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(LARK_DOMAIN).build()
 
@@ -560,6 +562,71 @@ def _panel_auth():
     return pw == PANEL_PASSWORD
 
 
+def _tg_headers():
+    headers = {"X-NEXUS-ACTOR": "nexus-panel"}
+    if TG_AUTOMATION_API_KEY:
+        headers["X-NEXUS-API-KEY"] = TG_AUTOMATION_API_KEY
+    return headers
+
+
+def _tg_request(method, path, **kwargs):
+    if not TG_AUTOMATION_API_URL:
+        return None, {"error": "tg_automation_not_configured"}
+    headers = dict(_tg_headers())
+    headers.update(kwargs.pop("headers", {}) or {})
+    try:
+        response = requests.request(
+            method,
+            TG_AUTOMATION_API_URL + path,
+            headers=headers,
+            timeout=25,
+            **kwargs,
+        )
+    except requests.RequestException:
+        return None, {"error": "tg_automation_unavailable"}
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"error": "tg_automation_invalid_response"}
+    return response, payload
+
+
+def _tg_parse_buttons(form):
+    """Parse up to 5 link buttons. Accepts a `buttons` JSON array
+    (list of {label,url}); falls back to legacy single button_label/button_url."""
+    raw = form.get("buttons")
+    items = []
+    if raw:
+        try:
+            arr = json.loads(raw)
+        except (ValueError, TypeError):
+            return [], "buttons_invalid"
+        if not isinstance(arr, list):
+            return [], "buttons_invalid"
+        for entry in arr:
+            if not isinstance(entry, dict):
+                return [], "buttons_invalid"
+            label = (entry.get("label") or "").strip()
+            url = (entry.get("url") or entry.get("value") or "").strip()
+            if not label or not url:
+                return [], "button_incomplete"
+            items.append((label, url))
+    else:
+        label = (form.get("button_label") or "").strip()
+        url = (form.get("button_url") or "").strip()
+        if bool(label) != bool(url):
+            return [], "button_incomplete"
+        if label and url:
+            items.append((label, url))
+    if len(items) > 5:
+        return [], "too_many_buttons"
+    buttons = [
+        {"label": label[:64], "value": url, "row": index // 2, "position": index % 2}
+        for index, (label, url) in enumerate(items)
+    ]
+    return buttons, None
+
+
 def _talent_worker_auth():
     if len(NEXUS_TALENT_WORKER_TOKEN) < 32:
         return False
@@ -590,23 +657,6 @@ def _search_task_json(row, *, include_payload=True, include_result=True):
     ):
         current = row.get(field)
         value[field] = current.isoformat() if current is not None else None
-    created_at = row.get("created_at")
-    if isinstance(created_at, str):
-        try:
-            created_at = datetime.datetime.fromisoformat(
-                created_at.replace("Z", "+00:00")
-            )
-        except ValueError:
-            created_at = None
-    if isinstance(created_at, datetime.datetime) and created_at.tzinfo is not None:
-        company_tz = datetime.timezone(
-            datetime.timedelta(hours=COMPANY_TZ_OFFSET)
-        )
-        value["business_date"] = (
-            created_at.astimezone(company_tz).date().isoformat()
-        )
-    else:
-        value["business_date"] = None
     if include_payload:
         value["payload"] = row.get("payload")
     if include_result:
@@ -686,72 +736,6 @@ def api_talent_search_task_create():
             return jsonify({"error": "operational_job_not_open"}), 409
         if operational_job.get("search_profile_ref") != task["core_job_ref"]:
             return jsonify({"error": "job_search_profile_mismatch"}), 409
-        business_date = _kolkata_today()
-        existing_publication = db.get_talent_daily_publication_by_date(
-            business_date
-        )
-        if existing_publication:
-            status = _publication_status_json(existing_publication)
-            return jsonify({
-                **status,
-                "error": "daily_table_already_exists",
-                "detail": (
-                    "Today already has one recruiting-table run. "
-                    "Open or resume that run instead of creating another."
-                ),
-            }), 409
-        company_tz = datetime.timezone(
-            datetime.timedelta(hours=COMPANY_TZ_OFFSET)
-        )
-        for existing in db.list_talent_search_tasks(limit=100):
-            created_at = existing.get("created_at")
-            if isinstance(created_at, str):
-                try:
-                    created_at = datetime.datetime.fromisoformat(
-                        created_at.replace("Z", "+00:00")
-                    )
-                except ValueError:
-                    continue
-            publication_status = (
-                existing.get("publication_status") or "not_ready"
-            )
-            existing_run_active = (
-                existing.get("status") in {"pending", "claimed"}
-                or (
-                    existing.get("status") == "succeeded"
-                    and publication_status
-                    in {"ready", "queued", "publishing", "failed", "published"}
-                )
-            )
-            if (
-                not isinstance(created_at, datetime.datetime)
-                or created_at.tzinfo is None
-                or created_at.astimezone(company_tz).date() != business_date
-                or not existing_run_active
-            ):
-                continue
-            payload = existing.get("payload") or {}
-            same_command = all((
-                payload.get("operational_job_ref")
-                == task["operational_job_ref"],
-                payload.get("core_job_ref") == task["core_job_ref"],
-                payload.get("requested_contact_count")
-                == task["requested_contact_count"],
-                payload.get("hr_allocations") == task["hr_allocations"],
-            ))
-            if same_command:
-                return jsonify({
-                    "status": "unchanged",
-                    "idempotent": True,
-                    "task": _search_task_json(existing),
-                }), 200
-            return jsonify({
-                "error": "daily_search_already_running",
-                "detail": (
-                    "Another search for today's recruiting table is already "
-                    "running. Wait for it to finish instead of clicking again."
-                ),
-            }), 409
         row, inserted = db.enqueue_talent_search_task(task)
         if inserted:
             current_names = _channel_roster()
@@ -854,33 +838,16 @@ def _publication_status_json(row):
     }
 
 
-@app.route("/api/talent/publications/today", methods=["GET", "POST"])
+@app.route("/api/talent/publications/today", methods=["POST"])
 def api_talent_publication_today():
-    """Read or create the one recruiting workbook for today's business date."""
+    """Create today's recruiting workbook without requiring a search."""
 
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
-    business_date = _kolkata_today()
-    if request.method == "GET":
-        try:
-            existing = db.get_talent_daily_publication_by_date(business_date)
-        except Exception as exc:
-            print("[talent_daily_status] unavailable:", type(exc).__name__)
-            return jsonify({"error": "daily_publication_status_unavailable"}), 503
-        if not existing:
-            return jsonify({
-                "ok": True,
-                "status": "not_started",
-                "idempotent": True,
-                "business_date": business_date.isoformat(),
-                "publication_id": "",
-                "spreadsheet_url": None,
-                "requires_local_worker": False,
-            })
-        return jsonify(_publication_status_json(existing))
     body = request.get_json(silent=True) or {}
     if set(body) - {"hr_names", "manual_rows_per_hr"}:
         return jsonify({"error": "invalid_blank_publication_fields"}), 422
+    business_date = _kolkata_today()
     try:
         existing = db.get_talent_daily_publication_by_date(business_date)
         if existing:
@@ -1247,6 +1214,141 @@ def api_config():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"tz_label": TZ_LABEL, "tz_offset": COMPANY_TZ_OFFSET,
                     "work_start": WORK_START, "work_end": WORK_END})
+
+
+@app.route("/api/tg/status")
+def api_tg_status():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    response, payload = _tg_request("GET", "/health")
+    if response is None:
+        return jsonify({"connected": False, **payload}), 503
+    data = payload.get("data") or {}
+    return jsonify({
+        "connected": response.ok and data.get("status") == "ok",
+        "sending_enabled": bool(data.get("sending_enabled")),
+        "environment": data.get("environment"),
+    }), 200 if response.ok else 502
+
+
+@app.route("/api/tg/destinations")
+def api_tg_destinations():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    response, payload = _tg_request(
+        "GET", "/api/v1/tg/destinations", params={"is_test": "true"}
+    )
+    if response is None:
+        return jsonify(payload), 503
+    if not response.ok:
+        return jsonify({"error": "tg_destination_lookup_failed"}), 502
+    destinations = [
+        item for item in (payload.get("data") or [])
+        if item.get("is_test") and item.get("status") == "ENABLED"
+    ]
+    return jsonify({"destinations": destinations})
+
+
+@app.route("/api/tg/send-test", methods=["POST"])
+def api_tg_send_test():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if request.content_length and request.content_length > 11 * 1024 * 1024:
+        return jsonify({"error": "image_too_large"}), 413
+    photo = request.files.get("photo")
+    destination_id = (request.form.get("destination_id") or "").strip()
+    caption = (request.form.get("caption") or "").strip()
+    if not photo or not photo.filename:
+        return jsonify({"error": "photo_required"}), 422
+    if not destination_id:
+        return jsonify({"error": "destination_required"}), 422
+    if not caption or len(caption) > 1024:
+        return jsonify({"error": "caption_invalid"}), 422
+    buttons, button_error = _tg_parse_buttons(request.form)
+    if button_error:
+        return jsonify({"error": button_error}), 422
+    files = {
+        "photo": (
+            photo.filename,
+            photo.stream,
+            photo.mimetype or "application/octet-stream",
+        )
+    }
+    response, payload = _tg_request(
+        "POST",
+        f"/api/v1/tg/destinations/{destination_id}/send-test-upload",
+        data={"caption": caption, "buttons": json.dumps(buttons)},
+        files=files,
+    )
+    if response is None:
+        return jsonify(payload), 503
+    if not response.ok:
+        upstream_error = payload.get("error") or {}
+        return jsonify({
+            "error": upstream_error.get("code") or "tg_test_send_failed",
+            "message": upstream_error.get("message") or "Telegram test send failed",
+        }), response.status_code if 400 <= response.status_code < 500 else 502
+    return jsonify({"ok": True, "result": payload.get("data") or {}})
+
+
+@app.route("/api/tg/schedules", methods=["GET", "POST"])
+def api_tg_schedules():
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if request.method == "GET":
+        response, payload = _tg_request("GET", "/api/v1/tg/test-schedules")
+        if response is None:
+            return jsonify(payload), 503
+        if not response.ok:
+            return jsonify({"error": "tg_schedule_lookup_failed"}), 502
+        return jsonify({"schedules": payload.get("data") or []})
+
+    if request.content_length and request.content_length > 11 * 1024 * 1024:
+        return jsonify({"error": "image_too_large"}), 413
+    photo = request.files.get("photo")
+    destination_id = (request.form.get("destination_id") or "").strip()
+    caption = (request.form.get("caption") or "").strip()
+    schedule_date = (request.form.get("schedule_date") or "").strip()
+    time_slot = (request.form.get("time_slot") or "").strip()
+    button_label = (request.form.get("button_label") or "").strip()
+    button_url = (request.form.get("button_url") or "").strip()
+    if not photo or not photo.filename:
+        return jsonify({"error": "photo_required"}), 422
+    if not destination_id or not caption or len(caption) > 1024:
+        return jsonify({"error": "schedule_fields_invalid"}), 422
+    if not schedule_date or time_slot not in {"09:00", "15:00", "21:00"}:
+        return jsonify({"error": "schedule_time_invalid"}), 422
+    if bool(button_label) != bool(button_url):
+        return jsonify({"error": "button_incomplete"}), 422
+    files = {
+        "photo": (
+            photo.filename,
+            photo.stream,
+            photo.mimetype or "application/octet-stream",
+        )
+    }
+    response, payload = _tg_request(
+        "POST",
+        "/api/v1/tg/test-schedules",
+        data={
+            "destination_id": destination_id,
+            "caption": caption,
+            "schedule_date": schedule_date,
+            "time_slot": time_slot,
+            "button_label": button_label,
+            "button_url": button_url,
+        },
+        files=files,
+    )
+    if response is None:
+        return jsonify(payload), 503
+    if not response.ok:
+        upstream_error = payload.get("error") or {}
+        return jsonify({
+            "error": upstream_error.get("code") or "tg_schedule_failed",
+            "message": upstream_error.get("message") or "Telegram scheduling failed",
+        }), response.status_code if 400 <= response.status_code < 500 else 502
+    return jsonify({"ok": True, "result": payload.get("data") or {}})
 
 
 @app.route("/api/settings", methods=["GET"])

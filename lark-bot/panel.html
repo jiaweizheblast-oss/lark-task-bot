@@ -242,6 +242,12 @@
             <button onclick="openExtSettings()">🤖 Groups &amp; Bot</button>
           </div>
         </div>
+        <div class="navgroup">
+          <div class="navhead" onclick="toggleGroup(this)">Automation</div>
+          <div class="navitems">
+            <button id="tab-tg" onclick="showTab('tg')">TG Automation</button>
+          </div>
+        </div>
       </nav>
       <div class="sidefoot">
         <button class="btn ghost sm" onclick="logout()">Log out</button>
@@ -249,6 +255,32 @@
     </aside>
     <main class="main">
   <div class="wrap">
+    <section id="view-tg" class="hide">
+      <div class="home-head">
+        <div><h2 style="margin:0">TG Automation</h2><span class="muted" style="padding:3px 0 0">Test publishing only</span></div>
+        <span id="tgStatus" class="muted" style="padding:0">Checking connection...</span>
+      </div>
+      <div class="form-card">
+        <div class="field"><label>Test channel or group *</label><select id="tgDestination"><option value="">Loading...</option></select></div>
+        <div class="field"><label>Image *</label><input id="tgPhoto" type="file" accept="image/jpeg,image/png,image/webp" onchange="tgCheckImage()"><div id="tgImgInfo" class="muted" style="font-size:12px;padding:4px 0 0"></div><img id="tgImgPreview" alt="" style="display:none;max-width:180px;border-radius:8px;margin-top:6px"></div>
+        <div class="field"><label>Caption *</label><textarea id="tgCaption" maxlength="1024" placeholder="Write the public Telegram caption" oninput="tgCount()"></textarea><div id="tgCount" class="muted" style="text-align:right;font-size:12px;padding:2px 0 0">0 / 1024</div></div>
+        <div class="field"><label>链接按钮(最多 5 个,可选)</label>
+          <div id="tgButtons"></div>
+          <button type="button" class="btn ghost" style="padding:5px 12px;font-size:13px;margin-top:2px" onclick="tgAddButton()">+ 加一个链接按钮</button>
+          <div class="muted" style="font-size:12px;padding:4px 0 0">立即发送用全部按钮;定时暂用第 1 个(多按钮定时随「计划管理」一起上)。</div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>Test date (India time)</label><input id="tgScheduleDate" type="date"></div>
+          <div class="field"><label>Time slot (IST)</label><select id="tgTimeSlot"><option value="09:00">09:00</option><option value="15:00">15:00</option><option value="21:00">21:00</option></select></div>
+        </div>
+        <div class="tip">Only test destinations are available. Production sending remains disabled.</div>
+        <button class="btn wide" id="tgSendButton" onclick="sendTgTest()">Send test message</button>
+        <button class="btn wide ghost" id="tgScheduleButton" style="margin-top:8px" onclick="scheduleTgTest()">Schedule test message</button>
+        <div class="err" id="tgError"></div>
+        <div id="tgResult" class="muted" style="text-align:left;padding:10px 0 0"></div>
+        <div id="tgSchedules" style="text-align:left;padding-top:12px"></div>
+      </div>
+    </section>
     <section id="view-create" class="hide">
       <div class="form-card">
         <h2>Assign a task</h2>
@@ -436,11 +468,10 @@
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:13px">HR 分配</b><span class="muted" style="padding:0;font-size:12px">填写 HR 姓名和各自需要的候选人数；合计即为本次搜索目标。</span><button class="btn ghost sm" type="button" onclick="addHrAllocation()">＋ 添加 HR</button><span id="tdHrTotal" style="margin-left:auto;font-size:12px;font-weight:700"></span></div>
             <div id="tdHrAllocations" style="display:grid;gap:7px;margin-top:8px"></div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="tdStartButton" class="btn" onclick="queueTalentPreview()">开始搜索并生成今日表</button><button id="tdBlankButton" class="btn ghost" onclick="createBlankTalentWorkbook()">不搜索，创建/打开今日表</button><span class="muted" style="padding:0;font-size:12px">每个工作日只有一张招聘表；重复点击只会打开或继续同一流程。</span></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><button class="btn" onclick="queueTalentPreview()">开始搜索并生成今日表</button><button class="btn ghost" onclick="createBlankTalentWorkbook()">不搜索，创建/打开今日表</button><span class="muted" style="padding:0;font-size:12px">没有搜索结果也能创建：每位 HR 获得空白录入区和 Recruiting Overview。</span></div>
           <div id="tdSearchMessage" style="font-size:12px;margin-top:8px"></div>
-          <div id="tdDailyFlowStatus" style="margin-top:10px"></div>
         </div>
-        <details class="acard" style="margin-bottom:14px"><summary style="cursor:pointer;font-weight:700">技术详情（仅故障排查时展开）</summary><div style="display:flex;justify-content:flex-end;padding:10px 0"><button class="btn ghost sm" onclick="loadTalentTasks()">刷新详情</button></div><div id="tdSearchTasks"></div></details>
+        <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>搜索任务队列</b><button class="btn ghost sm" onclick="loadTalentTasks()">刷新</button></div><div id="tdSearchTasks"></div></div>
         <div id="tdKpis" class="kpis"></div>
         <div class="acard" style="margin-bottom:14px"><div class="acard-h"><b>JOB REQS</b><span class="muted" style="padding:0">只显示 Job Reqs 中已创建并处于 Open 状态的职位</span></div><div id="tdJobs"></div></div>
         <div class="acard"><div class="acard-h"><b>候选人匹配镜像</b><span class="muted" style="padding:0">经理可见评分 · HR 表不显示</span></div><div id="tdCandidates"></div></div>
@@ -500,7 +531,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -522,16 +553,133 @@ async function doLogin(){const pw=document.getElementById('pw').value;document.g
     PW=pw;sessionStorage.setItem('pw',pw);enterApp();}catch(e){document.getElementById('loginErr').textContent='Connection failed';}}
 function logout(){PW='';sessionStorage.removeItem('pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide');}
 async function enterApp(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');
-  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();const requested=(location.hash||'').replace('#','');showTab(['recruit','talent','jobs'].includes(requested)?requested:'home');}
+  const d=new Date();calY=d.getFullYear();calM=d.getMonth();await loadConfig();await loadExternalGroups();await loadGroups();const requested=(location.hash||'').replace('#','');showTab(['recruit','talent','jobs','tg'].includes(requested)?requested:'home');}
 async function loadConfig(){try{const c=await(await api('/api/config')).json();TZLABEL=c.tz_label||'';TZOFF=(c.tz_offset==null?null:c.tz_offset);WORKEND=c.work_end||22;WORKSTART=c.work_start||10;}catch(e){TZLABEL='';TZOFF=null;}}
-function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent')loadTalent();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();}
+function showTab(t){['create','board','cal','report','recruit','talent','home','docs','jobs','attend','tg'].forEach(x=>{const tb=document.getElementById('tab-'+x),vw=document.getElementById('view-'+x);if(tb)tb.classList.toggle('on',x===t);if(vw)vw.classList.toggle('hide',x!==t);});if(['board','cal','report'].includes(t))loadTasks();if(t==='recruit')loadChannelTab();if(t==='talent')loadTalent();if(t==='home')renderHome();if(t==='docs')loadDocs();if(t==='jobs')loadJobs();if(t==='attend')loadAttend();if(t==='tg')loadTgAutomation();}
+
+function tgCount(){
+  const el=document.getElementById('tgCaption'),c=document.getElementById('tgCount');
+  if(!el||!c)return;
+  const n=el.value.length;
+  c.textContent=n+' / 1024'+(n>=1024?'  已到上限,再多会拆两条':n>900?'  接近上限':'');
+  c.style.color=n>=1024?'#dc2626':n>900?'#d97706':'#94a3b8';
+}
+function tgCheckImage(){
+  const inp=document.getElementById('tgPhoto'),info=document.getElementById('tgImgInfo'),prev=document.getElementById('tgImgPreview');
+  if(!inp||!info)return;
+  info.textContent='';if(prev)prev.style.display='none';
+  const f=inp.files&&inp.files[0];if(!f)return;
+  const mb=f.size/1048576,msgs=[];
+  if(!/image\/(jpeg|png|webp)/.test(f.type))msgs.push('格式建议 JPG 或 PNG');
+  if(mb>10)msgs.push('文件 '+mb.toFixed(1)+'MB 超过 10MB 上限');
+  const url=URL.createObjectURL(f),img=new Image();
+  img.onload=function(){
+    const w=img.naturalWidth,h=img.naturalHeight,r=w/h;
+    if(prev){prev.src=url;prev.style.display='block';}
+    if(h/w>1.35)msgs.push('偏竖偏窄 '+w+'×'+h+',会显得窄——建议接近正方形 1080×1080');
+    else if(r>2)msgs.push('偏宽 '+w+'×'+h+',文案区会很矮');
+    if(Math.min(w,h)<800)msgs.push('分辨率偏低 '+w+'×'+h+',建议短边≥1080');
+    const ok=msgs.length===0;
+    info.innerHTML=(ok?'✅ ':'⚠️ ')+w+'×'+h+'  '+mb.toFixed(2)+'MB'+(ok?'  图片合适':'<br>'+msgs.join('；'));
+    info.style.color=ok?'#16a34a':'#d97706';
+  };
+  img.onerror=function(){info.textContent='无法读取图片,换一张试试';info.style.color='#dc2626';};
+  img.src=url;
+}
+function tgAddButton(label,url){
+  const box=document.getElementById('tgButtons');if(!box)return;
+  if(box.querySelectorAll('.tgbtn').length>=5){if(window.toast)toast('最多 5 个按钮');return;}
+  const row=document.createElement('div');row.className='tgbtn row2';row.style.marginBottom='6px';
+  const li=document.createElement('input');li.className='tgbtn-label';li.maxLength=64;li.placeholder='按钮文字,如 PLAY NOW';
+  const ui=document.createElement('input');ui.className='tgbtn-url';ui.type='url';ui.placeholder='https://...';
+  const del=document.createElement('button');del.type='button';del.textContent='✕';del.className='btn ghost';del.style.cssText='padding:2px 10px';del.onclick=function(){row.remove();};
+  if(label)li.value=label;if(url)ui.value=url;
+  row.appendChild(li);row.appendChild(ui);row.appendChild(del);box.appendChild(row);
+}
+function tgCollectButtons(){
+  const out=[];document.querySelectorAll('#tgButtons .tgbtn').forEach(function(r){
+    const l=(r.querySelector('.tgbtn-label').value||'').trim(),u=(r.querySelector('.tgbtn-url').value||'').trim();
+    if(l||u)out.push({label:l,url:u});
+  });return out;
+}
+async function loadTgAutomation(){
+  const status=document.getElementById('tgStatus'),select=document.getElementById('tgDestination'),error=document.getElementById('tgError');
+  if(document.getElementById('tgButtons')&&!document.querySelectorAll('#tgButtons .tgbtn').length){tgAddButton('OPEN 21GAME HUB','https://t.me/Game21HubBot');}
+  error.textContent='';status.textContent='Checking connection...';select.innerHTML='<option value="">Loading...</option>';
+  try{
+    const health=await(await api('/api/tg/status')).json();
+    status.textContent=health.connected?('Connected · production sending '+(health.sending_enabled?'ON':'off')):'Not connected';
+    if(!health.connected)throw new Error(health.error||'TG Automation is unavailable');
+    const data=await(await api('/api/tg/destinations')).json(),rows=data.destinations||[];
+    select.innerHTML='<option value="">Select a test destination</option>'+rows.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} · ${esc(d.destination_type)}</option>`).join('');
+    if(!rows.length)error.textContent='No enabled test channel or group is configured.';
+    setNextTgSlot();
+    await loadTgSchedules();
+  }catch(e){status.textContent='Not connected';select.innerHTML='<option value="">Unavailable</option>';error.textContent=e.message||'TG Automation is unavailable.';}
+}
+
+function setNextTgSlot(){
+  const dateInput=document.getElementById('tgScheduleDate'),slotInput=document.getElementById('tgTimeSlot');
+  if(!dateInput||!slotInput||dateInput.value)return;
+  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).reduce((out,item)=>(out[item.type]=item.value,out),{});
+  const minutes=Number(parts.hour)*60+Number(parts.minute),slots=[['09:00',540],['15:00',900],['21:00',1260]];
+  const next=slots.find(item=>item[1]>minutes);
+  if(next){dateInput.value=`${parts.year}-${parts.month}-${parts.day}`;slotInput.value=next[0];return;}
+  const tomorrow=new Date(Date.now()+24*60*60*1000),tomorrowParts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(tomorrow).reduce((out,item)=>(out[item.type]=item.value,out),{});
+  dateInput.value=`${tomorrowParts.year}-${tomorrowParts.month}-${tomorrowParts.day}`;slotInput.value='09:00';
+}
+
+async function loadTgSchedules(){
+  const root=document.getElementById('tgSchedules');if(!root)return;
+  try{
+    const response=await api('/api/tg/schedules'),data=await response.json();if(!response.ok)throw new Error(data.error||'Unable to load schedules');
+    const rows=data.schedules||[];root.innerHTML='<b>Recent test schedules</b>'+(rows.length?rows.slice(0,8).map(row=>`<div class="tip" style="margin-top:7px"><b>${esc(row.schedule_date||'')}</b> ${esc(row.time_slot||'')} IST · ${esc(row.destination_name||'')} · ${esc(row.delivery_status||row.status||'')}</div>`).join(''):'<div class="muted" style="text-align:left;padding:7px 0 0">No test messages scheduled yet.</div>');
+  }catch(e){root.innerHTML='<div class="muted" style="text-align:left;padding:7px 0 0">Schedules are temporarily unavailable.</div>';}
+}
+
+async function sendTgTest(){
+  const error=document.getElementById('tgError'),result=document.getElementById('tgResult'),button=document.getElementById('tgSendButton');
+  const destination=document.getElementById('tgDestination').value,photo=document.getElementById('tgPhoto').files[0],caption=document.getElementById('tgCaption').value.trim();
+  const buttons=tgCollectButtons();
+  error.textContent='';result.textContent='';
+  if(!destination||!photo||!caption){error.textContent='Destination, image and caption are required.';return;}
+  for(const b of buttons){if(!b.label||!b.url){error.textContent='每个按钮的文字和链接都要填齐(或删掉空的)。';return;}}
+  const form=new FormData();form.append('destination_id',destination);form.append('photo',photo);form.append('caption',caption);form.append('buttons',JSON.stringify(buttons));
+  button.disabled=true;button.textContent='Sending...';
+  try{
+    const response=await fetch('/api/tg/send-test',{method:'POST',headers:{'X-Auth':PW},body:form});const data=await response.json().catch(()=>({}));
+    if(response.status===401){logout();throw new Error('Unauthorized');}
+    if(!response.ok)throw new Error(data.message||data.error||'Test send failed');
+    result.textContent='Sent successfully · chat '+data.result.chat_id+' · message '+data.result.message_id;toast('Telegram test sent');
+  }catch(e){error.textContent=e.message||'Test send failed';}
+  finally{button.disabled=false;button.textContent='Send test message';}
+}
+
+async function scheduleTgTest(){
+  const error=document.getElementById('tgError'),result=document.getElementById('tgResult'),button=document.getElementById('tgScheduleButton');
+  const destination=document.getElementById('tgDestination').value,photo=document.getElementById('tgPhoto').files[0],caption=document.getElementById('tgCaption').value.trim();
+  const buttons=tgCollectButtons(),scheduleDate=document.getElementById('tgScheduleDate').value,timeSlot=document.getElementById('tgTimeSlot').value;
+  const b0=buttons[0]||{label:'',url:''};
+  error.textContent='';result.textContent='';
+  if(!destination||!photo||!caption||!scheduleDate||!timeSlot){error.textContent='Destination, image, caption, date and time slot are required.';return;}
+  for(const b of buttons){if(!b.label||!b.url){error.textContent='每个按钮的文字和链接都要填齐(或删掉空的)。';return;}}
+  const form=new FormData();form.append('destination_id',destination);form.append('photo',photo);form.append('caption',caption);form.append('schedule_date',scheduleDate);form.append('time_slot',timeSlot);form.append('button_label',b0.label);form.append('button_url',b0.url);
+  button.disabled=true;button.textContent='Scheduling...';
+  try{
+    const response=await fetch('/api/tg/schedules',{method:'POST',headers:{'X-Auth':PW},body:form});const data=await response.json().catch(()=>({}));
+    if(response.status===401){logout();throw new Error('Unauthorized');}
+    if(!response.ok)throw new Error(data.message||data.error||'Scheduling failed');
+    result.textContent='Scheduled · '+data.result.schedule_date+' '+data.result.time_slot+' IST · '+data.result.destination_name;toast('Telegram test scheduled');await loadTgSchedules();
+  }catch(e){error.textContent=e.message||'Scheduling failed';}
+  finally{button.disabled=false;button.textContent='Schedule test message';}
+}
 
 async function loadTalent(){
   let data=null;try{const responses=await Promise.all([api('/api/talent/snapshot'),api('/api/channel/jobs')]);data=await responses[0].json();TALENT_OPER_JOBS=await responses[1].json();if(!Array.isArray(TALENT_OPER_JOBS))TALENT_OPER_JOBS=[];}catch(e){data=null;TALENT_OPER_JOBS=[];}
   const empty=!data||data.status!=='ready'||!data.snapshot;
   document.getElementById('tdEmpty').classList.toggle('hide',!empty);
   document.getElementById('tdBody').classList.remove('hide');
-  if(empty){document.getElementById('tdSync').textContent='No Talent Discovery mirror yet · blank daily workbook remains available';ensureHrAllocationRow();updateHrAllocationTotal();loadTalentTasks();loadTalentDailyFlow();return;}
+  if(empty){document.getElementById('tdSync').textContent='No Talent Discovery mirror yet · blank daily workbook remains available';ensureHrAllocationRow();updateHrAllocationTotal();return;}
   const s=data.snapshot,c=s.content||{},m=c.metrics||{},rows=c.candidate_matches||[],jobs=c.jobs||[];TALENT_JOBS=jobs;
   const activeProfileRefs=new Set(jobs.filter(j=>(j.status||'').toLowerCase()==='active').map(j=>j.core_job_ref));
   const linkedJobs=TALENT_OPER_JOBS.filter(j=>j.status==='open'&&j.search_profile_ref&&activeProfileRefs.has(j.search_profile_ref));
@@ -548,7 +696,7 @@ async function loadTalent(){
   document.getElementById('tdJobs').innerHTML=openJobReqs.length?`<table class="rtable"><thead><tr><th>Job</th><th>Owner</th><th>Location</th><th>Resume Target</th><th>Headcount</th><th>Search Profile</th><th>Status</th></tr></thead><tbody>${openJobReqs.map(j=>`<tr><td class="name">${esc(j.title)}</td><td>${esc(j.owner||'—')}</td><td>${esc([j.location,j.country].filter(Boolean).join(', ')||'—')}</td><td>${esc(j.target_resume_count??'—')}</td><td>${esc(j.target_headcount??'—')}</td><td>${esc(profileTitles.get(j.search_profile_ref)||'Not linked')}</td><td>${esc(j.status||'')}</td></tr>`).join('')}</tbody></table>`:'<div class="muted">No Open Job Requisitions</div>';
   const visible=rows.slice(0,200);
   document.getElementById('tdCandidates').innerHTML=visible.length?`<table class="rtable"><thead><tr><th>候选人</th><th>Recent Title</th><th>地点</th><th>分类</th><th>经理评分</th><th>来源</th></tr></thead><tbody>${visible.map(r=>`<tr><td class="name">${tdCandidateName(r)}</td><td>${esc(r.recent_title||'—')}</td><td>${esc(r.location||r.country||'—')}</td><td>${esc(r.pipeline_disposition||'—')}</td><td>${esc(r.score||'—')}</td><td>${esc(r.attribution_source||'—')}</td></tr>`).join('')}</tbody></table><div class="muted" style="text-align:left;padding:10px 0 0">显示 ${visible.length} / ${rows.length} 条匹配；评分只在密码保护的经理页面出现。</div>`:'<div class="muted">暂无候选人匹配</div>';
-  ensureHrAllocationRow();updateHrAllocationTotal();loadTalentTasks();loadTalentDailyFlow();
+  ensureHrAllocationRow();updateHrAllocationTotal();loadTalentTasks();
 }
 function addHrAllocation(name='',count=''){
   const root=document.getElementById('tdHrAllocations');if(!root)return;
@@ -561,100 +709,6 @@ function renderTalentSearchConditions(){const {operational,profile}=selectedTale
 function getHrAllocations(){return [...document.querySelectorAll('.td-hr-row')].map(row=>({name:row.querySelector('.td-hr-name').value.trim().replace(/\s+/g,' '),count:Number(row.querySelector('.td-hr-count').value)}));}
 function updateHrAllocationTotal(){const items=getHrAllocations(),total=items.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0),el=document.getElementById('tdHrTotal');if(el){el.textContent=`Search target: ${total}`;el.style.color=total>0?'#16a34a':'#64748b';}}
 function ensureHrAllocationRow(){const root=document.getElementById('tdHrAllocations');if(root&&!root.children.length)addHrAllocation('','');}
-function setTalentFlowLocked(locked){
-  ['tdStartButton','tdBlankButton'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=!!locked;});
-}
-function talentFlowCard(title,detail,tone='info',action=''){
-  const colors={info:['#eff6ff','#1d4ed8'],working:['#fff7ed','#c2410c'],ready:['#ecfdf5','#15803d'],error:['#fef2f2','#b91c1c']};
-  const [background,color]=colors[tone]||colors.info;
-  return `<div style="border:1px solid ${color}33;background:${background};border-radius:10px;padding:12px 14px"><div style="font-weight:800;color:${color}">${esc(title)}</div><div style="font-size:12px;line-height:1.6;margin-top:4px">${esc(detail)}</div>${action?`<div style="margin-top:9px">${action}</div>`:''}</div>`;
-}
-async function loadTalentDailyFlow(){
-  const root=document.getElementById('tdDailyFlowStatus');
-  if(!root)return;
-  try{
-    const [publicationResponse,taskResponse]=await Promise.all([
-      api('/api/talent/publications/today'),
-      api('/api/talent/search-tasks'),
-    ]);
-    const publication=await publicationResponse.json();
-    const taskData=await taskResponse.json();
-    const today=publication.business_date||'today';
-    const tasks=(taskData.tasks||[]).filter(
-      t=>t.status!=='cancelled'&&t.business_date===today
-    );
-    const latest=tasks[0]||null;
-    let locked=false,refresh=false;
-    if(publication.status==='published'&&publication.spreadsheet_url){
-      locked=true;
-      root.innerHTML=talentFlowCard(
-        `${today} 招聘表已就绪`,
-        '搜索结果、HR 分配和 Overview 已固定在这一张表中。重复操作不会生成第二张表。',
-        'ready',
-        `<a class="btn sm" href="${esc(publication.spreadsheet_url)}" target="_blank" rel="noopener">打开今日招聘表</a>`,
-      );
-    }else if(['queued','publishing'].includes(publication.status)){
-      locked=true;refresh=true;
-      root.innerHTML=talentFlowCard(
-        publication.status==='queued'?'等待本地 Worker':'正在导入并发布',
-        '无需再次点击。完成后这里会自动出现“打开今日招聘表”。',
-        'working',
-      );
-    }else if(publication.status==='failed'){
-      locked=true;
-      root.innerHTML=talentFlowCard(
-        '今日招聘表发布失败',
-        `系统保留了冻结结果。请展开“技术详情”查看错误并只重试发布阶段；不要重新搜索。错误：${publication.error_code||'unknown'}`,
-        'error',
-      );
-    }else if(latest&&['pending','claimed'].includes(latest.status)){
-      locked=true;refresh=true;
-      root.innerHTML=talentFlowCard(
-        latest.status==='pending'?'等待本地 Worker 开始搜索':'正在搜索并冻结结果',
-        '无需再次点击。搜索完成后系统会自动进入发布阶段。',
-        'working',
-      );
-    }else if(latest&&latest.status==='succeeded'&&['ready','queued','publishing'].includes(latest.publication_status)){
-      locked=true;refresh=true;
-      root.innerHTML=talentFlowCard(
-        latest.publication_status==='ready'?'搜索结果已冻结，等待发布':'正在准备今日招聘表',
-        '候选人集合已经固定，不会重新搜索或更换。系统正在衔接发布阶段，请勿再次点击。',
-        'working',
-      );
-    }else if(latest&&latest.status==='succeeded'&&latest.publication_status==='failed'){
-      locked=true;
-      root.innerHTML=talentFlowCard(
-        '冻结结果的发布阶段失败',
-        '搜索结果仍然保留。请展开“技术详情”修复发布错误；不要重新搜索。',
-        'error',
-      );
-    }else if(latest&&latest.status==='shortfall'){
-      root.innerHTML=talentFlowCard(
-        '本次搜索未达到目标',
-        '没有发布不完整的正式名单。已保留诊断结果；可调整职位条件或目标人数后再开始一次新搜索。',
-        'error',
-      );
-    }else if(latest&&latest.status==='failed'){
-      root.innerHTML=talentFlowCard(
-        '搜索失败',
-        `没有创建 Lark 表，也没有写候选人状态。请展开“技术详情”按原条件重试。错误：${latest.last_error_code||'unknown'}`,
-        'error',
-      );
-    }else{
-      root.innerHTML=talentFlowCard(
-        '今日流程尚未开始',
-        '设置职位和 HR 分配后只需点击一次；后续搜索、冻结和发布会自动完成。',
-        'info',
-      );
-    }
-    setTalentFlowLocked(locked);
-    if(TALENT_FLOW_TIMER){clearTimeout(TALENT_FLOW_TIMER);TALENT_FLOW_TIMER=null;}
-    if(refresh)TALENT_FLOW_TIMER=setTimeout(async()=>{await Promise.all([loadTalentDailyFlow(),loadTalentTasks()]);},5000);
-  }catch(e){
-    setTalentFlowLocked(false);
-    root.innerHTML=talentFlowCard('无法读取今日流程','请检查网站连接后刷新；不要重复点击创建任务。','error');
-  }
-}
 async function queueTalentPreview(){
   const msg=document.getElementById('tdSearchMessage'),{operational,profile}=selectedTalentSearch(),allocations=getHrAllocations(),quota=allocations.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0);msg.textContent='';
   if(!operational||!profile){msg.textContent='请选择一个已关联有效搜索条件的 Open 招聘职位。';return;}
@@ -663,21 +717,7 @@ async function queueTalentPreview(){
   if(!allocations.length||allocations.some(x=>!x.name||!Number.isInteger(x.count)||x.count<1)||new Set(names).size!==names.length){msg.textContent='请填写 1–20 名不重复的 HR 姓名，并为每人分配至少 1 名候选人。';return;}
   const taskId=(crypto&&crypto.randomUUID)?crypto.randomUUID():('00000000-0000-4000-8000-'+String(Date.now()).padStart(12,'0').slice(-12)),observations=Math.min(2000,Math.max(500,quota*8));
   const payload={task_id:taskId,operational_job_ref:operational.job_ref,core_job_ref:profile.core_job_ref,requested_contact_count:quota,max_review_pool_count:0,auto_publish:true,hr_allocations:allocations,budgets:{max_sources:2,max_queries_per_source:Math.min(30,Math.max(12,Math.ceil(quota/5))),max_pages_per_query:2,max_results_per_source:Math.min(1000,Math.max(250,quota*5)),max_total_observations:observations,max_enrichment_candidates:Math.min(200,Math.max(50,quota)),max_provider_api_requests:20,max_enrichment_api_requests:10,time_budget_seconds:Math.min(1800,Math.max(600,quota*9)),api_time_budget_seconds:90,request_timeout_seconds:10}};
-  setTalentFlowLocked(true);
-  try{
-    const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();
-    if(!response.ok){
-      if(body.spreadsheet_url)window.open(body.spreadsheet_url,'_blank','noopener');
-      msg.textContent=body.detail||body.error||'任务被拒绝';
-      await loadTalentDailyFlow();
-      return;
-    }
-    msg.textContent=body.idempotent?'同一搜索已经在运行，没有重复创建。':'已开始；后续搜索、冻结和发布自动完成。';
-    await Promise.all([loadTalentTasks(),loadTalentDailyFlow()]);
-  }catch(e){
-    setTalentFlowLocked(false);
-    msg.textContent='搜索队列暂不可用。没有确认成功前不要重复点击。';
-  }
+  try{const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();if(!response.ok){msg.textContent='任务被拒绝：'+(body.error||'unknown');return;}msg.textContent='已开始。系统将在搜索成功后自动生成今日招聘表，无需再次点击发布。';loadTalentTasks();}catch(e){msg.textContent='搜索队列暂不可用。';}
 }
 async function createBlankTalentWorkbook(){
   const msg=document.getElementById('tdSearchMessage');
@@ -699,7 +739,7 @@ async function createBlankTalentWorkbook(){
     }
     else if(j.status==='publishing'){msg.textContent='本地 Worker 正在创建今日招聘表。稍后再次点击此按钮即可打开，不需要重新搜索。';}
     else{msg.textContent='今日招聘表已排入本地 Worker。无需搜索；发布完成后再次点击此按钮即可打开。';}
-    await Promise.all([loadTalentTasks(),loadTalentDailyFlow()]);
+    await loadTalentTasks();
   }catch(e){msg.textContent='创建今日招聘表失败：'+e.message;}
 }
 async function retryTalentPublish(taskId){try{const r=await api('/api/talent/search-tasks/'+encodeURIComponent(taskId)+'/publish',{method:'POST'}),j=await r.json();if(!r.ok)throw new Error(j.detail||j.error||'Publication failed');toast(`✅ 已将今日 ${j.cohort_count||''} 个职位 cohort 排入本地 Worker；Railway 未写数据库或 Lark`);await Promise.all([loadTalentTasks(),loadChannelTab()]);}catch(e){toast('✗ '+e.message,false);}}
@@ -728,7 +768,9 @@ async function loadTalentTasks(){
   try{
     const data=await(await api('/api/talent/search-tasks')).json(),tasks=(data.tasks||[]).filter(t=>t.status!=='cancelled');
     if(!tasks.length){root.innerHTML='<div class="muted">还没有搜索任务。</div>';return;}
-    const action='';
+    const readyTasks=tasks.filter(t=>t.status==='succeeded'&&['ready','failed'].includes(t.publication_status||'not_ready'));
+    const seed=readyTasks[0];
+    const action=seed?`<button class="btn primary sm" onclick="retryTalentPublish('${esc(seed.task_id)}')">发布今日统一表</button>`:'';
     const taskRows=tasks.map(t=>{
       const p=t.payload||{},r=t.result||{},pub=t.publication||{};
       const job=TALENT_OPER_JOBS.find(j=>j.job_ref===p.operational_job_ref);
@@ -743,7 +785,7 @@ async function loadTalentTasks(){
       else if(['queued','publishing','failed'].includes(ps)&&pub.publication_id)publicationCell=`${esc(label)} <button class="btn ghost sm" onclick="resetTalentPublication('${esc(pub.publication_id)}')">取消本次发布</button>`;
       return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td>${search}</td><td>${publicationCell}</td></tr>`;
     }).join('');
-    root.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">搜索成功后自动发布；这里仅显示内部状态和失败恢复，不需要日常操作。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>招聘职位</th><th>配额</th><th>HR 分配</th><th>搜索</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
+    root.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">完成搜索后只发布一次；卡住或不需要的未发布任务可以立即取消，不再等待租约。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>招聘职位</th><th>配额</th><th>HR 分配</th><th>搜索</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
   }catch(e){root.innerHTML='<div class="muted">搜索队列暂不可用。</div>';}
 }
 function tdCandidateName(r){let u='';try{const x=new URL(r.public_profile_url||'');if(x.protocol==='https:')u=x.href;}catch(e){}const name=esc(r.candidate_name||'—');return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${name}</a>`:name;}
