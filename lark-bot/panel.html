@@ -460,8 +460,12 @@
       <div id="tdBody" class="hide">
         <div class="acard" style="margin-bottom:14px">
           <div class="acard-h"><b>搜索与 HR 分配</b><span class="muted" style="padding:0">选择正在招聘的职位，系统自动使用该职位已关联的搜索条件</span></div>
-          <div style="display:grid;grid-template-columns:minmax(220px,1fr);gap:10px;align-items:end">
-            <label style="font-size:12px">招聘职位<select id="tdSearchJob" onchange="renderTalentSearchConditions()" style="display:block;width:100%;margin-top:5px"></select></label>
+          <div style="font-size:12px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <b>招聘职位（可多选）</b>
+              <span id="tdSearchJobCount" class="muted" style="padding:0;font-size:12px"></span>
+            </div>
+            <div id="tdSearchJobs" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:7px;margin-top:7px"></div>
           </div>
           <div id="tdSearchConditions" class="muted" style="text-align:left;padding:8px 0 0;font-size:12px"></div>
           <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
@@ -684,7 +688,14 @@ async function loadTalent(){
   const s=data.snapshot,c=s.content||{},m=c.metrics||{},rows=c.candidate_matches||[],jobs=c.jobs||[];TALENT_JOBS=jobs;
   const activeProfileRefs=new Set(jobs.filter(j=>(j.status||'').toLowerCase()==='active').map(j=>j.core_job_ref));
   const linkedJobs=TALENT_OPER_JOBS.filter(j=>j.status==='open'&&j.search_profile_ref&&activeProfileRefs.has(j.search_profile_ref));
-  const searchJob=document.getElementById('tdSearchJob');if(searchJob){const previous=searchJob.value;searchJob.innerHTML=linkedJobs.length?linkedJobs.map(j=>`<option value="${esc(j.job_ref)}">${esc(j.title)} · ${esc([j.location,j.country].filter(Boolean).join(', ')||'Location from search profile')}</option>`).join(''):'<option value="">No Open Job Requisition is linked to an active search profile</option>';if([...searchJob.options].some(o=>o.value===previous))searchJob.value=previous;renderTalentSearchConditions();}
+  const searchJobs=document.getElementById('tdSearchJobs');
+  if(searchJobs){
+    const previous=new Set([...searchJobs.querySelectorAll('.td-search-job:checked')].map(x=>x.value));
+    searchJobs.innerHTML=linkedJobs.length
+      ?linkedJobs.map(j=>`<label style="display:flex;align-items:flex-start;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px;background:#fff;cursor:pointer"><input class="td-search-job" type="checkbox" value="${esc(j.job_ref)}" onchange="renderTalentSearchConditions()" ${previous.has(j.job_ref)?'checked':''}><span><b>${esc(j.title)}</b><small style="display:block;color:var(--soft);margin-top:2px">${esc([j.location,j.country].filter(Boolean).join(', ')||'Location from search profile')}</small></span></label>`).join('')
+      :'<div class="muted" style="text-align:left">No Open Job Requisition is linked to an active search profile</div>';
+    renderTalentSearchConditions();
+  }
   document.getElementById('tdSync').textContent='签名镜像 · '+new Date(s.generated_at).toLocaleString()+' · '+String(s.content_sha256||'').slice(0,12);
   const dc=m.disposition_counts||{};
   document.getElementById('tdKpis').innerHTML=[
@@ -705,8 +716,25 @@ function addHrAllocation(name='',count=''){
   row.innerHTML=`<input class="td-hr-name" maxlength="80" placeholder="HR name" value="${esc(name)}" oninput="updateHrAllocationTotal()"><input class="td-hr-count" type="number" min="1" max="200" placeholder="Candidate count" value="${esc(count)}" oninput="updateHrAllocationTotal()"><button type="button" class="btn ghost sm" onclick="this.closest('.td-hr-row').remove();updateHrAllocationTotal()">Remove</button>`;
   root.appendChild(row);updateHrAllocationTotal();
 }
-function selectedTalentSearch(){const operational=TALENT_OPER_JOBS.find(j=>j.job_ref===val('tdSearchJob')),profile=operational&&TALENT_JOBS.find(j=>j.core_job_ref===operational.search_profile_ref);return{operational,profile};}
-function renderTalentSearchConditions(){const {operational,profile}=selectedTalentSearch(),el=document.getElementById('tdSearchConditions');if(!el)return;if(!operational||!profile){el.textContent='请先在 Job Reqs 创建 Open 职位，并在 Advanced 中关联一个有效的 Talent Discovery Search Profile。';return;}el.textContent=`搜索条件（只读）：${profile.title} · ${[profile.location,profile.country].filter(Boolean).join(', ')||'location not set'} · 最低分 ${profile.minimum_score==null?'按核心配置':profile.minimum_score}。搜索结果将写入招聘职位“${operational.title}”；职位词、排除词和地点扩展由已签名 JobRequest 管理。`;}
+function selectedTalentSearches(){
+  return [...document.querySelectorAll('.td-search-job:checked')].map(input=>{
+    const operational=TALENT_OPER_JOBS.find(j=>j.job_ref===input.value);
+    const profile=operational&&TALENT_JOBS.find(j=>j.core_job_ref===operational.search_profile_ref);
+    return{operational,profile};
+  }).filter(x=>x.operational&&x.profile);
+}
+function renderTalentSearchConditions(){
+  const selected=selectedTalentSearches(),el=document.getElementById('tdSearchConditions'),count=document.getElementById('tdSearchJobCount');
+  if(count)count.textContent=selected.length?`已选 ${selected.length} 个职位`:'尚未选择';
+  if(!el)return;
+  if(!selected.length){el.textContent='请选择正在招聘的职位。共享同一搜索画像的职位会自动合并为一个职位族搜索。';return;}
+  const families=new Map();
+  selected.forEach(({operational,profile})=>{
+    if(!families.has(profile.core_job_ref))families.set(profile.core_job_ref,{profile,jobs:[]});
+    families.get(profile.core_job_ref).jobs.push(operational.title);
+  });
+  el.textContent=`已选 ${selected.length} 个职位，自动合并为 ${families.size} 个搜索职位族：`+[...families.values()].map(x=>`${x.profile.title}（${x.jobs.join(' / ')}）`).join('；')+'。iGaming 经验只作加分，不是硬门槛；相关和可转化职业会由已签名搜索画像扩展。所有职位族完成后只生成一张去重的今日招聘表。';
+}
 function getHrAllocations(){return [...document.querySelectorAll('.td-hr-row')].map(row=>({name:row.querySelector('.td-hr-name').value.trim().replace(/\s+/g,' '),count:Number(row.querySelector('.td-hr-count').value)}));}
 function updateHrAllocationTotal(){const items=getHrAllocations(),total=items.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0),el=document.getElementById('tdHrTotal');if(el){el.textContent=`Search target: ${total}`;el.style.color=total>0?'#16a34a':'#64748b';}}
 function ensureHrAllocationRow(){const root=document.getElementById('tdHrAllocations');if(root&&!root.children.length)addHrAllocation('','');}
@@ -739,11 +767,37 @@ function setTalentFlowLocked(locked){
   const blankButton=document.querySelector('#view-talent button[onclick="createBlankTalentWorkbook()"]');
   if(searchButton)searchButton.disabled=!!(locked||!TALENT_SEARCH_READY);
   if(blankButton)blankButton.disabled=!!(locked||!TALENT_WORKER_ONLINE);
+  document.querySelectorAll('.td-search-job').forEach(input=>input.disabled=!!locked);
 }
 function talentFlowCard(title,detail,tone='info',action=''){
   const colors={info:['#eff6ff','#1d4ed8'],working:['#fff7ed','#c2410c'],ready:['#ecfdf5','#15803d'],error:['#fef2f2','#b91c1c']};
   const [background,color]=colors[tone]||colors.info;
   return `<div style="border:1px solid ${color}33;background:${background};border-radius:10px;padding:12px 14px"><div style="font-weight:800;color:${color}">${esc(title)}</div><div style="font-size:12px;line-height:1.6;margin-top:4px">${esc(detail)}</div>${action?`<div style="margin-top:9px">${action}</div>`:''}</div>`;
+}
+function talentProgressAge(task){
+  const raw=task.last_progress_at||task.updated_at||task.created_at;
+  if(!raw)return null;
+  const seconds=Math.floor((Date.now()-new Date(raw).getTime())/1000);
+  return Number.isFinite(seconds)?Math.max(0,seconds):null;
+}
+function talentTaskProgressText(task){
+  const p=task.payload||{},percent=Number.isInteger(task.progress_percent)?task.progress_percent:0;
+  const message=task.progress_message||(
+    task.status==='pending'?'Waiting for the local Worker':
+    task.status==='succeeded'?'Frozen and verified':
+    task.status==='shortfall'?'Search completed with a shortfall':
+    task.status==='failed'?(task.last_error_code||'Search failed'):task.status
+  );
+  const age=talentProgressAge(task);
+  const stale=task.status==='claimed'&&age!==null&&age>150;
+  const job=TALENT_JOBS.find(j=>j.core_job_ref===task.core_job_ref);
+  const label=job?job.title:(p.operational_job_ref||task.core_job_ref||'Search family');
+  return `${label}: ${message}${['pending','claimed'].includes(task.status)?` (${percent}%)`:''}${stale?' · 心跳延迟，租约到期后系统会自动重排，不要重复点击':''}`;
+}
+function talentRunSummary(tasks){
+  if(!tasks.length)return'';
+  const done=tasks.filter(t=>['succeeded','shortfall','failed'].includes(t.status)).length;
+  return `${done}/${tasks.length} 个搜索职位族已完成 · `+tasks.map(talentTaskProgressText).join(' | ');
 }
 async function loadTalentDailyFlow(){
   const root=document.getElementById('tdDailyFlowStatus');
@@ -762,6 +816,9 @@ async function loadTalentDailyFlow(){
       t=>t.status!=='cancelled'&&t.business_date===today
     );
     const latest=tasks[0]||null;
+    const latestRunId=latest&&latest.search_run_id;
+    const runTasks=latestRunId?tasks.filter(t=>t.search_run_id===latestRunId):latest?[latest]:[];
+    const runDetail=talentRunSummary(runTasks);
     let locked=false;
     if(publication.status==='published'&&publication.spreadsheet_url){
       locked=true;refresh=false;
@@ -792,11 +849,11 @@ async function loadTalentDailyFlow(){
         'error',
         recoveryAction
       );
-    }else if(latest&&['pending','claimed'].includes(latest.status)){
+    }else if(runTasks.some(t=>['pending','claimed'].includes(t.status))){
       locked=true;
       root.innerHTML=talentFlowCard(
-        latest.status==='pending'?'等待本地 Worker 开始搜索':'正在搜索并冻结结果',
-        '无需再次点击；搜索完成后系统会自动进入发布阶段。',
+        runTasks.some(t=>t.status==='claimed')?'正在搜索并冻结结果':'等待本地 Worker 开始搜索',
+        runDetail||'无需再次点击；搜索完成后系统会自动进入发布阶段。',
         'working'
       );
     }else if(latest&&latest.status==='succeeded'&&['ready','queued','publishing'].includes(latest.publication_status)){
@@ -856,15 +913,24 @@ async function loadTalentDailyFlow(){
   }
 }
 async function queueTalentPreview(){
-  const msg=document.getElementById('tdSearchMessage'),{operational,profile}=selectedTalentSearch(),allocations=getHrAllocations(),quota=allocations.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0);msg.textContent='';
+  const msg=document.getElementById('tdSearchMessage'),selected=selectedTalentSearches(),allocations=getHrAllocations(),quota=allocations.reduce((n,x)=>n+(Number.isInteger(x.count)?x.count:0),0);msg.textContent='';
   if(!TALENT_SEARCH_READY){msg.textContent='搜索暂不可用；请等待页面显示绿色“Worker 在线 · 搜索浏览器就绪”后只点击一次。';return;}
-  if(!operational||!profile){msg.textContent='请选择一个已关联有效搜索条件的 Open 招聘职位。';return;}
+  if(!selected.length){msg.textContent='请至少选择一个已关联有效搜索条件的 Open 招聘职位。';return;}
   if(!Number.isInteger(quota)||quota<1||quota>200){msg.textContent='正式候选人数须为 1–200。';return;}
   const names=allocations.map(x=>x.name.toLocaleLowerCase());
   if(!allocations.length||allocations.some(x=>!x.name||!Number.isInteger(x.count)||x.count<1)||new Set(names).size!==names.length){msg.textContent='请填写 1–20 名不重复的 HR 姓名，并为每人分配至少 1 名候选人。';return;}
-  const taskId=(crypto&&crypto.randomUUID)?crypto.randomUUID():('00000000-0000-4000-8000-'+String(Date.now()).padStart(12,'0').slice(-12)),observations=Math.min(2000,Math.max(500,quota*8));
-  const payload={task_id:taskId,operational_job_ref:operational.job_ref,core_job_ref:profile.core_job_ref,requested_contact_count:quota,max_review_pool_count:0,auto_publish:true,hr_allocations:allocations,budgets:{max_sources:2,max_queries_per_source:Math.min(30,Math.max(12,Math.ceil(quota/5))),max_pages_per_query:2,max_results_per_source:Math.min(1000,Math.max(250,quota*5)),max_total_observations:observations,max_enrichment_candidates:Math.min(200,Math.max(50,quota)),max_provider_api_requests:20,max_enrichment_api_requests:10,time_budget_seconds:Math.min(1800,Math.max(600,quota*9)),api_time_budget_seconds:90,request_timeout_seconds:10}};
-  try{const response=await api('/api/talent/search-tasks',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();if(!response.ok){msg.textContent='任务被拒绝：'+(body.error||'unknown');return;}msg.textContent='已开始。系统将在搜索成功后自动生成今日招聘表，无需再次点击发布。';loadTalentTasks();}catch(e){msg.textContent='搜索队列暂不可用。';}
+  const familyCount=new Set(selected.map(x=>x.profile.core_job_ref)).size;
+  if(quota<familyCount){msg.textContent=`本次包含 ${familyCount} 个搜索职位族；候选人总目标不能少于 ${familyCount}。`;return;}
+  const payload={
+    jobs:selected.map(x=>({operational_job_ref:x.operational.job_ref,core_job_ref:x.profile.core_job_ref})),
+    hr_allocations:allocations
+  };
+  try{
+    const response=await api('/api/talent/search-batches',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();
+    if(!response.ok){msg.textContent='任务被拒绝：'+(body.detail||body.error||'unknown');return;}
+    msg.textContent=`已开始：${body.selected_job_count} 个招聘职位合并为 ${body.search_family_count} 个职位族。Worker 会自动搜索、冻结、跨族去重并只生成一张今日招聘表。`;
+    await Promise.all([loadTalentDailyFlow(),loadTalentTasks()]);
+  }catch(e){msg.textContent='搜索队列暂不可用。';}
 }
 async function createBlankTalentWorkbook(){
   const msg=document.getElementById('tdSearchMessage');
@@ -932,6 +998,9 @@ async function loadTalentTasks(){
   try{
     const data=await(await api('/api/talent/search-tasks')).json(),tasks=(data.tasks||[]).filter(t=>t.status!=='cancelled');
     if(!tasks.length){root.innerHTML='<div class="muted">还没有搜索任务。</div>';return;}
+    const latestRunId=tasks.find(t=>t.search_run_id)?.search_run_id||null;
+    const latestRun=latestRunId?tasks.filter(t=>t.search_run_id===latestRunId):[];
+    const runSummary=latestRun.length?talentRunSummary(latestRun):'';
     const readyTasks=tasks.filter(t=>t.status==='succeeded'&&['ready','failed'].includes(t.publication_status||'not_ready'));
     const seed=readyTasks[0];
     const action=seed?`<button class="btn primary sm" onclick="retryTalentPublish('${esc(seed.task_id)}')">发布今日统一表</button>`:'';
@@ -942,14 +1011,15 @@ async function loadTalentTasks(){
       const ready=r.selected_contacts??r.contact_ready??0;
       const retry=(t.status==='failed'||(t.status==='pending'&&Number(t.attempt_count||0)>=3))?` <button class="btn ghost sm" onclick="retryFailedTalentSearch('${esc(t.task_id)}')">Retry same search</button>`:'';
       const search=(t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting'))+retry;
+      const progress=talentTaskProgressText(t);
       const ps=t.publication_status||'not_ready';
       const label=ps==='ready'?'Ready（将纳入今日统一表）':ps==='queued'?'等待本地 Worker':ps==='publishing'?'本地 Worker 正在导入并发布':ps==='failed'?'发布失败':ps;
       let publicationCell=esc(label);
       if(ps==='published')publicationCell=`<a href="${esc(pub.spreadsheet_url||'#')}" target="_blank" rel="noopener">Open Recruiting ${esc(pub.business_date||'')}</a>`;
       else if(['queued','publishing','failed'].includes(ps)&&pub.publication_id)publicationCell=`${esc(label)} <button class="btn ghost sm" onclick="resetTalentPublication('${esc(pub.publication_id)}')">取消本次发布</button>`;
-      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td>${search}</td><td>${publicationCell}</td></tr>`;
+      return `<tr><td>${esc(t.created_at?new Date(t.created_at).toLocaleString():'—')}</td><td>${esc(job?job.title:p.operational_job_ref||t.core_job_ref)}</td><td>${esc(p.requested_contact_count||'—')}</td><td>${esc(split||'—')}</td><td><div>${esc(progress)}</div><div style="margin-top:4px">${search}</div></td><td>${publicationCell}</td></tr>`;
     }).join('');
-    root.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">完成搜索后只发布一次；卡住或不需要的未发布任务可以立即取消，不再等待租约。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>招聘职位</th><th>配额</th><th>HR 分配</th><th>搜索</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
+    root.innerHTML=`${runSummary?`<div style="border:1px solid #bfdbfe;background:#eff6ff;border-radius:9px;padding:9px 11px;margin-bottom:10px;font-size:12px;line-height:1.55">${esc(runSummary)}</div>`:''}<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 10px"><div class="muted" style="text-align:left;font-size:12px">完成全部职位族后只发布一次；页面每 5 秒刷新。心跳中断会自动超时重排，不需要重复点击。</div>${action}</div><table class="rtable"><thead><tr><th>创建时间</th><th>搜索职位族</th><th>配额</th><th>HR 分配</th><th>实时进度</th><th>今日统一表</th></tr></thead><tbody>${taskRows}</tbody></table>`;
   }catch(e){root.innerHTML='<div class="muted">搜索队列暂不可用。</div>';}
 }
 function tdCandidateName(r){let u='';try{const x=new URL(r.public_profile_url||'');if(x.protocol==='https:')u=x.href;}catch(e){}const name=esc(r.candidate_name||'—');return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${name}</a>`:name;}

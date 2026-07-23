@@ -183,6 +183,20 @@ review instead of crashing every future deployment.
 - Append-only owner/note history and controlled HR roster identity.
 - Manager-approved Lark Overview template cloning and post-clone conformance
   verification.
+- Expand the deterministic role-family ontology beyond exact titles. Sales,
+  customer service, operations, marketing, technology, product, design,
+  compliance, and finance profiles may include evidence-backed transferable
+  roles, graduates, trainees, and entry-level candidates where the hiring
+  policy allows it.
+- Rank explicit iGaming experience as positive evidence, never as a universal
+  hard requirement. Country, configured location policy, role evidence,
+  executive exclusions, and do-not-contact rules remain authoritative.
+- Add primary and alternate Job Requisition recommendations after one
+  cross-family deduplication pass. A candidate is counted once toward the
+  overall manager target even when several Open requisitions are plausible.
+- Add optional family minimums and maximums only when a manager needs a
+  deliberate mix. The normal daily flow uses one overall quota and one final
+  frozen publication rather than forcing a separate quota per title.
 
 ### Long-term scale and compliance
 

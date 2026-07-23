@@ -798,10 +798,20 @@ def _search_task_json(row, *, include_payload=True, include_result=True):
         "last_error_code": row.get("last_error_code"),
         "publication_status": row.get("publication_status") or "not_ready",
         "publication": row.get("publication") or {},
+        "search_run_id": (
+            str(row["search_run_id"])
+            if row.get("search_run_id") is not None else None
+        ),
+        "search_run_order": row.get("search_run_order"),
+        "search_run_size": row.get("search_run_size"),
+        "progress_phase": row.get("progress_phase") or "queued",
+        "progress_percent": int(row.get("progress_percent") or 0),
+        "progress_message": row.get("progress_message") or "",
+        "progress_counts": row.get("progress_counts") or {},
     }
     for field in (
         "created_at", "updated_at", "expires_at", "claimed_at",
-        "lease_expires_at",
+        "lease_expires_at", "last_progress_at",
     ):
         current = row.get(field)
         value[field] = current.isoformat() if current is not None else None
@@ -827,6 +837,57 @@ def _search_task_json(row, *, include_payload=True, include_result=True):
     if include_result:
         value["result"] = row.get("result")
     return value
+
+
+def _split_multi_job_allocations(hr_allocations, job_count):
+    """Evenly split one overall HR target across selected jobs."""
+    if job_count < 1:
+        raise ValueError("Select at least one Job Requisition")
+    total = sum(item["count"] for item in hr_allocations)
+    if total < job_count:
+        raise ValueError(
+            "The total candidate target must be at least the selected job count"
+        )
+    by_job = [[] for _ in range(job_count)]
+    cursor = 0
+    for item in hr_allocations:
+        base, remainder = divmod(item["count"], job_count)
+        counts = [base] * job_count
+        for offset in range(remainder):
+            counts[(cursor + offset) % job_count] += 1
+        cursor = (cursor + remainder) % job_count
+        for index, count in enumerate(counts):
+            if count:
+                by_job[index].append({"name": item["name"], "count": count})
+    if any(not allocation for allocation in by_job):
+        raise ValueError("Every selected job must receive at least one candidate")
+    return by_job
+
+
+def _multi_job_budget(requested):
+    return {
+        "max_sources": 2,
+        "max_queries_per_source": min(
+            30, max(12, (requested + 4) // 5)
+        ),
+        "max_pages_per_query": 2,
+        "max_results_per_source": min(
+            1000, max(250, requested * 5)
+        ),
+        "max_total_observations": min(
+            2000, max(500, requested * 8)
+        ),
+        "max_enrichment_candidates": min(
+            200, max(50, requested)
+        ),
+        "max_provider_api_requests": 20,
+        "max_enrichment_api_requests": 10,
+        "time_budget_seconds": min(
+            1800, max(600, requested * 9)
+        ),
+        "api_time_budget_seconds": 90,
+        "request_timeout_seconds": 10,
+    }
 
 
 def _talent_snapshot_json(row):
@@ -1004,6 +1065,194 @@ def api_talent_search_task_create():
         "idempotent": not inserted,
         "task": _search_task_json(row),
     }), 201 if inserted else 200
+
+
+@app.route("/api/talent/search-batches", methods=["POST"])
+def api_talent_search_batch_create():
+    """Create one atomic multi-job run while keeping each frozen cohort isolated."""
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        if set(body) != {"jobs", "hr_allocations"}:
+            raise ValueError(
+                "multi-job search requires only jobs and hr_allocations"
+            )
+        jobs = body["jobs"]
+        if not isinstance(jobs, list) or not (1 <= len(jobs) <= 10):
+            raise ValueError("Select 1 to 10 Open Job Requisitions")
+        normalized_jobs = []
+        seen_job_refs = set()
+        for index, item in enumerate(jobs, start=1):
+            if not isinstance(item, dict) or set(item) != {
+                "operational_job_ref", "core_job_ref",
+            }:
+                raise ValueError(f"jobs[{index}] fields are invalid")
+            operational_ref = str(
+                item.get("operational_job_ref") or ""
+            ).strip()
+            core_ref = str(item.get("core_job_ref") or "").strip()
+            if operational_ref in seen_job_refs:
+                raise ValueError("Selected jobs must be unique")
+            search_profile = db.get_job_request_by_core_ref(core_ref)
+            operational_job = db.get_job_request_by_ref(operational_ref)
+            if not search_profile or search_profile.get("status") != "open":
+                raise ValueError(
+                    f"Search profile for jobs[{index}] is not Open"
+                )
+            if (
+                not operational_job
+                or operational_job.get("record_type") != "operational"
+                or operational_job.get("status") != "open"
+                or operational_job.get("search_profile_ref") != core_ref
+            ):
+                raise ValueError(
+                    f"Job Requisition jobs[{index}] is not Open or linked"
+                )
+            seen_job_refs.add(operational_ref)
+            normalized_jobs.append({
+                "operational_job_ref": operational_ref,
+                "core_job_ref": core_ref,
+            })
+        hr_allocations = talent_search_queue.normalize_hr_allocations(
+            body["hr_allocations"]
+        )
+        # Operational jobs often share one broader Talent Discovery profile.
+        # Search each profile once, then publish one deduplicated daily
+        # workbook whose Job dropdown still contains every Open requisition.
+        search_families = []
+        family_by_profile = {}
+        for job in normalized_jobs:
+            family = family_by_profile.get(job["core_job_ref"])
+            if family is None:
+                family = {
+                    "operational_job_ref": job["operational_job_ref"],
+                    "core_job_ref": job["core_job_ref"],
+                    "selected_operational_job_refs": [],
+                }
+                family_by_profile[job["core_job_ref"]] = family
+                search_families.append(family)
+            family["selected_operational_job_refs"].append(
+                job["operational_job_ref"]
+            )
+        split_allocations = _split_multi_job_allocations(
+            hr_allocations, len(search_families)
+        )
+        business_date = _kolkata_today()
+        existing_publication = db.get_talent_daily_publication_by_date(
+            business_date
+        )
+        if existing_publication:
+            status = _publication_status_json(existing_publication)
+            return jsonify({
+                **status,
+                "error": "daily_table_already_exists",
+                "detail": (
+                    "Today already has one recruiting-table run. "
+                    "Open or resume it instead of starting another search."
+                ),
+            }), 409
+        run_payload = {
+            "business_date": business_date.isoformat(),
+            "jobs": normalized_jobs,
+            "search_families": search_families,
+            "hr_allocations": hr_allocations,
+        }
+        search_run_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "nexus-multi-job-search:"
+            + talent_search_queue.sha256(run_payload),
+        ))
+        company_tz = datetime.timezone(
+            datetime.timedelta(hours=COMPANY_TZ_OFFSET)
+        )
+        existing_run_rows = []
+        for existing in db.list_talent_search_tasks(limit=500):
+            created_at = existing.get("created_at")
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.datetime.fromisoformat(
+                        created_at.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+            if (
+                not isinstance(created_at, datetime.datetime)
+                or created_at.tzinfo is None
+                or created_at.astimezone(company_tz).date() != business_date
+                or existing.get("status") == "cancelled"
+            ):
+                continue
+            if str(existing.get("search_run_id") or "") != search_run_id:
+                return jsonify({
+                    "error": "daily_search_already_running",
+                    "detail": (
+                        "Another search for today's recruiting table already "
+                        "exists. Resume that run instead of creating a second."
+                    ),
+                }), 409
+            existing_run_rows.append(existing)
+        worker_status = _talent_worker_status()
+        if not worker_status["online"]:
+            return jsonify({
+                "error": "talent_worker_offline",
+                "detail": "The local Talent Worker is offline.",
+            }), 409
+        if not worker_status["search_ready"]:
+            return jsonify({
+                "error": "talent_search_browser_not_ready",
+                "detail": (
+                    "The Worker is online, but its dedicated search browser "
+                    "is not ready."
+                ),
+            }), 409
+        tasks = []
+        run_namespace = uuid.UUID(search_run_id)
+        for family, allocation in zip(
+            search_families, split_allocations, strict=True
+        ):
+            requested = sum(item["count"] for item in allocation)
+            tasks.append(talent_search_queue.build_task({
+                "task_id": str(uuid.uuid5(
+                    run_namespace, family["core_job_ref"]
+                )),
+                "operational_job_ref": family["operational_job_ref"],
+                "core_job_ref": family["core_job_ref"],
+                "requested_contact_count": requested,
+                "max_review_pool_count": 0,
+                "auto_publish": True,
+                "hr_allocations": allocation,
+                "budgets": _multi_job_budget(requested),
+            }))
+        rows, inserted_count = db.enqueue_talent_search_batch(
+            tasks, search_run_id
+        )
+        current_names = _channel_roster()
+        seen_names = {name.casefold() for name in current_names}
+        for allocation in hr_allocations:
+            if allocation["name"].casefold() not in seen_names:
+                current_names.append(allocation["name"])
+                seen_names.add(allocation["name"].casefold())
+        db.set_setting("channel_roster", "\n".join(current_names))
+    except ValueError as exc:
+        return jsonify({
+            "error": "invalid_multi_job_search",
+            "detail": str(exc),
+        }), 422
+    except Exception as exc:
+        print("[talent_search_batch] unavailable:", type(exc).__name__)
+        return jsonify({"error": "search_queue_unavailable"}), 503
+    return jsonify({
+        "status": "queued" if inserted_count else "unchanged",
+        "idempotent": inserted_count == 0,
+        "search_run_id": search_run_id,
+        "selected_job_count": len(normalized_jobs),
+        "search_family_count": len(rows),
+        "requested_contact_count": sum(
+            item["count"] for item in hr_allocations
+        ),
+        "tasks": [_search_task_json(row) for row in rows],
+    }), 201 if inserted_count else 200
 
 
 @app.route("/api/talent/search-tasks", methods=["GET"])
@@ -1301,17 +1550,67 @@ def _worker_lease_body():
     return body, worker_id, lease_token
 
 
+def _validated_search_progress(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) - {
+        "phase", "percent", "message", "counts",
+    }:
+        raise ValueError("progress fields are invalid")
+    phase = str(value.get("phase") or "")
+    allowed_phases = {
+        "claimed", "preparing_search", "scanning_public_sources",
+        "validating_evidence", "freezing_result", "completing",
+    }
+    if phase not in allowed_phases:
+        raise ValueError("progress phase is invalid")
+    percent = value.get("percent")
+    if isinstance(percent, bool) or not isinstance(percent, int):
+        raise ValueError("progress percent must be an integer")
+    if percent < 0 or percent > 99:
+        raise ValueError("progress percent must be between 0 and 99")
+    message = " ".join(str(value.get("message") or "").split())
+    if len(message) > 160:
+        raise ValueError("progress message is too long")
+    counts = value.get("counts") or {}
+    if not isinstance(counts, dict) or len(counts) > 10:
+        raise ValueError("progress counts are invalid")
+    normalized_counts = {}
+    for key, count in counts.items():
+        name = str(key or "")
+        if (
+            not name
+            or len(name) > 40
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            or count > 1_000_000
+        ):
+            raise ValueError("progress counts are invalid")
+        normalized_counts[name] = count
+    return {
+        "phase": phase,
+        "percent": percent,
+        "message": message,
+        "counts": normalized_counts,
+    }
+
+
 @app.route("/api/integration/v1/talent/search-tasks/<task_id>/heartbeat", methods=["POST"])
 def api_talent_search_task_heartbeat(task_id):
     if not _talent_worker_auth():
         return jsonify({"error": "unauthorized"}), 401
     try:
         body, worker_id, lease_token = _worker_lease_body()
-        if set(body) != {"worker_id", "lease_token", "lease_seconds"}:
+        if set(body) not in (
+            {"worker_id", "lease_token", "lease_seconds"},
+            {"worker_id", "lease_token", "lease_seconds", "progress"},
+        ):
             raise ValueError("invalid heartbeat fields")
         lease_seconds = talent_search_queue.valid_lease_seconds(body["lease_seconds"])
+        progress = _validated_search_progress(body.get("progress"))
         ok = db.heartbeat_talent_search_task(
-            task_id, worker_id, lease_token, lease_seconds
+            task_id, worker_id, lease_token, lease_seconds, progress
         )
     except ValueError as exc:
         return jsonify({"error": "invalid_heartbeat", "detail": str(exc)}), 422
@@ -2910,6 +3209,12 @@ def _queue_talent_search_publication(task_id):
         row for row in db.list_talent_search_tasks(limit=500)
         if task_business_date(row) == business_date
     ]
+    search_run_id = seed.get("search_run_id")
+    if search_run_id is not None:
+        today_rows = [
+            row for row in today_rows
+            if str(row.get("search_run_id") or "") == str(search_run_id)
+        ]
     unfinished = [
         row for row in today_rows
         if row.get("status") in {"pending", "claimed"}

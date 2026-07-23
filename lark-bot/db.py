@@ -20,6 +20,7 @@ SCHEMA_MIGRATIONS = (
     ("20260722_talent_daily_publication_v2", "schema_20260722_talent_daily_publication_v2.sql"),
     ("20260723_talent_worker_presence_v1", "schema_20260723_talent_worker_presence_v1.sql"),
     ("20260724_talent_publication_replacement_v1", "schema_20260724_talent_publication_replacement_v1.sql"),
+    ("20260724_talent_multi_job_progress_v1", "schema_20260724_talent_multi_job_progress_v1.sql"),
 )
 
 
@@ -639,6 +640,67 @@ def enqueue_talent_search_task(task):
         return row, inserted
 
 
+def enqueue_talent_search_batch(tasks, search_run_id):
+    """Atomically enqueue one immutable multi-job search run."""
+    if not tasks:
+        raise ValueError("search batch cannot be empty")
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        rows = []
+        inserted_count = 0
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("nexus_talent_daily_search",),
+            )
+            for order, task in enumerate(tasks, start=1):
+                cur.execute(
+                    """INSERT INTO talent_search_task
+                       (task_id, schema_version, task_type, revision, status,
+                        core_job_ref, payload, payload_sha256, expires_at,
+                        search_run_id, search_run_order, search_run_size,
+                        progress_phase, progress_percent, progress_message,
+                        last_progress_at)
+                       VALUES (%s,%s,%s,%s,'pending',%s,%s::jsonb,%s,%s,
+                               %s,%s,%s,'queued',0,%s,now())
+                       ON CONFLICT (task_id) DO NOTHING""",
+                    (
+                        task["task_id"], task["schema_version"],
+                        task["task_type"], task["revision"],
+                        task["core_job_ref"], psycopg2.extras.Json(task),
+                        task["payload_sha256"],
+                        datetime.datetime.fromisoformat(task["expires_at"]),
+                        search_run_id, order, len(tasks),
+                        "Waiting for the local Worker",
+                    ),
+                )
+                inserted_count += cur.rowcount
+                cur.execute(
+                    "SELECT * FROM talent_search_task WHERE task_id=%s",
+                    (task["task_id"],),
+                )
+                row = cur.fetchone()
+                if not row or row["payload_sha256"] != task["payload_sha256"]:
+                    raise ValueError(
+                        "task_id already exists with another payload"
+                    )
+                if str(row.get("search_run_id") or "") != str(search_run_id):
+                    raise ValueError(
+                        "task_id already belongs to another search run"
+                    )
+                rows.append(row)
+        conn.commit()
+        return rows, inserted_count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def list_talent_search_tasks(limit=50):
     with get_conn() as conn, conn.cursor(
         cursor_factory=psycopg2.extras.RealDictCursor
@@ -729,7 +791,11 @@ def retry_failed_talent_search_task(task_id):
                    claimed_at=NULL, lease_expires_at=NULL,
                    last_error_code=NULL, result=NULL, result_sha256=NULL,
                    publication_status='not_ready', publication='{}'::jsonb,
-                   published_at=NULL, updated_at=now()
+                   published_at=NULL, progress_phase='queued',
+                   progress_percent=0,
+                   progress_message='Waiting for the local Worker',
+                   progress_counts='{}'::jsonb, last_progress_at=now(),
+                   updated_at=now()
                WHERE task_id=%s
                RETURNING *""",
             (task_id,),
@@ -767,7 +833,10 @@ def claim_talent_search_task(worker_id, lease_seconds):
                 """UPDATE talent_search_task
                    SET status='pending', worker_id=NULL,
                        lease_token_sha256=NULL, claimed_at=NULL,
-                       lease_expires_at=NULL, updated_at=now()
+                       lease_expires_at=NULL, progress_phase='queued',
+                       progress_percent=0,
+                       progress_message='Lease expired; waiting for retry',
+                       last_progress_at=now(), updated_at=now()
                    WHERE status='claimed' AND lease_expires_at < now()
                      AND attempt_count < %s AND expires_at > now()""",
                 (TALENT_SEARCH_MAX_ATTEMPTS,),
@@ -817,7 +886,10 @@ def claim_talent_search_task(worker_id, lease_seconds):
                    SET status='claimed', worker_id=%s,
                        lease_token_sha256=%s, claimed_at=now(),
                        lease_expires_at=now() + (%s * interval '1 second'),
-                       attempt_count=attempt_count+1, updated_at=now()
+                       attempt_count=attempt_count+1,
+                       progress_phase='claimed', progress_percent=5,
+                       progress_message='Worker accepted the search task',
+                       last_progress_at=now(), updated_at=now()
                    WHERE task_id=%s RETURNING *""",
                 (worker_id, lease_hash, lease_seconds, row["task_id"]),
             )
@@ -831,17 +903,36 @@ def claim_talent_search_task(worker_id, lease_seconds):
         conn.close()
 
 
-def heartbeat_talent_search_task(task_id, worker_id, lease_token, lease_seconds):
+def heartbeat_talent_search_task(
+    task_id, worker_id, lease_token, lease_seconds, progress=None,
+):
     lease_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
     with get_conn() as conn, conn.cursor() as cur:
+        progress = progress or {}
         cur.execute(
             """UPDATE talent_search_task
                SET lease_expires_at=now() + (%s * interval '1 second'),
+                   progress_phase=COALESCE(%s, progress_phase),
+                   progress_percent=COALESCE(%s, progress_percent),
+                   progress_message=COALESCE(%s, progress_message),
+                   progress_counts=COALESCE(%s::jsonb, progress_counts),
+                   last_progress_at=CASE WHEN %s IS NULL
+                                        THEN last_progress_at ELSE now() END,
                    updated_at=now()
                WHERE task_id=%s AND status='claimed' AND worker_id=%s
                  AND lease_token_sha256=%s AND lease_expires_at > now()
                RETURNING task_id""",
-            (lease_seconds, task_id, worker_id, lease_hash),
+            (
+                lease_seconds,
+                progress.get("phase"), progress.get("percent"),
+                progress.get("message"),
+                (
+                    psycopg2.extras.Json(progress.get("counts"))
+                    if progress.get("counts") is not None else None
+                ),
+                progress.get("phase"),
+                task_id, worker_id, lease_hash,
+            ),
         )
         return cur.fetchone() is not None
 
@@ -871,6 +962,8 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
             """UPDATE talent_search_task
                SET status=%s, result=%s::jsonb, result_sha256=%s,
                     publication_status=%s,
+                    progress_phase=%s, progress_percent=100,
+                    progress_message=%s, last_progress_at=now(),
                     lease_token_sha256=NULL, lease_expires_at=NULL,
                     updated_at=now()
                WHERE task_id=%s AND status='claimed' AND worker_id=%s
@@ -879,6 +972,15 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
             (
                 terminal_status, psycopg2.extras.Json(result), result_sha256,
                 "ready" if terminal_status == "succeeded" else "not_ready",
+                (
+                    "frozen_ready"
+                    if terminal_status == "succeeded" else "shortfall"
+                ),
+                (
+                    "Candidate cohort frozen and ready"
+                    if terminal_status == "succeeded"
+                    else "Search completed below target"
+                ),
                 task_id, worker_id, lease_hash,
             ),
         )
@@ -1323,11 +1425,17 @@ def fail_talent_search_task(task_id, worker_id, lease_token, error_code):
             """UPDATE talent_search_task
                SET status='failed', last_error_code=%s,
                    lease_token_sha256=NULL, lease_expires_at=NULL,
+                   progress_phase='failed', progress_percent=100,
+                   progress_message=%s, last_progress_at=now(),
                    updated_at=now()
                WHERE task_id=%s AND status='claimed' AND worker_id=%s
                  AND lease_token_sha256=%s AND lease_expires_at > now()
                RETURNING task_id""",
-            (error_code, task_id, worker_id, lease_hash),
+            (
+                error_code,
+                "Search failed: " + str(error_code),
+                task_id, worker_id, lease_hash,
+            ),
         )
         return cur.fetchone() is not None
 
