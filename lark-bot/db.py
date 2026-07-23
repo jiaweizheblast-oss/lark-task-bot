@@ -12,6 +12,7 @@ import psycopg2
 import psycopg2.extras
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+TALENT_SEARCH_MAX_ATTEMPTS = 10
 SCHEMA_MIGRATIONS = (
     ("20260722_recruiting_core_v1", "schema.sql"),
     ("20260722_recruiting_core_v2", "schema_20260722_recruiting_core_v2.sql"),
@@ -672,7 +673,8 @@ def retry_failed_talent_search_task(task_id):
         if not row:
             raise ValueError("Search task was not found")
         if row["status"] != "failed" and not (
-            row["status"] == "pending" and int(row["attempt_count"] or 0) >= 3
+            row["status"] == "pending"
+            and int(row["attempt_count"] or 0) >= TALENT_SEARCH_MAX_ATTEMPTS
         ):
             raise ValueError("Only a failed or exhausted search task can be retried")
         if row["expires_at"] <= datetime.datetime.now(datetime.timezone.utc):
@@ -699,13 +701,33 @@ def claim_talent_search_task(worker_id, lease_seconds):
         with conn.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
         ) as cur:
+            # A local worker can finish a frozen result immediately after a
+            # restart. Older deployments marked the task failed after only
+            # three interrupted leases, leaving a valid local receipt
+            # permanently invisible to the worker. Requeue only those
+            # exhausted-lease failures; substantive search failures still
+            # require an explicit manager retry.
+            cur.execute(
+                """UPDATE talent_search_task
+                   SET status='pending', worker_id=NULL,
+                       lease_token_sha256=NULL, claimed_at=NULL,
+                       lease_expires_at=NULL, last_error_code=NULL,
+                       updated_at=now()
+                   WHERE status='failed'
+                     AND last_error_code IN (
+                         'attempts_exhausted', 'lease_attempts_exhausted'
+                     )
+                     AND attempt_count < %s AND expires_at > now()""",
+                (TALENT_SEARCH_MAX_ATTEMPTS,),
+            )
             cur.execute(
                 """UPDATE talent_search_task
                    SET status='pending', worker_id=NULL,
                        lease_token_sha256=NULL, claimed_at=NULL,
                        lease_expires_at=NULL, updated_at=now()
                    WHERE status='claimed' AND lease_expires_at < now()
-                     AND attempt_count < 3 AND expires_at > now()"""
+                     AND attempt_count < %s AND expires_at > now()""",
+                (TALENT_SEARCH_MAX_ATTEMPTS,),
             )
             cur.execute(
                 """UPDATE talent_search_task
@@ -713,7 +735,8 @@ def claim_talent_search_task(worker_id, lease_seconds):
                        lease_token_sha256=NULL, lease_expires_at=NULL,
                        updated_at=now()
                    WHERE status='claimed' AND lease_expires_at < now()
-                     AND attempt_count >= 3"""
+                     AND attempt_count >= %s""",
+                (TALENT_SEARCH_MAX_ATTEMPTS,),
             )
             # Older workers could leave an exhausted command in pending,
             # which made it permanently invisible to both claim and retry.
@@ -723,7 +746,8 @@ def claim_talent_search_task(worker_id, lease_seconds):
                        worker_id=NULL, lease_token_sha256=NULL,
                        claimed_at=NULL, lease_expires_at=NULL,
                        updated_at=now()
-                   WHERE status='pending' AND attempt_count >= 3"""
+                   WHERE status='pending' AND attempt_count >= %s""",
+                (TALENT_SEARCH_MAX_ATTEMPTS,),
             )
             cur.execute(
                 """UPDATE talent_search_task
@@ -734,9 +758,10 @@ def claim_talent_search_task(worker_id, lease_seconds):
             cur.execute(
                 """SELECT * FROM talent_search_task
                    WHERE status='pending' AND expires_at > now()
-                     AND attempt_count < 3
+                     AND attempt_count < %s
                    ORDER BY created_at
-                   FOR UPDATE SKIP LOCKED LIMIT 1"""
+                   FOR UPDATE SKIP LOCKED LIMIT 1""",
+                (TALENT_SEARCH_MAX_ATTEMPTS,),
             )
             row = cur.fetchone()
             if not row:
