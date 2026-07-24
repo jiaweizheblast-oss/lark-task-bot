@@ -1055,6 +1055,40 @@ def queue_talent_daily_publication(
             )
             existing = cur.fetchone()
             if existing:
+                if existing["status"] == "failed":
+                    # A manager clicking "publish" again must resume the exact
+                    # immutable batch that already owns this business date.
+                    # Never replace it with a newly assembled payload and never
+                    # discard its frozen search cohorts.
+                    cur.execute(
+                        """UPDATE talent_daily_publication
+                           SET status='queued', attempt_count=0,
+                               worker_id=NULL, lease_token_sha256=NULL,
+                               claimed_at=NULL, lease_expires_at=NULL,
+                               last_error_code=NULL, receipt='{}'::jsonb,
+                               updated_at=now()
+                           WHERE publication_id=%s
+                           RETURNING *""",
+                        (existing["publication_id"],),
+                    )
+                    resumed = cur.fetchone()
+                    cur.execute(
+                        """UPDATE talent_search_task t
+                           SET publication_status='queued',
+                               publication=%s::jsonb, updated_at=now()
+                           FROM talent_daily_publication_item i
+                           WHERE i.publication_id=%s AND i.task_id=t.task_id""",
+                        (
+                            psycopg2.extras.Json({
+                                "publication_id": str(existing["publication_id"]),
+                                "business_date": str(existing["business_date"]),
+                                "payload_sha256": existing["payload_sha256"],
+                            }),
+                            existing["publication_id"],
+                        ),
+                    )
+                    conn.commit()
+                    return resumed
                 if existing["payload_sha256"] != publication["payload_sha256"]:
                     raise ValueError(
                         "today already has a different immutable publication batch"
