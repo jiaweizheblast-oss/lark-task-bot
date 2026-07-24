@@ -1035,6 +1035,21 @@ def get_talent_daily_publication_by_date(business_date):
         return cur.fetchone()
 
 
+def get_latest_archived_talent_daily_publication_by_date(business_date):
+    """Return the most recently superseded publication for safe fallback UI."""
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute(
+            """SELECT * FROM talent_daily_publication_archive
+               WHERE business_date=%s
+               ORDER BY archived_at DESC
+               LIMIT 1""",
+            (business_date,),
+        )
+        return cur.fetchone()
+
+
 def queue_talent_daily_publication(
     publication_id, business_date, publication, task_ids,
 ):
@@ -1202,6 +1217,7 @@ def replace_published_talent_daily_publication(
     publication_id,
     expected_payload_sha256,
     replacement,
+    replacement_task_ids=None,
 ):
     """Archive a terminal command and atomically queue its new revision.
 
@@ -1241,7 +1257,14 @@ def replace_published_talent_daily_publication(
                    WHERE publication_id=%s ORDER BY cohort_order""",
                 (publication_id,),
             )
-            task_ids = [str(row["task_id"]) for row in cur.fetchall()]
+            archived_task_ids = [
+                str(row["task_id"]) for row in cur.fetchall()
+            ]
+            task_ids = (
+                [str(value) for value in replacement_task_ids]
+                if replacement_task_ids is not None
+                else archived_task_ids
+            )
             cur.execute(
                 """INSERT INTO talent_daily_publication_archive
                    (publication_id,business_date,revision,status,payload,
@@ -1255,7 +1278,7 @@ def replace_published_talent_daily_publication(
                     psycopg2.extras.Json(current["payload"]),
                     current["payload_sha256"],
                     psycopg2.extras.Json(current["receipt"] or {}),
-                    psycopg2.extras.Json(task_ids),
+                    psycopg2.extras.Json(archived_task_ids),
                     replacement_id,
                 ),
             )

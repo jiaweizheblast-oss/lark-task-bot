@@ -473,6 +473,10 @@
             <div id="tdHrAllocations" style="display:grid;gap:7px;margin-top:8px"></div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><button class="btn" onclick="queueTalentPreview()">开始搜索并生成今日表</button><button class="btn ghost" onclick="createBlankTalentWorkbook()">不搜索，创建/打开今日表</button><span class="muted" style="padding:0;font-size:12px">没有搜索结果也能创建：每位 HR 获得空白录入区和 Recruiting Overview。</span></div>
+          <div id="tdReconfigureActions" class="hide" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button id="tdReconfigureBtn" class="btn ghost" type="button" onclick="startTalentReconfiguration()">重新配置今日表</button>
+            <button id="tdCancelReconfigureBtn" class="btn ghost hide" type="button" onclick="cancelTalentReconfiguration()">取消重新配置</button>
+          </div>
           <div id="tdDailyFlowStatus" style="margin-top:10px"></div>
           <div id="tdSearchMessage" style="font-size:12px;margin-top:8px"></div>
         </div>
@@ -537,7 +541,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
-let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], TALENT_WORKER_STATE={}, TALENT_LATEST_TASKS=[], calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false, TALENT_SEARCH_READY=false;
+let PW="", TASKS=[], GROUPS=[], GMAP={}, EGROUPS=[], EGMAP={}, MEMCACHE={}, TALENT_JOBS=[], TALENT_OPER_JOBS=[], TALENT_WORKER_STATE={}, TALENT_LATEST_TASKS=[], TALENT_RECONFIGURE_PUBLICATION=null, TALENT_CURRENT_PUBLICATION=null, calY=0, calM=0, TZLABEL="", TZOFF=null, WORKEND=22, WORKSTART=10, TALENT_FLOW_TIMER=null, TALENT_WORKER_ONLINE=false, TALENT_SEARCH_READY=false;
 const dlText=d=>d?(d+(TZLABEL?(' '+TZLABEL):'')):'';
 function localOf(d){if(!d||TZOFF==null)return'';const p=d.split('-').map(Number);const inst=Date.UTC(p[0],p[1]-1,p[2],WORKEND,0,0)-TZOFF*3600000;const vo=-new Date().getTimezoneOffset()/60;if(vo===TZOFF)return'';return 'your local ~'+new Date(inst).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 // 真实状态只有三个（手动设置、统计都用它）
@@ -768,9 +772,58 @@ async function loadTalentWorkerStatus(){
 function setTalentFlowLocked(locked){
   const searchButton=document.querySelector('#view-talent button[onclick="queueTalentPreview()"]');
   const blankButton=document.querySelector('#view-talent button[onclick="createBlankTalentWorkbook()"]');
-  if(searchButton)searchButton.disabled=!!(locked||!TALENT_SEARCH_READY);
+  const reconfiguring=!!TALENT_RECONFIGURE_PUBLICATION;
+  if(searchButton)searchButton.disabled=!!((locked&&!reconfiguring)||!TALENT_SEARCH_READY);
   if(blankButton)blankButton.disabled=!!(locked||!TALENT_WORKER_ONLINE);
-  document.querySelectorAll('.td-search-job').forEach(input=>input.disabled=!!locked);
+  document.querySelectorAll('.td-search-job').forEach(
+    input=>input.disabled=!!(locked&&!reconfiguring)
+  );
+}
+function renderTalentReconfigureActions(publication){
+  const root=document.getElementById('tdReconfigureActions');
+  const start=document.getElementById('tdReconfigureBtn');
+  const cancel=document.getElementById('tdCancelReconfigureBtn');
+  if(!root||!start||!cancel)return;
+  const available=publication&&publication.status==='published'&&publication.publication_id;
+  root.classList.toggle('hide',!available);
+  start.classList.toggle('hide',!available||!!TALENT_RECONFIGURE_PUBLICATION);
+  cancel.classList.toggle('hide',!TALENT_RECONFIGURE_PUBLICATION);
+}
+function setTalentHrAllocations(items){
+  const root=document.getElementById('tdHrAllocations');
+  if(!root)return;
+  root.innerHTML='';
+  (items||[]).forEach(item=>addHrAllocation(item.name||'',item.count||''));
+  ensureHrAllocationRow();
+  updateHrAllocationTotal();
+}
+function startTalentReconfiguration(){
+  const publication=TALENT_CURRENT_PUBLICATION;
+  if(!publication||publication.status!=='published')return;
+  if(!publication.can_replace_unused){
+    toast('Today’s submitted table cannot be reconfigured.',true);
+    return;
+  }
+  TALENT_RECONFIGURE_PUBLICATION=publication;
+  const configuration=publication.configuration||{};
+  const selected=new Set(configuration.selected_operational_job_refs||[]);
+  document.querySelectorAll('.td-search-job').forEach(input=>{
+    input.checked=selected.has(input.value);
+    input.disabled=false;
+  });
+  setTalentHrAllocations(configuration.hr_allocations||[]);
+  renderTalentReconfigureActions(publication);
+  setTalentFlowLocked(false);
+  const msg=document.getElementById('tdSearchMessage');
+  if(msg)msg.textContent='重新选择职位、HR 和人数后，点击“开始搜索并生成今日表”。当前 Lark 表会继续可用；新搜索失败不会替换它。';
+  document.getElementById('tdSearchJobs')?.scrollIntoView({behavior:'smooth',block:'center'});
+}
+function cancelTalentReconfiguration(){
+  TALENT_RECONFIGURE_PUBLICATION=null;
+  renderTalentReconfigureActions(TALENT_CURRENT_PUBLICATION);
+  setTalentFlowLocked(!!(TALENT_CURRENT_PUBLICATION&&TALENT_CURRENT_PUBLICATION.status==='published'));
+  const msg=document.getElementById('tdSearchMessage');
+  if(msg)msg.textContent='已取消重新配置；当前今日表保持不变。';
 }
 function talentFlowCard(title,detail,tone='info',action=''){
   const colors={info:['#eff6ff','#1d4ed8'],working:['#fff7ed','#c2410c'],ready:['#ecfdf5','#15803d'],error:['#fef2f2','#b91c1c']};
@@ -929,6 +982,8 @@ async function loadTalentDailyFlow(){
       api('/api/talent/search-tasks'),
     ]);
     const publication=await publicationResponse.json();
+    TALENT_CURRENT_PUBLICATION=publication;
+    renderTalentReconfigureActions(publication);
     const taskData=await taskResponse.json();
     const today=publication.business_date||'today';
     const tasks=(taskData.tasks||[]).filter(
@@ -1007,6 +1062,16 @@ async function loadTalentDailyFlow(){
         'info'
       );
     }
+    if(
+      publication.fallback_publication
+      && publication.fallback_publication.spreadsheet_url
+      && publication.status!=='published'
+    ){
+      root.insertAdjacentHTML(
+        'beforeend',
+        `<div style="margin-top:8px"><a class="btn ghost sm" href="${esc(publication.fallback_publication.spreadsheet_url)}" target="_blank" rel="noopener">打开上一版可用表</a> <span class="muted" style="font-size:12px">新版本未成功前，上一版仍可继续使用。</span></div>`
+      );
+    }
     setTalentFlowLocked(locked||!TALENT_WORKER_ONLINE);
     if(!locked&&!TALENT_WORKER_ONLINE){
       root.innerHTML=talentFlowCard(
@@ -1049,8 +1114,24 @@ async function queueTalentPreview(){
     jobs:selected.map(x=>({operational_job_ref:x.operational.job_ref,core_job_ref:x.profile.core_job_ref})),
     hr_allocations:allocations
   };
+  if(TALENT_RECONFIGURE_PUBLICATION){
+    const accepted=confirm(
+      '当前 Lark 表会继续保留并可正常使用。系统将按新的职位、HR 和人数重新搜索；只有新候选人冻结完成后才创建新版本。继续吗？'
+    );
+    if(!accepted)return;
+    payload.replace_publication_id=TALENT_RECONFIGURE_PUBLICATION.publication_id;
+    payload.confirm='RECONFIGURE_UNUSED_PUBLISHED';
+  }
   try{
     const response=await api('/api/talent/search-batches',{method:'POST',body:JSON.stringify(payload)}),body=await response.json();
+    const wasReconfiguration=!!TALENT_RECONFIGURE_PUBLICATION;
+    if(response.ok&&wasReconfiguration){
+      TALENT_RECONFIGURE_PUBLICATION=null;
+      renderTalentReconfigureActions(TALENT_CURRENT_PUBLICATION);
+      setTimeout(()=>{
+        msg.textContent=`已开始重新配置：旧表保持可用；${body.selected_job_count} 个职位将合并为 ${body.search_family_count} 个搜索职位族。新结果冻结并发布成功后才切换。`;
+      },0);
+    }
     if(!response.ok){msg.textContent='任务被拒绝：'+(body.detail||body.error||'unknown');return;}
     msg.textContent=`已开始：${body.selected_job_count} 个招聘职位合并为 ${body.search_family_count} 个职位族。Worker 会自动搜索、冻结、跨族去重并只生成一张今日招聘表。`;
     await Promise.all([loadTalentDailyFlow(),loadTalentTasks()]);

@@ -358,6 +358,7 @@ def build_publication_cohort(row, *, hiring_job_label):
 def build_publication_task(
     cohorts, *, publication_id, business_date, now=None, hr_names=None,
     open_jobs=None, source_channels=None, manual_rows_per_hr=30,
+    revision=1, apply_frozen_cohorts=None,
 ):
     """Build one immutable daily workbook command.
 
@@ -407,6 +408,13 @@ def build_publication_task(
     manual_rows_per_hr = _integer(
         manual_rows_per_hr, "manual_rows_per_hr", 1, 500
     )
+    revision = _integer(revision, "revision", 1, 1000000)
+    if apply_frozen_cohorts is None:
+        apply_frozen_cohorts = bool(cohorts and revision == 1)
+    if not isinstance(apply_frozen_cohorts, bool):
+        raise ValueError("apply_frozen_cohorts must be a boolean")
+    if apply_frozen_cohorts and not cohorts:
+        raise ValueError("apply_frozen_cohorts requires frozen cohorts")
     job_catalog = {
         item["operational_job_ref"]: item["hiring_job_label"].casefold()
         for item in open_jobs
@@ -426,7 +434,7 @@ def build_publication_task(
         "schema_version": PUBLICATION_SCHEMA_VERSION,
         "task_type": PUBLICATION_TASK_TYPE,
         "publication_id": str(publication_id),
-        "revision": 1,
+        "revision": revision,
         "created_at": current.isoformat(),
         "expires_at": expires_at.isoformat(),
         "business_date": parsed_business_date.isoformat(),
@@ -434,6 +442,7 @@ def build_publication_task(
         "open_jobs": open_jobs,
         "source_channels": source_channels,
         "manual_rows_per_hr": manual_rows_per_hr,
+        "apply_frozen_cohorts": apply_frozen_cohorts,
         "cohorts": cohorts,
         "total_contact_count": sum(
             int(item["requested_contact_count"]) for item in cohorts
@@ -474,6 +483,7 @@ def build_replacement_publication_task(
     old_revision = _integer(command.get("revision"), "revision", 1, 1000000)
     command["publication_id"] = new_id
     command["revision"] = old_revision + 1
+    command["apply_frozen_cohorts"] = False
     command["created_at"] = current.isoformat()
     command["expires_at"] = expires_at.isoformat()
     cohorts = command.get("cohorts")

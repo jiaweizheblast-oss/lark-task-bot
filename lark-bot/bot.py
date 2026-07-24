@@ -1074,10 +1074,47 @@ def api_talent_search_batch_create():
         return jsonify({"error": "unauthorized"}), 401
     try:
         body = request.get_json(silent=True) or {}
-        if set(body) != {"jobs", "hr_allocations"}:
+        normal_fields = {"jobs", "hr_allocations"}
+        replacement_fields = normal_fields | {
+            "replace_publication_id",
+            "confirm",
+        }
+        body_fields = frozenset(body)
+        if body_fields not in {
+            frozenset(normal_fields),
+            frozenset(replacement_fields),
+        }:
             raise ValueError(
-                "multi-job search requires only jobs and hr_allocations"
+                "multi-job search fields are invalid"
             )
+        replacement_context = None
+        if body_fields == frozenset(replacement_fields):
+            if body["confirm"] != "RECONFIGURE_UNUSED_PUBLISHED":
+                raise ValueError("reconfiguration confirmation is invalid")
+            replace_publication_id = str(
+                body.get("replace_publication_id") or ""
+            )
+            current_publication = db.get_talent_daily_publication(
+                replace_publication_id
+            )
+            if (
+                not current_publication
+                or current_publication.get("status") != "published"
+            ):
+                raise ValueError(
+                    "Only today's published recruiting table can be reconfigured"
+                )
+            if str(current_publication.get("business_date") or "") != (
+                _kolkata_today().isoformat()
+            ):
+                raise ValueError(
+                    "Only today's unused recruiting table can be reconfigured"
+                )
+            replacement_context = {
+                "publication_id": replace_publication_id,
+                "payload_sha256": current_publication["payload_sha256"],
+                "revision": int(current_publication.get("revision") or 1),
+            }
         jobs = body["jobs"]
         if not isinstance(jobs, list) or not (1 <= len(jobs) <= 10):
             raise ValueError("Select 1 to 10 Open Job Requisitions")
@@ -1142,7 +1179,7 @@ def api_talent_search_batch_create():
         existing_publication = db.get_talent_daily_publication_by_date(
             business_date
         )
-        if existing_publication:
+        if existing_publication and replacement_context is None:
             status = _publication_status_json(existing_publication)
             return jsonify({
                 **status,
@@ -1157,6 +1194,7 @@ def api_talent_search_batch_create():
             "jobs": normalized_jobs,
             "search_families": search_families,
             "hr_allocations": hr_allocations,
+            "replacement": replacement_context,
         }
         search_run_id = str(uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -1181,6 +1219,11 @@ def api_talent_search_batch_create():
                 or created_at.tzinfo is None
                 or created_at.astimezone(company_tz).date() != business_date
                 or existing.get("status") == "cancelled"
+            ):
+                continue
+            if (
+                replacement_context is not None
+                and existing.get("status") not in {"pending", "claimed"}
             ):
                 continue
             if str(existing.get("search_run_id") or "") != search_run_id:
@@ -1227,6 +1270,20 @@ def api_talent_search_batch_create():
         rows, inserted_count = db.enqueue_talent_search_batch(
             tasks, search_run_id
         )
+        if replacement_context is not None:
+            db.set_setting(
+                "talent_reconfiguration_run:" + search_run_id,
+                json.dumps(
+                    {
+                        **replacement_context,
+                        "jobs": normalized_jobs,
+                        "hr_allocations": hr_allocations,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
         current_names = _channel_roster()
         seen_names = {name.casefold() for name in current_names}
         for allocation in hr_allocations:
@@ -1246,6 +1303,8 @@ def api_talent_search_batch_create():
         "status": "queued" if inserted_count else "unchanged",
         "idempotent": inserted_count == 0,
         "search_run_id": search_run_id,
+        "reconfiguration": replacement_context is not None,
+        "old_table_remains_available": replacement_context is not None,
         "selected_job_count": len(normalized_jobs),
         "search_family_count": len(rows),
         "requested_contact_count": sum(
@@ -1330,6 +1389,38 @@ def _publication_status_json(row):
     status = row.get("status") or "queued"
     hr_names = list(payload.get("hr_names") or [])
     open_jobs = list(payload.get("open_jobs") or [])
+    selected_job_refs = []
+    allocation_totals = {}
+    for cohort in payload.get("cohorts") or []:
+        operational_ref = str(
+            cohort.get("operational_job_ref") or ""
+        ).strip()
+        if operational_ref and operational_ref not in selected_job_refs:
+            selected_job_refs.append(operational_ref)
+        for allocation in cohort.get("hr_allocations") or []:
+            name = str(allocation.get("name") or "").strip()
+            count = allocation.get("count")
+            if name and isinstance(count, int) and not isinstance(count, bool):
+                allocation_totals[name] = allocation_totals.get(name, 0) + count
+    if not allocation_totals:
+        allocation_totals = {
+            name: 0 for name in hr_names if isinstance(name, str) and name
+        }
+    fallback = None
+    try:
+        archived = db.get_latest_archived_talent_daily_publication_by_date(
+            row.get("business_date")
+        )
+        archived_receipt = dict((archived or {}).get("receipt") or {})
+        if archived_receipt.get("spreadsheet_url"):
+            fallback = {
+                "publication_id": str(archived.get("publication_id") or ""),
+                "revision": int(archived.get("revision") or 1),
+                "spreadsheet_url": archived_receipt["spreadsheet_url"],
+            }
+    except Exception:
+        # Fallback visibility must never make the primary status endpoint fail.
+        fallback = None
     return {
         "ok": True,
         "status": status,
@@ -1343,7 +1434,15 @@ def _publication_status_json(row):
         "hr_count": len(hr_names),
         "open_jobs": open_jobs,
         "open_job_count": len(open_jobs),
+        "configuration": {
+            "selected_operational_job_refs": selected_job_refs,
+            "hr_allocations": [
+                {"name": name, "count": count}
+                for name, count in allocation_totals.items()
+            ],
+        },
         "spreadsheet_url": receipt.get("spreadsheet_url"),
+        "fallback_publication": fallback,
         "error_code": (
             receipt.get("error_code")
             or row.get("last_error_code")
@@ -3334,9 +3433,38 @@ def _queue_talent_search_publication(task_id):
             row,
             hiring_job_label=job.get("title"),
         ))
-    hr_names = _channel_roster()
+    hr_names = []
+    seen_hr_names = set()
+    for row in ready_rows:
+        for allocation in (row.get("payload") or {}).get(
+            "hr_allocations"
+        ) or []:
+            name = str(allocation.get("name") or "").strip()
+            key = name.casefold()
+            if name and key not in seen_hr_names:
+                seen_hr_names.add(key)
+                hr_names.append(name)
+    if not hr_names:
+        raise ValueError("The frozen search run has no HR allocation")
     open_jobs = _daily_publication_open_jobs()
     source_channels = list(channel_report.CHANNELS)
+    replacement_context = None
+    if search_run_id:
+        raw_replacement = db.get_settings().get(
+            "talent_reconfiguration_run:" + str(search_run_id)
+        )
+        if raw_replacement:
+            try:
+                replacement_context = json.loads(raw_replacement)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "Reconfiguration context is invalid"
+                ) from error
+    revision = (
+        int(replacement_context["revision"]) + 1
+        if replacement_context is not None
+        else 1
+    )
     publication_id = str(uuid.uuid5(
         uuid.NAMESPACE_URL,
         "nexus-daily-recruiting:"
@@ -3358,13 +3486,24 @@ def _queue_talent_search_publication(task_id):
         open_jobs=open_jobs,
         source_channels=source_channels,
         manual_rows_per_hr=30,
+        revision=revision,
+        apply_frozen_cohorts=True,
     )
-    queued = db.queue_talent_daily_publication(
-        publication_id,
-        business_date,
-        command,
-        [item["search_task_id"] for item in cohorts],
-    )
+    cohort_task_ids = [item["search_task_id"] for item in cohorts]
+    if replacement_context is not None:
+        queued = db.replace_published_talent_daily_publication(
+            replacement_context["publication_id"],
+            replacement_context["payload_sha256"],
+            command,
+            replacement_task_ids=cohort_task_ids,
+        )
+    else:
+        queued = db.queue_talent_daily_publication(
+            publication_id,
+            business_date,
+            command,
+            cohort_task_ids,
+        )
     if not queued:
         raise RuntimeError("Daily publication disappeared before it was queued")
     return {
@@ -3376,6 +3515,8 @@ def _queue_talent_search_publication(task_id):
         "cohort_count": len(cohorts),
         "expected_rows": command["total_contact_count"],
         "requires_local_worker": True,
+        "reconfiguration": replacement_context is not None,
+        "old_lark_workbook_retained": replacement_context is not None,
         "lark_calls": 0,
         "database_writes": 0,
     }
