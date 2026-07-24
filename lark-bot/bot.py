@@ -1328,17 +1328,28 @@ def _publication_status_json(row):
     payload = dict(row.get("payload") or {})
     receipt = dict(row.get("receipt") or {})
     status = row.get("status") or "queued"
+    hr_names = list(payload.get("hr_names") or [])
+    open_jobs = list(payload.get("open_jobs") or [])
     return {
         "ok": True,
         "status": status,
         "idempotent": True,
         "business_date": str(row.get("business_date") or ""),
         "publication_id": str(row.get("publication_id") or ""),
+        "revision": int(row.get("revision") or payload.get("revision") or 1),
         "cohort_count": len(payload.get("cohorts") or []),
         "expected_rows": int(payload.get("total_contact_count") or 0),
+        "hr_names": hr_names,
+        "hr_count": len(hr_names),
+        "open_jobs": open_jobs,
+        "open_job_count": len(open_jobs),
         "spreadsheet_url": receipt.get("spreadsheet_url"),
-        "error_code": receipt.get("error_code"),
+        "error_code": (
+            receipt.get("error_code")
+            or row.get("last_error_code")
+        ),
         "can_reset": status == "failed",
+        "can_repair": status == "failed",
         "can_replace_unused": status == "published",
         "requires_local_worker": status in {"queued", "publishing"},
     }
@@ -1459,6 +1470,67 @@ def api_talent_publication_reset(publication_id):
         print("[talent_publication_reset] unavailable:", type(exc).__name__)
         return jsonify({"error": "publication_reset_unavailable"}), 503
     return jsonify(result)
+
+
+@app.route(
+    "/api/talent/publications/<publication_id>/repair",
+    methods=["POST"],
+)
+def api_talent_publication_repair(publication_id):
+    """Republish a failed immutable cohort as a new revision, without search."""
+
+    if not _panel_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    if body != {"confirm": "REPAIR_FAILED_PUBLICATION"}:
+        return jsonify({"error": "repair_confirmation_required"}), 422
+    try:
+        current = db.get_talent_daily_publication(publication_id)
+        if not current:
+            raise ValueError("failed recruiting table command no longer exists")
+        if current.get("status") != "failed":
+            raise ValueError("only a failed recruiting table can be repaired")
+        if str(current.get("business_date") or "") != _kolkata_today().isoformat():
+            raise ValueError("only today's failed recruiting table can be repaired")
+        if not _talent_worker_status("publication")["online"]:
+            raise ValueError("the local Talent Worker is offline")
+        next_revision = int(current.get("revision") or 1) + 1
+        replacement_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "nexus-recruiting-repair:"
+            + str(publication_id)
+            + ":"
+            + str(next_revision),
+        ))
+        replacement = talent_search_queue.build_replacement_publication_task(
+            dict(current.get("payload") or {}),
+            publication_id=replacement_id,
+        )
+        queued = db.replace_published_talent_daily_publication(
+            publication_id,
+            current["payload_sha256"],
+            replacement,
+        )
+    except ValueError as exc:
+        return jsonify({
+            "error": "publication_repair_rejected",
+            "detail": str(exc),
+        }), 409
+    except Exception as exc:
+        print("[talent_publication_repair] unavailable:", type(exc).__name__)
+        return jsonify({"error": "publication_repair_unavailable"}), 503
+    return jsonify({
+        "ok": True,
+        "status": queued.get("status") or "queued",
+        "business_date": replacement["business_date"],
+        "publication_id": replacement_id,
+        "revision": replacement["revision"],
+        "expected_rows": replacement["total_contact_count"],
+        "requires_local_worker": True,
+        "scanner_calls": 0,
+        "frozen_cohort_preserved": True,
+        "old_lark_workbook_retained": True,
+    }), 201
 
 
 @app.route(

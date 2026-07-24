@@ -945,9 +945,9 @@ async function loadTalentDailyFlow(){
       locked=true;refresh=false;
       root.innerHTML=talentFlowCard(
         `${today} 今日招聘表已完成`,
-        '搜索结果、HR 分配和 Overview 已固定在同一张表中。重复操作不会生成第二张表。',
+        `${publication.expected_rows||0} 名系统候选人 · ${publication.hr_count||0} 名 HR · ${publication.open_job_count||0} 个开放职位 · revision ${publication.revision||1}。搜索结果、HR 分配和 Overview 已固定在同一张表中。`,
         'ready',
-        `<a class="btn sm" href="${esc(publication.spreadsheet_url)}" target="_blank" rel="noopener">打开今日招聘表</a> ${publication.can_replace_unused?`<button class="btn ghost sm" onclick="replaceUnusedTalentPublication('${esc(publication.publication_id)}')">重建今日表（旧表未提交）</button>`:''}`
+        `<a class="btn sm" href="${esc(publication.spreadsheet_url)}" target="_blank" rel="noopener">打开今日招聘表</a> ${publication.can_replace_unused?`<button class="btn ghost sm" onclick="replaceUnusedTalentPublication('${esc(publication.publication_id)}')">重建同一批次（不改人数）</button>`:''}`
       );
     }else if(['queued','publishing'].includes(publication.status)){
       locked=true;
@@ -959,14 +959,16 @@ async function loadTalentDailyFlow(){
     }else if(publication.status==='failed'){
       locked=true;refresh=false;
       const manualOnly=Number(publication.cohort_count||0)===0;
-      const recoveryAction=manualOnly&&publication.can_reset
-        ? '<button class="btn sm" onclick="createBlankTalentWorkbook()">填写 HR 后重置并创建今日空表</button>'
-        : '';
+      const recoveryAction=publication.can_repair
+        ? `<button class="btn sm" onclick="repairFailedTalentPublication('${esc(publication.publication_id)}')">修复发布（不重新搜索）</button>`
+        : manualOnly&&publication.can_reset
+          ? '<button class="btn sm" onclick="createBlankTalentWorkbook()">填写 HR 后重置并创建今日空表</button>'
+          : '';
       root.innerHTML=talentFlowCard(
         '今日招聘表发布失败',
         manualOnly
-          ? `本次没有搜索候选人，可以安全重置失败的未发布指令，再按当前 HR 名单创建今日空表。错误：${publication.error_code||'unknown'}`
-          : `冻结结果仍被保留，请只修复发布阶段，不要重新搜索。错误：${publication.error_code||'unknown'}`,
+          ? `本次没有搜索候选人。系统会创建新 revision 修复发布，不需要重新填写或重复点击。错误：${publication.error_code||'unknown'}`
+          : `${publication.expected_rows||0} 名冻结候选人仍被保留。只修复发布阶段，不会调用搜索器。错误：${publication.error_code||'unknown'}`,
         'error',
         recoveryAction
       );
@@ -1098,6 +1100,22 @@ async function resetTalentPublication(publicationId){
     await loadTalentTasks();
   }catch(e){toast(e.message,true);}
 }
+async function repairFailedTalentPublication(publicationId){
+  if(!publicationId)return;
+  const accepted=confirm(
+    '系统将沿用同一批冻结候选人、HR 分配和开放职位，创建新的发布 revision。不会重新搜索，也不会删除旧 Lark 文件、候选人或历史。继续修复吗？'
+  );
+  if(!accepted)return;
+  try{
+    const r=await api('/api/talent/publications/'+encodeURIComponent(publicationId)+'/repair',{
+      method:'POST',
+      body:JSON.stringify({confirm:'REPAIR_FAILED_PUBLICATION'})
+    }),j=await r.json();
+    if(!r.ok)throw new Error(j.detail||j.error||'修复发布被拒绝');
+    toast('修复版本已排入 Worker；冻结候选人未重新搜索。');
+    await Promise.all([loadTalentDailyFlow(),loadTalentTasks()]);
+  }catch(e){toast(e.message,true);}
+}
 async function replaceUnusedTalentPublication(publicationId){
   if(!publicationId)return;
   const accepted=confirm(
@@ -1118,7 +1136,11 @@ async function loadTalentTasks(){
   const root=document.getElementById('tdSearchTasks');
   if(!root)return;
   try{
-    const data=await(await api('/api/talent/search-tasks')).json(),tasks=(data.tasks||[]).filter(t=>t.status!=='cancelled');
+    const [taskResponse,publicationResponse]=await Promise.all([
+      api('/api/talent/search-tasks'),
+      api('/api/talent/publications/today')
+    ]);
+    const data=await taskResponse.json(),publication=await publicationResponse.json(),tasks=(data.tasks||[]).filter(t=>t.status!=='cancelled');
     TALENT_LATEST_TASKS=tasks;
     renderTalentSearchConsole(tasks);
     if(!tasks.length){root.innerHTML='<div class="muted">还没有搜索任务。</div>';return;}
@@ -1127,7 +1149,9 @@ async function loadTalentTasks(){
     const runSummary=latestRun.length?talentRunSummary(latestRun):'';
     const readyTasks=tasks.filter(t=>t.status==='succeeded'&&['ready','failed'].includes(t.publication_status||'not_ready'));
     const seed=readyTasks[0];
-    const action=seed?`<button class="btn primary sm" onclick="retryTalentPublish('${esc(seed.task_id)}')">发布今日统一表</button>`:'';
+    const action=seed&&publication.status==='not_started'
+      ? `<button class="btn primary sm" onclick="retryTalentPublish('${esc(seed.task_id)}')">发布今日统一表</button>`
+      : '';
     const taskRows=tasks.map(t=>{
       const p=t.payload||{},r=t.result||{},pub=t.publication||{};
       const job=TALENT_OPER_JOBS.find(j=>j.job_ref===p.operational_job_ref);

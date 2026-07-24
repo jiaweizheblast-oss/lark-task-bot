@@ -74,30 +74,31 @@ def main():
     connection = FakeConnection(existing)
     db.get_conn = lambda: connection
 
-    resumed = db.queue_talent_daily_publication(
-        "33333333-3333-4333-8333-333333333333",
-        "2026-07-24",
-        {"payload_sha256": "b" * 64},
-        [TASK_ID],
-    )
+    try:
+        db.queue_talent_daily_publication(
+            "33333333-3333-4333-8333-333333333333",
+            "2026-07-24",
+            {"payload_sha256": "b" * 64},
+            [TASK_ID],
+        )
+    except ValueError as error:
+        assert "repaired as a new revision" in str(error)
+    else:
+        raise AssertionError("failed publication was incorrectly resumed in place")
 
-    assert resumed["publication_id"] == PUBLICATION_ID
-    assert resumed["payload_sha256"] == existing["payload_sha256"]
-    assert resumed["status"] == "queued"
-    assert resumed["attempt_count"] == 0
-    assert connection.committed is True
-    assert connection.rolled_back is False
+    assert connection.committed is False
+    assert connection.rolled_back is True
 
     statements = [
         statement for statement, _params in connection.cursor_value.executed
     ]
-    assert any(
+    assert not any(
         statement.startswith(
             "UPDATE talent_daily_publication SET status='queued'"
         )
         for statement in statements
     )
-    assert any(
+    assert not any(
         "UPDATE talent_search_task t SET publication_status='queued'" in statement
         for statement in statements
     )
@@ -107,8 +108,8 @@ def main():
     )
     assert not any("DELETE FROM" in statement for statement in statements)
 
-    print("Failed immutable publication is resumed in place: PASSED")
-    print("Frozen search cohorts and publication identity are preserved: PASSED")
+    print("Failed immutable publication cannot resume in place: PASSED")
+    print("Explicit revision repair is required before another worker claim: PASSED")
 
 
 if __name__ == "__main__":
