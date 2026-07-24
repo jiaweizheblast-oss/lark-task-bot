@@ -944,6 +944,14 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
         if result.get("quota_fulfilled") is True and result.get("applicable") is True
         else "shortfall"
     )
+    final_counts = {
+        "candidates_found": int(
+            result.get("selected_contacts", result.get("contact_ready", 0)) or 0
+        ),
+        "results_scanned": int(
+            result.get("scanned_observations", result.get("raw_result_count", 0)) or 0
+        ),
+    }
     with get_conn() as conn, conn.cursor(
         cursor_factory=psycopg2.extras.RealDictCursor
     ) as cur:
@@ -956,6 +964,16 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
             return None
         if existing["status"] in {"succeeded", "shortfall"}:
             if existing["result_sha256"] == result_sha256:
+                cur.execute(
+                    """UPDATE talent_search_task
+                       SET progress_percent=100,
+                           progress_counts=COALESCE(progress_counts, '{}'::jsonb)
+                                           || %s::jsonb,
+                           last_progress_at=COALESCE(last_progress_at, now()),
+                           updated_at=now()
+                       WHERE task_id=%s""",
+                    (psycopg2.extras.Json(final_counts), task_id),
+                )
                 return {"status": existing["status"], "idempotent": True}
             raise ValueError("terminal task already has a different result")
         cur.execute(
@@ -963,7 +981,10 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
                SET status=%s, result=%s::jsonb, result_sha256=%s,
                     publication_status=%s,
                     progress_phase=%s, progress_percent=100,
-                    progress_message=%s, last_progress_at=now(),
+                    progress_message=%s,
+                    progress_counts=COALESCE(progress_counts, '{}'::jsonb)
+                                    || %s::jsonb,
+                    last_progress_at=now(),
                     lease_token_sha256=NULL, lease_expires_at=NULL,
                     updated_at=now()
                WHERE task_id=%s AND status='claimed' AND worker_id=%s
@@ -981,6 +1002,7 @@ def complete_talent_search_task(task_id, worker_id, lease_token, result, result_
                     if terminal_status == "succeeded"
                     else "Search completed below target"
                 ),
+                psycopg2.extras.Json(final_counts),
                 task_id, worker_id, lease_hash,
             ),
         )

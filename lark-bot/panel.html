@@ -783,12 +783,29 @@ function talentProgressAge(task){
   const seconds=Math.floor((Date.now()-new Date(raw).getTime())/1000);
   return Number.isFinite(seconds)?Math.max(0,seconds):null;
 }
+function talentTaskEffectiveCounts(task){
+  const progress=task.progress_counts||{};
+  const result=task.result||{};
+  const terminal=['succeeded','shortfall'].includes(task.status);
+  const finalCandidates=result.selected_contacts??result.contact_ready;
+  const finalScanned=result.scanned_observations??result.raw_result_count;
+  return {
+    results_scanned:Number(terminal&&finalScanned!=null?finalScanned:(progress.results_scanned||0)),
+    candidates_found:Number(terminal&&finalCandidates!=null?finalCandidates:(progress.candidates_found||0)),
+    queries_completed:Number(progress.queries_completed||0),
+    queries_total:Number(progress.queries_total||0),
+    engines_total:Number(progress.engines_total||0),
+    engines_completed:Number(progress.engines_completed||0),
+    engines_unavailable:Number(progress.engines_unavailable||0),
+  };
+}
 function talentTaskProgressText(task){
   const p=task.payload||{},percent=Number.isInteger(task.progress_percent)?task.progress_percent:0;
+  const counts=talentTaskEffectiveCounts(task);
   const message=task.progress_message||(
     task.status==='pending'?'Waiting for the local Worker':
-    task.status==='succeeded'?'Frozen and verified':
-    task.status==='shortfall'?'Search completed with a shortfall':
+    task.status==='succeeded'?`Frozen and verified: ${counts.candidates_found} candidates`:
+    task.status==='shortfall'?`Frozen with a shortfall: ${counts.candidates_found} candidates`:
     task.status==='failed'?(task.last_error_code||'Search failed'):task.status
   );
   const age=talentProgressAge(task);
@@ -862,7 +879,7 @@ function renderTalentSearchConsole(tasks=TALENT_LATEST_TASKS){
   const runId=task&&task.search_run_id;
   const run=runId?tasks.filter(t=>t.search_run_id===runId):task?[task]:[];
   const counts=run.reduce((out,t)=>{
-    const current=t.progress_counts||{};
+    const current=talentTaskEffectiveCounts(t);
     ['results_scanned','candidates_found','queries_completed','queries_total','engines_total','engines_completed','engines_unavailable'].forEach(k=>out[k]=(out[k]||0)+Number(current[k]||0));
     return out;
   },{});
@@ -1119,7 +1136,7 @@ async function loadTalentTasks(){
       const retry=(t.status==='failed'||(t.status==='pending'&&Number(t.attempt_count||0)>=3))?` <button class="btn ghost sm" onclick="retryFailedTalentSearch('${esc(t.task_id)}')">Retry same search</button>`:'';
       const search=(t.status==='succeeded'?`${ready} ready`:t.status==='shortfall'?`${ready} ready / ${r.contact_shortfall||0} shortfall`:(t.last_error_code||t.status||'waiting'))+retry;
       const progress=talentTaskProgressText(t);
-      const pc=t.progress_counts||{},pp=Math.max(0,Math.min(100,Number(t.progress_percent||0)));
+      const pc=talentTaskEffectiveCounts(t),pp=Math.max(0,Math.min(100,Number(t.progress_percent||0)));
       const progressMeta=`发现 ${Number(pc.candidates_found||0)} · 扫描 ${Number(pc.results_scanned||0)} · 查询 ${Number(pc.queries_completed||0)}/${Number(pc.queries_total||0)}`;
       const ps=t.publication_status||'not_ready';
       const label=ps==='ready'?'Ready（将纳入今日统一表）':ps==='queued'?'等待本地 Worker':ps==='publishing'?'本地 Worker 正在导入并发布':ps==='failed'?'发布失败':ps;

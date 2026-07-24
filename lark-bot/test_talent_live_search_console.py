@@ -26,6 +26,10 @@ def test_live_search_console_contract() -> None:
 def test_task_rows_show_structured_progress() -> None:
     panel = Path(__file__).with_name("panel.html").read_text(encoding="utf-8")
 
+    assert "function talentTaskEffectiveCounts(task)" in panel
+    assert "result.selected_contacts??result.contact_ready" in panel
+    assert "result.scanned_observations??result.raw_result_count" in panel
+    assert "const pc=talentTaskEffectiveCounts(t)" in panel
     assert "progress_counts" in panel
     assert "candidates_found" in panel
     assert "results_scanned" in panel
