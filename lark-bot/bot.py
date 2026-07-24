@@ -1477,7 +1477,7 @@ def api_talent_publication_reset(publication_id):
     methods=["POST"],
 )
 def api_talent_publication_repair(publication_id):
-    """Republish a failed immutable cohort as a new revision, without search."""
+    """Retry the exact failed immutable publication after a local repair."""
 
     if not _panel_auth():
         return jsonify({"error": "unauthorized"}), 401
@@ -1494,22 +1494,9 @@ def api_talent_publication_repair(publication_id):
             raise ValueError("only today's failed recruiting table can be repaired")
         if not _talent_worker_status("publication")["online"]:
             raise ValueError("the local Talent Worker is offline")
-        next_revision = int(current.get("revision") or 1) + 1
-        replacement_id = str(uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            "nexus-recruiting-repair:"
-            + str(publication_id)
-            + ":"
-            + str(next_revision),
-        ))
-        replacement = talent_search_queue.build_replacement_publication_task(
-            dict(current.get("payload") or {}),
-            publication_id=replacement_id,
-        )
-        queued = db.replace_published_talent_daily_publication(
+        queued = db.retry_failed_talent_daily_publication(
             publication_id,
             current["payload_sha256"],
-            replacement,
         )
     except ValueError as exc:
         return jsonify({
@@ -1522,15 +1509,17 @@ def api_talent_publication_repair(publication_id):
     return jsonify({
         "ok": True,
         "status": queued.get("status") or "queued",
-        "business_date": replacement["business_date"],
-        "publication_id": replacement_id,
-        "revision": replacement["revision"],
-        "expected_rows": replacement["total_contact_count"],
+        "business_date": str(current["business_date"]),
+        "publication_id": str(current["publication_id"]),
+        "revision": int(current.get("revision") or 1),
+        "expected_rows": int(
+            (current.get("payload") or {}).get("total_contact_count") or 0
+        ),
         "requires_local_worker": True,
         "scanner_calls": 0,
         "frozen_cohort_preserved": True,
-        "old_lark_workbook_retained": True,
-    }), 201
+        "existing_lark_workbook_reused": True,
+    }), 200
 
 
 @app.route(

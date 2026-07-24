@@ -108,8 +108,34 @@ def main():
     )
     assert not any("DELETE FROM" in statement for statement in statements)
 
+    retry_connection = FakeConnection(existing)
+    db.get_conn = lambda: retry_connection
+    retried = db.retry_failed_talent_daily_publication(
+        PUBLICATION_ID,
+        existing["payload_sha256"],
+    )
+    assert retried["publication_id"] == PUBLICATION_ID
+    assert retried["status"] == "queued"
+    assert retried["attempt_count"] == 0
+    retry_statements = [
+        statement
+        for statement, _params in retry_connection.cursor_value.executed
+    ]
+    assert any(
+        statement.startswith(
+            "UPDATE talent_daily_publication SET status='queued'"
+        )
+        for statement in retry_statements
+    )
+    assert any(
+        "UPDATE talent_search_task t SET publication_status='queued'"
+        in statement
+        for statement in retry_statements
+    )
+    assert retry_connection.committed is True
+
     print("Failed immutable publication cannot resume in place: PASSED")
-    print("Explicit revision repair is required before another worker claim: PASSED")
+    print("Explicit same-task repair safely requeues after a local fix: PASSED")
 
 
 if __name__ == "__main__":

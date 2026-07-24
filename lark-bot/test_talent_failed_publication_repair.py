@@ -34,21 +34,22 @@ def main():
         "receipt": {},
         "last_error_code": "publication_failed",
     }
-    captured = {}
     bot.db.get_talent_daily_publication = lambda _publication_id: copy.deepcopy(
         stored
     )
 
-    def replace(publication_id, expected_sha, replacement):
+    captured = {}
+
+    def retry(publication_id, expected_sha):
         assert publication_id == original["publication_id"]
         assert expected_sha == original["payload_sha256"]
-        captured["replacement"] = copy.deepcopy(replacement)
+        captured["retried"] = publication_id
         return {
             "status": "queued",
-            "publication_id": replacement["publication_id"],
+            "publication_id": publication_id,
         }
 
-    bot.db.replace_published_talent_daily_publication = replace
+    bot.db.retry_failed_talent_daily_publication = retry
     client = bot.app.test_client()
     headers = {"X-Auth": bot.PANEL_PASSWORD}
 
@@ -66,19 +67,14 @@ def main():
         json={"confirm": "REPAIR_FAILED_PUBLICATION"},
         headers=headers,
     )
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.get_json()
-    assert body["revision"] == 2
+    assert body["revision"] == 1
+    assert body["publication_id"] == original["publication_id"]
     assert body["scanner_calls"] == 0
     assert body["frozen_cohort_preserved"] is True
-    assert body["old_lark_workbook_retained"] is True
-
-    replacement = captured["replacement"]
-    assert replacement["revision"] == 2
-    assert replacement["hr_names"] == original["hr_names"]
-    assert replacement["open_jobs"] == original["open_jobs"]
-    assert replacement["cohorts"] == original["cohorts"]
-    assert replacement["payload_sha256"] != original["payload_sha256"]
+    assert body["existing_lark_workbook_reused"] is True
+    assert captured["retried"] == original["publication_id"]
 
     status = bot._publication_status_json(stored)
     assert status["can_repair"] is True
@@ -86,8 +82,8 @@ def main():
     assert status["hr_count"] == 2
     assert status["open_job_count"] == 1
 
-    print("Failed publication repair creates revision 2: PASSED")
-    print("Repair preserves frozen payload and performs zero searches: PASSED")
+    print("Failed publication repair retries the exact immutable task: PASSED")
+    print("Repair reuses the Lark artifact and performs zero searches: PASSED")
     print("Today status exposes repair action and batch summary: PASSED")
 
 

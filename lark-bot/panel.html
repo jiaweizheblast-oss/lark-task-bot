@@ -967,7 +967,7 @@ async function loadTalentDailyFlow(){
       root.innerHTML=talentFlowCard(
         '今日招聘表发布失败',
         manualOnly
-          ? `本次没有搜索候选人。系统会创建新 revision 修复发布，不需要重新填写或重复点击。错误：${publication.error_code||'unknown'}`
+          ? `本次没有搜索候选人。系统会重试同一不可变发布并复用已创建的 Lark 表，不需要重新填写或重复点击。错误：${publication.error_code||'unknown'}`
           : `${publication.expected_rows||0} 名冻结候选人仍被保留。只修复发布阶段，不会调用搜索器。错误：${publication.error_code||'unknown'}`,
         'error',
         recoveryAction
@@ -1103,7 +1103,7 @@ async function resetTalentPublication(publicationId){
 async function repairFailedTalentPublication(publicationId){
   if(!publicationId)return;
   const accepted=confirm(
-    '系统将沿用同一批冻结候选人、HR 分配和开放职位，创建新的发布 revision。不会重新搜索，也不会删除旧 Lark 文件、候选人或历史。继续修复吗？'
+    '系统将重试同一批冻结候选人、HR 分配和开放职位，并复用已创建的 Lark 表。不会重新搜索、不会新建第三张表，也不会删除候选人或历史。继续修复吗？'
   );
   if(!accepted)return;
   try{

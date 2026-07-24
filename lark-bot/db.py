@@ -1314,6 +1314,71 @@ def replace_published_talent_daily_publication(
         conn.close()
 
 
+def retry_failed_talent_daily_publication(
+    publication_id,
+    expected_payload_sha256,
+):
+    """Requeue the exact failed immutable publication after a local repair.
+
+    The signed payload, revision, cohort items, and publication id remain
+    unchanged. The task-bound local artifact journal therefore makes this
+    retry idempotent even when Lark creation completed before Railway received
+    the success receipt.
+    """
+
+    conn = get_conn()
+    conn.autocommit = False
+    try:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """SELECT * FROM talent_daily_publication
+                   WHERE publication_id=%s FOR UPDATE""",
+                (publication_id,),
+            )
+            current = cur.fetchone()
+            if not current:
+                raise ValueError("recruiting table command no longer exists")
+            if current["status"] != "failed":
+                raise ValueError("only a failed recruiting table can be retried")
+            if current["payload_sha256"] != expected_payload_sha256:
+                raise ValueError("recruiting table command changed; refresh and retry")
+            cur.execute(
+                """UPDATE talent_daily_publication
+                   SET status='queued', attempt_count=0, receipt='{}'::jsonb,
+                       last_error_code=NULL, worker_id=NULL,
+                       lease_token_sha256=NULL, claimed_at=NULL,
+                       lease_expires_at=NULL, published_at=NULL, updated_at=now()
+                   WHERE publication_id=%s
+                   RETURNING *""",
+                (publication_id,),
+            )
+            queued = cur.fetchone()
+            cur.execute(
+                """UPDATE talent_search_task t
+                   SET publication_status='queued',
+                       publication=%s::jsonb, updated_at=now()
+                   FROM talent_daily_publication_item i
+                   WHERE i.publication_id=%s AND i.task_id=t.task_id""",
+                (
+                    psycopg2.extras.Json({
+                        "publication_id": str(current["publication_id"]),
+                        "business_date": str(current["business_date"]),
+                        "payload_sha256": current["payload_sha256"],
+                    }),
+                    publication_id,
+                ),
+            )
+        conn.commit()
+        return queued
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def claim_talent_daily_publication(worker_id, lease_seconds):
     """Lease one manager-approved daily batch to the local Windows worker."""
     conn = get_conn()
